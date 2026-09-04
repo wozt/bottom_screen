@@ -24,6 +24,15 @@ struct BsServer {
     volatile int has_client;
     volatile uint32_t frames;
 
+    /*
+     * A quality change arrives on the input thread but is applied by the
+     * video loop, between two frames. Swapping the encoder from under a
+     * bs_encoder_encode already in progress would be a use-after-free
+     * with a very confusing crash.
+     */
+    volatile int pending_bitrate;
+    volatile int quality_dirty;
+
     /* The live connection, so stop() can break a blocking read. */
     BsConn *volatile conn;
 };
@@ -77,6 +86,13 @@ static void *input_thread(void *arg)
             }
         } else if (type == BS_MSG_PING) {
             bs_send_msg(a->conn, BS_MSG_PONG, NULL, 0, NULL, 0);
+        } else if (type == BS_MSG_REQUEST_KEYFRAME) {
+            bs_encoder_request_keyframe(a->srv->enc);
+        } else if (type == BS_MSG_SET_QUALITY && (size_t)n >= sizeof(BsQuality)) {
+            BsQuality q;
+            memcpy(&q, buf, sizeof(q));
+            a->srv->pending_bitrate = (int)q.bitrate;
+            a->srv->quality_dirty = 1;
         }
     }
     /* This client left. The server has not. */
@@ -110,6 +126,43 @@ static void on_encoded(const uint8_t *data, size_t size, int keyframe, void *use
         s->failed = 1;
     else
         s->bytes += size;
+}
+
+/*
+ * Rebuilds the encoder at the requested bitrate. Called only from the
+ * video loop, between frames.
+ *
+ * A failed rebuild keeps the old encoder rather than leaving the server
+ * with none: a bitrate the encoder would not take should cost the person
+ * their setting, not their picture.
+ */
+static void apply_quality(BsServer *srv)
+{
+    BsEncoderConfig ecfg = {
+        .width   = srv->info.width,
+        .height  = srv->info.height,
+        .fps     = srv->info.fps,
+        .bitrate = srv->pending_bitrate,
+        .gop     = srv->cfg.gop,
+        .pixfmt  = srv->info.pixfmt,
+        .encoder = srv->cfg.encoder,
+    };
+
+    char err[128] = "";
+    BsEncoder *fresh = bs_encoder_create(&ecfg, err, sizeof(err));
+    if (!fresh) {
+        if (!srv->cfg.quiet)
+            fprintf(stderr, "bottom_screen: keeping the old encoder: %s\n", err);
+        return;
+    }
+
+    BsEncoder *old = srv->enc;
+    srv->enc = fresh;
+    bs_encoder_destroy(old);
+    bs_encoder_request_keyframe(srv->enc);
+
+    if (!srv->cfg.quiet)
+        printf("bottom_screen: bitrate now %d bit/s\n", srv->pending_bitrate);
 }
 
 static void serve_client(BsServer *srv, BsConn *conn)
@@ -156,6 +209,11 @@ static void serve_client(BsServer *srv, BsConn *conn)
     uint32_t started = bs_now_us();
 
     while (!srv->stop && !sc.failed && !ia.gone) {
+        if (srv->quality_dirty) {
+            srv->quality_dirty = 0;
+            apply_quality(srv);
+        }
+
         int stride = 0;
         uint32_t ts = 0;
         const uint8_t *pixels = srv->source->acquire(srv->source->self, &stride, &ts);

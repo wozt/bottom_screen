@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The dark ground the lit screen sits on, shared by the adaptive
+         icon and the legacy one so both read the same in a launcher. -->
+    <color name="ic_launcher_background">#12161C</color>
+</resources>

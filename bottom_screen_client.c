@@ -28,25 +28,38 @@ typedef struct {
 } View;
 
 /*
- * Integer scaling, centred, letterboxed.
+ * Fill the window as far as the picture will go, centred, letterboxed.
  *
- * The whole point of the project is that a DS screen stays a DS screen:
- * 256x192 blown up by 3 is 768x576 and every source pixel is exactly 9
- * screen pixels. Stretching to fill the window would resample, and on
- * pixel art that reads as a smeared, uneven mess. So the picture is
- * scaled by whole numbers only and whatever is left over stays black.
+ * The rule is aspect ratio, not pixel grid: a DS screen is 4:3 and stays
+ * 4:3, but it is scaled by whatever fraction fits rather than by whole
+ * numbers only. Whole-number zoom keeps every source pixel exactly
+ * square, which is lovely, but on a phone held in the hand it throws
+ * away a third of the screen for that -- and the screen is 256 pixels
+ * wide to begin with.
+ *
+ * What is never allowed is stretching to fill both axes independently,
+ * which would make the picture fat or tall. That is the deformation
+ * worth refusing; a fractional zoom is not.
  */
 static void compute_view(View *v, int win_w, int win_h, int src_w, int src_h)
 {
-    int k = v->scale;
-    if (k <= 0) {
-        k = win_w / src_w;
-        int ky = win_h / src_h;
-        if (ky < k) k = ky;
-        if (k < 1)  k = 1;
+    if (v->scale > 0) {
+        /* An explicit --scale still means exactly that multiple. */
+        v->dst.w = src_w * v->scale;
+        v->dst.h = src_h * v->scale;
+    } else {
+        /* Fit: the smaller of the two ratios, so neither axis overflows.
+         * Computed in integers to avoid a rounding that would leave a
+         * one-pixel sliver of background on one side. */
+        int w = win_w;
+        int h = (int)((long long)win_w * src_h / src_w);
+        if (h > win_h) {
+            h = win_h;
+            w = (int)((long long)win_h * src_w / src_h);
+        }
+        v->dst.w = w;
+        v->dst.h = h;
     }
-    v->dst.w = src_w * k;
-    v->dst.h = src_h * k;
     v->dst.x = (win_w - v->dst.w) / 2;
     v->dst.y = (win_h - v->dst.h) / 2;
 }
@@ -122,7 +135,7 @@ static void usage(void)
 "\n"
 "  --host NAME       server address (default 127.0.0.1)\n"
 "  --port N          server port (default %d)\n"
-"  --scale N         integer zoom; 0 fits the window (default 3)\n"
+"  --scale N         exact zoom factor; 0 fills the window (default 0)\n"
 "  --help\n"
 "\n"
 "Mouse drags the touch screen. Keys: arrows d-pad, X/Z A/B, S/A X/Y,\n"
@@ -134,7 +147,7 @@ int main(int argc, char **argv)
 {
     const char *host = "127.0.0.1";
     uint16_t port = BS_DEFAULT_PORT;
-    int scale = 3;
+    int scale = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -185,11 +198,16 @@ int main(int argc, char **argv)
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
         return 1;
     }
-    /* Nearest-neighbour: the picture is only ever scaled by whole
-     * numbers, and any filtering would undo that. */
-    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "0");
+    /*
+     * Linear, because the zoom is now fractional. Nearest-neighbour at a
+     * non-integer scale gives some source pixels two screen rows and
+     * their neighbours one, which reads as a shimmering, uneven grid --
+     * worse than a slight softness. At an exact whole-number --scale the
+     * two look the same anyway.
+     */
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
 
-    int init_k = scale > 0 ? scale : 3;
+    int init_k = scale > 0 ? scale : 3;  /* the window's first size only */
     SDL_Window *win = SDL_CreateWindow("bottom_screen_client",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         src_w * init_k, src_h * init_k, SDL_WINDOW_RESIZABLE);
@@ -300,8 +318,8 @@ int main(int argc, char **argv)
             char title[160];
             double lat = latency_n ? (double)latency_sum / latency_n / 1000.0 : 0.0;
             snprintf(title, sizeof(title),
-                     "bottom_screen_client  %dx%d  x%d  %u fps  %.1f ms",
-                     src_w, src_h, view.dst.w / src_w, frames, lat);
+                     "bottom_screen_client  %dx%d  ->%dx%d  %u fps  %.1f ms",
+                     src_w, src_h, view.dst.w, view.dst.h, frames, lat);
             SDL_SetWindowTitle(win, title);
             printf("%u fps, same-machine latency %.1f ms\n", frames, lat);
             fflush(stdout);

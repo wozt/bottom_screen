@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  bottom_screen_server / bottom_screen_client.
+
+  Two stacked screens, the lower one lit and broadcasting: the whole
+  project in one mark. The top screen stays a dim outline because it is
+  the one that stays behind on the PC.
+
+  Drawn on Android's 108x108 adaptive-icon canvas, with everything
+  inside the 66-unit safe circle so no launcher shape can crop it.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 108 108" width="108" height="108">
+  <defs>
+    <linearGradient id="lit" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#5EE6C0"/>
+      <stop offset="1" stop-color="#2BA9E0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- top screen: the one that stays on the PC -->
+  <rect x="35" y="26" width="38" height="25" rx="3"
+        fill="none" stroke="#7C8794" stroke-width="3"/>
+
+  <!-- bottom screen: the one that travels -->
+  <rect x="33" y="57" width="42" height="28" rx="4" fill="url(#lit)"/>
+
+  <!-- a stylus dot, so the lit rectangle reads as a touch screen -->
+  <circle cx="63" cy="76" r="3.4" fill="#0B2530" opacity="0.85"/>
+
+  <!-- broadcast: three arcs opening to the right of the lit screen -->
+  <g fill="none" stroke="#5EE6C0" stroke-linecap="round" stroke-width="3.2">
+    <path d="M 80 66 a 9 9 0 0 1 0 10" opacity="0.9"/>
+    <path d="M 86 61 a 17 17 0 0 1 0 20" opacity="0.6"/>
+    <path d="M 92 56 a 25 25 0 0 1 0 30" opacity="0.32"/>
+  </g>
+</svg>

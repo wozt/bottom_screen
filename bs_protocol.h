@@ -88,7 +88,26 @@ typedef enum {
     BS_MSG_VIDEO = 1,  /* BsVideoHeader + one fragment of a frame */
     BS_MSG_INPUT = 16, /* BsInputEvent, client -> server */
     BS_MSG_PING  = 17, /* empty; keeps a silent connection alive */
-    BS_MSG_PONG  = 18  /* empty; reply to PING */
+    BS_MSG_PONG  = 18, /* empty; reply to PING */
+    /*
+     * Empty, client -> server: send a keyframe now.
+     *
+     * A client that has just rebuilt its decoder -- after a rotation,
+     * say -- has no reference picture and shows nothing until the next
+     * one, which at a one-second GOP is a second of black. Asking costs
+     * one packet and a single extra keyframe.
+     */
+    BS_MSG_REQUEST_KEYFRAME = 19,
+
+    /*
+     * BsQuality, client -> server: re-encode at this bitrate.
+     *
+     * The person holding the phone is the one who can see whether the
+     * picture is good enough and whether the link is keeping up, so the
+     * choice belongs there rather than in a server flag they would have
+     * to go and change on the PC.
+     */
+    BS_MSG_SET_QUALITY = 20
 } BsMsgType;
 
 /*
@@ -122,6 +141,23 @@ typedef struct __attribute__((packed)) {
     uint8_t  flags;
     uint8_t  reserved[3];
 } BsVideoHeader;
+
+/* --- quality -------------------------------------------------------- */
+
+/*
+ * Changing the bitrate means building a new encoder, which is why this
+ * is a request rather than a knob: the server applies it between two
+ * frames, never underneath the one being encoded, and sends a keyframe
+ * straight after so the client has something to decode against.
+ *
+ * fps of 0 means leave it alone. Only the DS is fixed at 60; a source
+ * that produces frames at its own pace ignores this entirely.
+ */
+typedef struct __attribute__((packed)) {
+    uint32_t bitrate;    /* bits/s; 0 = let the server derive one */
+    uint16_t fps;        /* 0 = unchanged */
+    uint16_t reserved;
+} BsQuality;
 
 /* --- input ---------------------------------------------------------- */
 

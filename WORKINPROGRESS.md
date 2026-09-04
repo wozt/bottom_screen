@@ -256,8 +256,20 @@ produit gratuitement.
 passe son temps bloquée sur l'échéance de la frame suivante ; y lire
 aussi l'input retiendrait chaque événement jusqu'à cette échéance.
 
-**Mise à l'échelle par entiers uniquement.** 256×192 ×3 donne 768×576 et
-chaque pixel source vaut exactement 9 pixels écran. Le reste est noir.
+**Ratio conservé, zoom fractionnaire.** Révisé le 2026-09-04 : la
+première version n'autorisait que des multiples entiers, pour que chaque
+pixel source reste exactement carré. Sur un téléphone ça coûtait un tiers
+de l'écran, pour une source qui fait 256 pixels de large — il ne reste
+pas grand-chose de « carré » à protéger. L'image remplit donc l'espace
+disponible avec le zoom qui rentre, quel qu'il soit.
+
+Ce qui reste interdit, c'est d'étirer les deux axes indépendamment : ça,
+ça déforme. Un zoom fractionnaire, non.
+
+Conséquence côté client Linux : le filtrage est passé en linéaire. En
+plus proche voisin à facteur non entier, certaines lignes source
+occupent deux lignes écran et leurs voisines une seule, ce qui donne une
+grille scintillante — pire qu'un léger flou.
 
 ### Un bug que le test a attrapé
 
@@ -395,10 +407,11 @@ le serveur en prenne une, la première est perdue. C'est voulu — une file
 - [x] Garder l'écran du haut sur le PC, inchangé
 
 ### Phase 3 — client Android
-- [ ] Décodage H.264 par MediaCodec
-- [ ] Affichage sans étirement
-- [ ] Tactile → réseau
-- [ ] Boutons virtuels, profil DS
+- [x] Décodage H.264 par MediaCodec
+- [x] Affichage au ratio natif, zoom fractionnaire
+- [x] Tactile → réseau
+- [x] Boutons virtuels, profils DS / 3DS / Wii U
+- [x] Mode portrait et paysage
 - [ ] Manette Bluetooth
 
 ### Phase 4 — client Switch homebrew
@@ -411,12 +424,50 @@ le serveur en prenne une, la première est perdue. C'est voulu — une file
 - [ ] Tactile via `TouchPressed` / `TouchMoved` / `TouchReleased`
 - [ ] Profil de boutons 3DS (ZL/ZR, circle pad, C-stick)
 
+### Phase 7 — client web (plus tard)
+- [ ] Encodage VP8 en parallèle du H.264
+- [ ] Transport WebRTC
+- [ ] Page JS avec écran, tactile et boutons virtuels
+
 ### Phase 6 — Cemu (Wii U)
 - [ ] Backend sur `LatteRenderTarget_copyToBackbuffer(_, true)`
 - [ ] Tracer et brancher le chemin tactile VPAD
 - [ ] Profil de boutons Wii U
 
 ---
+
+## Un client web, plus tard
+
+Prévu, pas commencé : une page JS pour jouer depuis n'importe quel
+navigateur, sans rien installer.
+
+Ce sera **VP8, pas H.264**, contrairement aux deux clients natifs. Le
+raisonnement s'inverse complètement selon la cible :
+
+- Android et Switch décodent le H.264 **en matériel**, donc c'est là que
+  le décodage coûte le moins cher. C'est ce qui a décidé le codec du
+  projet.
+- Un navigateur passe par WebRTC, où VP8 est la ligne de base garantie.
+  Le H.264 y est possible mais dépend du navigateur, de la plateforme et
+  parfois de brevets ; VP8 marche partout, tout de suite.
+
+Et surtout, capture2cloud fait déjà exactement ça : sa chaîne
+`gst_webrtc.c` produit du VP8 sur WebRTC pour son client navigateur, avec
+la signalisation et le DataChannel d'entrées déjà écrits. Il y a là un
+travail qui n'a pas à être refait.
+
+Ce que ça demandera de notre côté :
+
+| | |
+|---|---|
+| Encodeur | `bs_encoder` prend déjà un nom d'encodeur en paramètre, donc VP8 est une valeur, pas une réécriture |
+| Transport | WebRTC en parallèle du protocole binaire, pas à sa place — les clients natifs n'en veulent pas |
+| Entrées | même protocole, transporté par un DataChannel au lieu d'un socket |
+| Interface | les profils de boutons existent déjà en Kotlin, à refaire en JS |
+
+À faire après les émulateurs, pas avant : un troisième transport sur un
+projet dont le premier ne fait pas encore d'UDP serait mettre la
+complexité au mauvais endroit.
 
 ## Questions ouvertes
 
