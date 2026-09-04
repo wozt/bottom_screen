@@ -1,0 +1,16 @@
+# The emulator forks are their own repositories, cloned here for
+# convenience. They are not part of this one.
+emulators/
+
+# Built binaries
+bottom_screen_server
+bottom_screen_client
+tests/smoke_client
+*.o
+
+# Android
+android/local.properties
+android/.gradle/
+android/build/
+android/app/build/
+*.apk

@@ -1,0 +1,240 @@
+#include "bs_encoder.h"
+
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <libavcodec/avcodec.h>
+#include <libavutil/opt.h>
+#include <libavutil/imgutils.h>
+#include <libswscale/swscale.h>
+
+struct BsEncoder {
+    AVCodecContext *ctx;
+    AVFrame        *frame;
+    AVPacket       *pkt;
+    struct SwsContext *sws;
+    enum AVPixelFormat src_fmt;
+    int   width, height;
+    int64_t pts;
+    int   force_keyframe;
+    char  name[64];
+};
+
+static enum AVPixelFormat to_av_pixfmt(BsPixFmt f)
+{
+    switch (f) {
+    case BS_PIXFMT_BGRA:  return AV_PIX_FMT_BGRA;
+    case BS_PIXFMT_RGBA:  return AV_PIX_FMT_RGBA;
+    case BS_PIXFMT_RGB24: return AV_PIX_FMT_RGB24;
+    }
+    return AV_PIX_FMT_NONE;
+}
+
+static void __attribute__((format(printf, 3, 4)))
+set_err(char *err, size_t errlen, const char *fmt, ...)
+{
+    if (!err || errlen == 0)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(err, errlen, fmt, ap);
+    va_end(ap);
+}
+
+/*
+ * A starting point, not a tuned value. 0.5 bits per pixel per frame is
+ * generous for these resolutions; the clamp keeps a Wii U GamePad frame
+ * from asking for 12 Mbit/s on a formula that was calibrated for a DS.
+ * Benchmark before trusting any of it.
+ */
+static int default_bitrate(int w, int h, int fps)
+{
+    double b = (double)w * h * fps * 0.5;
+    if (b < 500000.0)  b = 500000.0;
+    if (b > 6000000.0) b = 6000000.0;
+    return (int)b;
+}
+
+BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errlen)
+{
+    if (!cfg || cfg->width <= 0 || cfg->height <= 0 || cfg->fps <= 0) {
+        set_err(err, errlen, "invalid encoder config");
+        return NULL;
+    }
+
+    enum AVPixelFormat src_fmt = to_av_pixfmt(cfg->pixfmt);
+    if (src_fmt == AV_PIX_FMT_NONE) {
+        set_err(err, errlen, "unknown source pixel format %d", (int)cfg->pixfmt);
+        return NULL;
+    }
+
+    const char *want = cfg->encoder ? cfg->encoder : "libx264";
+    const AVCodec *codec = avcodec_find_encoder_by_name(want);
+    if (!codec) {
+        set_err(err, errlen, "encoder '%s' not available in this ffmpeg build", want);
+        return NULL;
+    }
+
+    BsEncoder *enc = calloc(1, sizeof(*enc));
+    if (!enc) {
+        set_err(err, errlen, "out of memory");
+        return NULL;
+    }
+    enc->width  = cfg->width;
+    enc->height = cfg->height;
+    enc->src_fmt = src_fmt;
+    snprintf(enc->name, sizeof(enc->name), "%s", codec->name);
+
+    enc->ctx = avcodec_alloc_context3(codec);
+    if (!enc->ctx) {
+        set_err(err, errlen, "avcodec_alloc_context3 failed");
+        goto fail;
+    }
+
+    enc->ctx->width     = cfg->width;
+    enc->ctx->height    = cfg->height;
+    enc->ctx->pix_fmt   = AV_PIX_FMT_YUV420P;
+    enc->ctx->time_base = (AVRational){1, cfg->fps};
+    enc->ctx->framerate = (AVRational){cfg->fps, 1};
+    enc->ctx->gop_size  = cfg->gop > 0 ? cfg->gop : cfg->fps;
+    enc->ctx->bit_rate  = cfg->bitrate > 0
+                        ? cfg->bitrate
+                        : default_bitrate(cfg->width, cfg->height, cfg->fps);
+
+    /* B-frames reorder output: the encoder holds a frame back to code
+     * the one after it. That is a whole frame of latency for a coding
+     * gain we do not need at this size. */
+    enc->ctx->max_b_frames = 0;
+
+    /* Cap the buffer at a quarter second so a scene change cannot spend
+     * a second of bitrate and arrive late. */
+    enc->ctx->rc_max_rate    = enc->ctx->bit_rate;
+    enc->ctx->rc_buffer_size = enc->ctx->bit_rate / 4;
+
+    /*
+     * Deliberately NOT setting AV_CODEC_FLAG_GLOBAL_HEADER.
+     *
+     * With it, SPS/PPS live only in extradata and never appear in the
+     * stream. A client that joins late -- or that lost the first
+     * datagram over UDP -- then has a decoder it cannot configure and
+     * shows nothing until it reconnects. Without it, x264 repeats the
+     * headers before every keyframe, so any client can start decoding
+     * at the next keyframe with no out-of-band step. bs_encoder_extradata
+     * returns NULL as a result, and that is the intended trade.
+     */
+
+    if (!strcmp(codec->name, "libx264")) {
+        av_opt_set(enc->ctx->priv_data, "preset", "ultrafast", 0);
+        /* zerolatency: no frame reordering, no lookahead, slice threads
+         * instead of frame threads. Without it x264 buffers frames
+         * internally and one input does not yield one output. */
+        av_opt_set(enc->ctx->priv_data, "tune", "zerolatency", 0);
+    }
+
+    if (avcodec_open2(enc->ctx, codec, NULL) < 0) {
+        set_err(err, errlen, "avcodec_open2 failed for '%s'", codec->name);
+        goto fail;
+    }
+
+    enc->frame = av_frame_alloc();
+    enc->pkt   = av_packet_alloc();
+    if (!enc->frame || !enc->pkt) {
+        set_err(err, errlen, "frame/packet allocation failed");
+        goto fail;
+    }
+    enc->frame->format = enc->ctx->pix_fmt;
+    enc->frame->width  = enc->ctx->width;
+    enc->frame->height = enc->ctx->height;
+    if (av_frame_get_buffer(enc->frame, 0) < 0) {
+        set_err(err, errlen, "av_frame_get_buffer failed");
+        goto fail;
+    }
+
+    enc->sws = sws_getContext(cfg->width, cfg->height, src_fmt,
+                              cfg->width, cfg->height, AV_PIX_FMT_YUV420P,
+                              SWS_POINT, NULL, NULL, NULL);
+    if (!enc->sws) {
+        set_err(err, errlen, "sws_getContext failed");
+        goto fail;
+    }
+
+    return enc;
+
+fail:
+    bs_encoder_destroy(enc);
+    return NULL;
+}
+
+void bs_encoder_destroy(BsEncoder *enc)
+{
+    if (!enc)
+        return;
+    if (enc->sws)   sws_freeContext(enc->sws);
+    if (enc->pkt)   av_packet_free(&enc->pkt);
+    if (enc->frame) av_frame_free(&enc->frame);
+    if (enc->ctx)   avcodec_free_context(&enc->ctx);
+    free(enc);
+}
+
+int bs_encoder_encode(BsEncoder *enc, const uint8_t *src, int src_stride,
+                      BsEncoderOutput cb, void *user)
+{
+    if (!enc || !src)
+        return -1;
+
+    if (av_frame_make_writable(enc->frame) < 0)
+        return -1;
+
+    const uint8_t *src_planes[4] = { src, NULL, NULL, NULL };
+    int src_strides[4] = { src_stride, 0, 0, 0 };
+
+    sws_scale(enc->sws, src_planes, src_strides, 0, enc->height,
+              enc->frame->data, enc->frame->linesize);
+
+    enc->frame->pts = enc->pts++;
+    if (enc->force_keyframe) {
+        enc->frame->pict_type = AV_PICTURE_TYPE_I;
+        enc->force_keyframe = 0;
+    } else {
+        enc->frame->pict_type = AV_PICTURE_TYPE_NONE;
+    }
+
+    if (avcodec_send_frame(enc->ctx, enc->frame) < 0)
+        return -1;
+
+    for (;;) {
+        int ret = avcodec_receive_packet(enc->ctx, enc->pkt);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+            break;
+        if (ret < 0)
+            return -1;
+        if (cb)
+            cb(enc->pkt->data, (size_t)enc->pkt->size,
+               (enc->pkt->flags & AV_PKT_FLAG_KEY) ? 1 : 0, user);
+        av_packet_unref(enc->pkt);
+    }
+    return 0;
+}
+
+const uint8_t *bs_encoder_extradata(const BsEncoder *enc, size_t *size)
+{
+    if (!enc || !enc->ctx || enc->ctx->extradata_size <= 0) {
+        if (size) *size = 0;
+        return NULL;
+    }
+    if (size) *size = (size_t)enc->ctx->extradata_size;
+    return enc->ctx->extradata;
+}
+
+void bs_encoder_request_keyframe(BsEncoder *enc)
+{
+    if (enc)
+        enc->force_keyframe = 1;
+}
+
+const char *bs_encoder_name(const BsEncoder *enc)
+{
+    return enc ? enc->name : "";
+}
