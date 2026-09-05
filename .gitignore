@@ -5,7 +5,11 @@ emulators/
 # Built binaries
 bottom_screen_server
 bottom_screen_client
+launcher/bs_launcher
 tests/smoke_client
+tests/input_merge
+tests/resize_flip
+web_page.h
 *.o
 
 # Android
@@ -15,6 +19,13 @@ android/build/
 android/app/build/
 *.apk
 
-# The brief this project was built from. Personal, not part of the
-# published source.
+# Switch
+switch/build/
+switch/*.nro
+switch/*.elf
+switch/*.nacp
+
+# Local working files, none of which belong to this project.
 prompt.md
+system_files/
+games/

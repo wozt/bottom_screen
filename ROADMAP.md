@@ -21,6 +21,74 @@ vaut les faire avant de multiplier les clients qui devront les parler.
 - [ ] Tracer et brancher le chemin tactile VPAD
 - [ ] Profil de boutons Wii U
 
+### A3bis. 3DS : la configuration système plante — en suspens
+
+Session du 2026-09-05. L'Artic Setup Tool est la seule voie supportée
+par Azahar pour installer les titres système, et elle plante
+systématiquement. Tout ce qui était configurable a été éliminé :
+
+| Vérifié | État |
+|---|---|
+| Luma3DS | v13.4, au-delà du v13.3.1 exigé |
+| Artic Setup Tool | v1.0.3, la dernière publiée (avril 2025) |
+| Confirmation par A sur la console | faite |
+| État NAND partiel | nettoyé avant essai |
+| Voie d'accès | dialogue **et** URL `articinio://` |
+| Version d'Azahar | `2126.1-rc3` **et** stable `2126.0` |
+| Réseau | jamais un octet au-dessus du bruit de fond |
+
+Ce n'est donc ni le réseau, ni le débit, ni une erreur de manipulation.
+
+**Ce qu'on sait du crash.** SIGSEGV reproductible. Sur le build `master`,
+la pile était :
+
+```
+Service::HTTP::InstallInterfaces
+ └─ HTTP_C::DecryptClCertA
+     └─ NCCHContainer::AutoOpenNCCHNCSD
+         └─ UniqueData::GetUniqueCryptoFileKeyIV   (unique_data.cpp:287)
+             └─ Certificate::GetPublicKeyECC       ← SIGSEGV
+```
+
+`ct_cert` n'est pas lu depuis un fichier : il est **dérivé de l'OTP** par
+`BuildECC()` (unique_data.cpp:180), vérifié contre la clé racine ligne
+184, et invalidé si la vérification échoue. La garde ligne 292 teste
+`IsValid()`. Le certificat passe donc la vérification puis casse à la
+lecture de sa clé publique — une incohérence entre ce que le contrôle
+accepte et ce que la lecture suppose.
+
+Sur `2126.0` le crash arrive plus tôt encore, avant même l'écriture des
+données uniques. La pile ci-dessus vaut pour l'autre binaire ; il faudra
+refaire une passe `gdb` sur la stable avant de corriger quoi que ce soit.
+
+**Piège à connaître.** Chaque tentative réécrit les données uniques
+(`otp.bin`, `movable.sed`, `SecureInfo_A`, `LocalFriendCodeSeed_B`) avant
+de planter. Un nettoyage manuel est donc défait au coup d'après, et
+repartir sans nettoyer redonne le crash. Le dialogue d'Azahar appelle
+`UninstallSystemFiles()` pour cette raison.
+
+**Pistes, par ordre de coût croissant :**
+
+- [ ] **Essayer l'autre 3DS.** Si le crash tient à la dérivation du
+      certificat depuis cet OTP précis, une autre console tranche la
+      question immédiatement. C'est le test le plus discriminant et le
+      moins cher.
+- [ ] Voir si l'outil peut servir sans passer par la mise à jour
+      système — c'est ce chemin, avec ClCertA et le module NIM, qui
+      casse.
+- [ ] Ouvrir un ticket chez Azahar : on a un cas de reproduction net et
+      une pile d'appel.
+- [ ] En dernier recours, corriger le fork. Pas avant d'avoir la pile
+      exacte du binaire concerné : une garde posée à l'aveugle
+      déplacerait l'échec sans donner le menu HOME.
+
+Rien de tout ça ne bloque le projet : le backend Azahar peut s'écrire
+sur `FrameDumperOpenGL` et se valider plus tard.
+
+**Note de version.** Le dépôt Azahar est resté sur le tag `2126.0`
+(HEAD détaché). Avant d'écrire le backend il faudra une branche dédiée,
+comme `bottom-screen` sur melonDS.
+
 ### A3. BIOS et fichiers système — bloqué
 
 **Je ne les téléchargerai pas.** Les BIOS et firmwares 3DS et Wii U sont
