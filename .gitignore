@@ -14,3 +14,7 @@ android/.gradle/
 android/build/
 android/app/build/
 *.apk
+
+# The brief this project was built from. Personal, not part of the
+# published source.
+prompt.md

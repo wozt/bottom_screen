@@ -13,6 +13,8 @@ import android.widget.Button
 import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.CheckBox
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.ArrayAdapter
 import android.widget.TextView
@@ -46,6 +48,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private var profile = ConsoleProfile.DS
     private var ack: BsProtocol.HelloAck? = null
     private var quality = Quality.AUTO
+    private var buttonScale = 1f
+    private var fullscreen = false
 
     private var frames = 0
     private var lastReport = 0L
@@ -58,9 +62,11 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             orientation = LinearLayout.VERTICAL
             setBackgroundColor(Color.BLACK)
         }
-        quality = Quality.byName(
-            getSharedPreferences(PREFS, MODE_PRIVATE).getString("quality", null)
-        )
+        val prefs0 = getSharedPreferences(PREFS, MODE_PRIVATE)
+        quality = Quality.byName(prefs0.getString("quality", null))
+        buttonScale = prefs0.getFloat("pad_scale", 1f)
+        fullscreen = prefs0.getBoolean("fullscreen", false)
+        applyFullscreen()
         buildForm()
         setContentView(root)
 
@@ -215,6 +221,13 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
         val landscape =
             resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+        /*
+         * displayMetrics is the whole panel, including the strips the
+         * status and navigation bars take. Sizing the picture from it
+         * made the bottom of the screen fall off the edge in landscape.
+         * These are a first guess; sizeVideo re-does it against the
+         * container's real size once there is one.
+         */
         val availW = resources.displayMetrics.widthPixels
         val availH = resources.displayMetrics.heightPixels
 
@@ -232,13 +245,19 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
         val overlay = PadOverlay(this).apply {
             profile = this@MainActivity.profile
+            buttonScale = this@MainActivity.buttonScale
             onButton = { code, pressed ->
                 client?.sendInput(
                     if (pressed) BsProtocol.INPUT_BUTTON_DOWN else BsProtocol.INPUT_BUTTON_UP,
                     code, 0, 0
                 )
             }
+            /* Keep the shoulders out from under the settings button. */
+            topReserve = resources.displayMetrics.density * 74
+            onMoved = { code, fx, fy -> savePosition(code, fx, fy, landscape) }
+            onLongPress = { showSettings() }
         }
+        loadPositions(overlay, landscape)
         pad = overlay
 
         /*
@@ -316,11 +335,22 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         /* The settings button rides on top of whichever layout was
          * built, so there is one of it rather than one per orientation. */
         val content = play!!
+        /*
+         * A 48dp target, inset from the corner.
+         *
+         * The first version was a 22sp glyph flush against the edge,
+         * which is both under the smallest comfortable touch target and,
+         * in landscape, underneath the navigation bar -- so it could be
+         * seen and not pressed.
+         */
+        val touch = (resources.displayMetrics.density * 64).toInt()
+        val inset = (resources.displayMetrics.density * 10).toInt()
         val gear = TextView(this).apply {
             text = "\u2699"
-            textSize = 22f
-            setTextColor(0x80FFFFFF.toInt())
-            setPadding(24, 12, 24, 24)
+            textSize = 26f
+            setTextColor(0xCCFFFFFF.toInt())
+            setBackgroundColor(0x40FFFFFF)
+            gravity = Gravity.CENTER
             setOnClickListener { showSettings() }
         }
         play = FrameLayout(this).apply {
@@ -334,12 +364,129 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 FrameLayout.LayoutParams.MATCH_PARENT
             ))
             addView(gear, FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.END
-            ))
+                touch, touch, Gravity.TOP or Gravity.END
+            ).apply { setMargins(0, inset, inset, 0) })
+            /* Keep it clear of the status and navigation bars, which in
+             * landscape sit exactly where a top-right corner is. */
+            setOnApplyWindowInsetsListener { v, insets ->
+                val sb = insets.systemWindowInsetTop
+                val se = insets.systemWindowInsetRight
+                (gear.layoutParams as FrameLayout.LayoutParams)
+                    .setMargins(0, sb + inset, se + inset, 0)
+                gear.requestLayout()
+                v.onApplyWindowInsets(insets)
+            }
         }
         root.addView(play)
+
+        /* Now that a real container exists, size the picture against
+         * what it actually got rather than against the panel. */
+        val container = content
+        container.post { sizeVideo(container, view, overlay, ack, landscape) }
+    }
+
+    /*
+     * Fits the picture to the space there actually is, keeping its
+     * aspect ratio exactly. Run after layout, because that is the first
+     * moment the usable size -- panel minus system bars -- is known.
+     */
+    private fun sizeVideo(
+        container: View,
+        view: ScreenView,
+        overlay: PadOverlay,
+        ack: BsProtocol.HelloAck,
+        landscape: Boolean
+    ) {
+        val w = container.width
+        val h = container.height
+        if (w <= 0 || h <= 0) return
+
+        var videoW: Int
+        var videoH: Int
+        if (landscape) {
+            val minBand = (w * 0.17f).toInt()
+            videoH = h
+            videoW = h * ack.width / ack.height
+            if (w - videoW < minBand * 2) {
+                videoW = w - minBand * 2
+                videoH = videoW * ack.height / ack.width
+            }
+            overlay.sideBand = ((w - videoW) / 2f)
+        } else {
+            val maxVideoH = (h * 0.55f).toInt()
+            videoW = w
+            videoH = w * ack.height / ack.width
+            if (videoH > maxVideoH) {
+                videoH = maxVideoH
+                videoW = maxVideoH * ack.width / ack.height
+            }
+            overlay.sideBand = 0f
+            (view.parent as? View)?.let { holder ->
+                holder.layoutParams = holder.layoutParams.also { it.height = videoH }
+                holder.requestLayout()
+            }
+        }
+
+        view.layoutParams = (view.layoutParams as FrameLayout.LayoutParams).also {
+            it.width = videoW
+            it.height = videoH
+            it.gravity = Gravity.CENTER
+        }
+        view.requestLayout()
+        title = "${profile.label}  ${ack.width}x${ack.height} \u2192 ${videoW}x${videoH}"
+    }
+
+    /* Saved per console and per orientation: a layout that works with
+     * the phone on its side is not the one that works upright. */
+    private fun posKey(code: Int, landscape: Boolean) =
+        "pos_${profile.console}_${if (landscape) "L" else "P"}_$code"
+
+    private fun savePosition(code: Int, fx: Float, fy: Float, landscape: Boolean) {
+        getSharedPreferences(PREFS, MODE_PRIVATE).edit()
+            .putString(posKey(code, landscape), "$fx,$fy").apply()
+    }
+
+    private fun loadPositions(overlay: PadOverlay, landscape: Boolean) {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val codes = listOf(PadOverlay.DPAD) + (1..15)
+        for (code in codes) {
+            val raw = prefs.getString(posKey(code, landscape), null) ?: continue
+            val parts = raw.split(",")
+            val fx = parts.getOrNull(0)?.toFloatOrNull() ?: continue
+            val fy = parts.getOrNull(1)?.toFloatOrNull() ?: continue
+            overlay.setOverride(code, fx, fy)
+        }
+    }
+
+    private fun clearPositions() {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val edit = prefs.edit()
+        for (land in listOf(true, false))
+            for (code in listOf(PadOverlay.DPAD) + (1..15))
+                edit.remove(posKey(code, land))
+        edit.apply()
+        pad?.clearOverrides()
+    }
+
+    /*
+     * Immersive, and sticky: a swipe brings the bars back for a moment
+     * and they leave again on their own. Non-sticky immersive would put
+     * the navigation bar back permanently the first time a thumb strayed
+     * near the edge -- which, with controls along that edge, is
+     * constantly.
+     */
+    private fun applyFullscreen() {
+        @Suppress("DEPRECATION")
+        window.decorView.systemUiVisibility = if (fullscreen) {
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+                View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_FULLSCREEN or
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
+                View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
+                View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+        } else {
+            View.SYSTEM_UI_FLAG_VISIBLE
+        }
     }
 
     /*
@@ -354,7 +501,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
      */
     private fun showSettings() {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val pad = (resources.displayMetrics.density * 16).toInt()
+        val gap = (resources.displayMetrics.density * 16).toInt()
 
         val hostEdit = EditText(this).apply {
             hint = "server address"
@@ -373,23 +520,69 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             setSelection(Quality.entries.indexOf(quality))
         }
 
+        val sizeLabel = TextView(this).apply {
+            text = "Button size  ${(buttonScale * 100).toInt()}%"
+            setPadding(0, gap, 0, 0)
+        }
+        /* 50 to 150 percent in one-percent steps, offset because a
+         * SeekBar starts at zero. */
+        val sizeBar = SeekBar(this).apply {
+            max = 100
+            progress = ((buttonScale - 0.5f) * 100).toInt().coerceIn(0, 100)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    val scale = 0.5f + value / 100f
+                    sizeLabel.text = "Button size  ${(scale * 100).toInt()}%"
+                    /* Live, so the size can be judged against a thumb
+                     * rather than guessed from a number. */
+                    pad?.buttonScale = scale
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+
+        val moveBox = CheckBox(this).apply {
+            text = "Move buttons  (drag them where your thumbs are)"
+            isChecked = pad?.editMode == true
+        }
+        val fullBox = CheckBox(this).apply {
+            text = "Fullscreen"
+            isChecked = fullscreen
+        }
+
         val body = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, 0)
+            setPadding(gap, gap, gap, 0)
             addView(TextView(this@MainActivity).apply { text = "Server" })
             addView(hostEdit)
             addView(portEdit)
             addView(TextView(this@MainActivity).apply {
                 text = "Stream quality"
-                setPadding(0, pad, 0, 0)
+                setPadding(0, gap, 0, 0)
             })
             addView(qualitySpinner)
+            addView(sizeLabel)
+            addView(sizeBar)
+            addView(moveBox)
+            addView(fullBox)
         }
 
         AlertDialog.Builder(this)
             .setTitle("Settings")
             .setView(body)
             .setPositiveButton("Apply") { _, _ ->
+                buttonScale = 0.5f + sizeBar.progress / 100f
+                prefs.edit().putFloat("pad_scale", buttonScale).apply()
+                pad?.buttonScale = buttonScale
+                pad?.editMode = moveBox.isChecked
+
+                if (fullBox.isChecked != fullscreen) {
+                    fullscreen = fullBox.isChecked
+                    prefs.edit().putBoolean("fullscreen", fullscreen).apply()
+                    applyFullscreen()
+                }
+
                 val newQuality = Quality.entries[qualitySpinner.selectedItemPosition]
                 val newHost = hostEdit.text.toString().trim()
                 val newPort = portEdit.text.toString().trim().toIntOrNull()
@@ -412,8 +605,11 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                     client?.stop()
                 }
             }
-            .setNegativeButton("Cancel", null)
-            .setNeutralButton("Disconnect") { _, _ -> client?.stop() }
+            .setNegativeButton("Cancel") { _, _ ->
+                /* Undo the live preview of the size slider. */
+                pad?.buttonScale = buttonScale
+            }
+            .setNeutralButton("Reset layout") { _, _ -> clearPositions() }
             .show()
     }
 
@@ -440,6 +636,13 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         surfaceReady = false
         decoder?.release()
         decoder = null
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        /* A dialog or the notification shade puts the bars back; this
+         * takes them away again once they are gone. */
+        if (hasFocus) applyFullscreen()
     }
 
     override fun onDestroy() {

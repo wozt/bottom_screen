@@ -259,7 +259,8 @@ int bs_send_msg(BsConn *conn, uint8_t type,
     return 0;
 }
 
-long bs_recv_msg(BsConn *conn, uint8_t *type, void *buf, size_t bufcap)
+int bs_recv_msg(BsConn *conn, uint8_t *type, void *buf, size_t bufcap,
+                size_t *out_len)
 {
     if (!conn)
         return -1;
@@ -267,7 +268,7 @@ long bs_recv_msg(BsConn *conn, uint8_t *type, void *buf, size_t bufcap)
     BsMsgHeader h;
     int rc = bs_read_exact(conn, &h, sizeof(h));
     if (rc != 0)
-        return rc > 0 ? 0 : -1;
+        return rc;
 
     if (h.payload_size > BS_MAX_PAYLOAD || h.payload_size > bufcap)
         return -1;
@@ -275,10 +276,12 @@ long bs_recv_msg(BsConn *conn, uint8_t *type, void *buf, size_t bufcap)
     if (h.payload_size > 0) {
         rc = bs_read_exact(conn, buf, h.payload_size);
         if (rc != 0)
-            return rc > 0 ? 0 : -1;
+            return rc;
     }
 
     if (type)
         *type = h.type;
-    return (long)h.payload_size;
+    if (out_len)
+        *out_len = h.payload_size;
+    return 0;
 }

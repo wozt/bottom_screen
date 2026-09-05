@@ -4,47 +4,80 @@ import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.PointF
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
 import kotlin.math.hypot
 
 /**
- * The on-screen buttons.
+ * The on-screen controls.
  *
- * Multitouch throughout, and every control tracks which pointer id is
- * holding it. Tracking pressed/not-pressed alone breaks the moment two
- * thumbs are down: lifting one would release a button the other is still
- * on. That is the difference between a pad you can play with and a pad
- * that fights you.
+ * Multitouch throughout, and every control tracks which pointer id holds
+ * it. Tracking pressed/not-pressed alone breaks the moment two thumbs
+ * are down: lifting one would release a button the other is still on.
  *
  * The d-pad reports real diagonals -- a finger between up and right
- * sends both -- because the alternative is a d-pad that cannot walk
- * diagonally, which every DS game asks for.
+ * sends both -- because a d-pad that cannot walk diagonally is useless
+ * for most of what a DS asks of it.
+ *
+ * Three things are the person's to decide, because no default fits every
+ * hand or every phone: how big the controls are, where they sit, and
+ * whether they are being played or being arranged. The first two are
+ * remembered per console and per orientation, since a layout that works
+ * in landscape is not the one that works in portrait.
  */
 class PadOverlay(context: Context) : View(context) {
 
     var onButton: ((code: Int, pressed: Boolean) -> Unit)? = null
 
+    /** A control was dragged to a new home. Coordinates are fractions of
+     *  the view, so they survive a different screen or a rotation. */
+    var onMoved: ((code: Int, fx: Float, fy: Float) -> Unit)? = null
+
+    /** Long press outside any control: the way to the settings when the
+     *  corner button is awkward to reach with a thumb. */
+    var onLongPress: (() -> Unit)? = null
+
     var profile: ConsoleProfile = ConsoleProfile.DS
+        set(value) { field = value; layoutControls(); invalidate() }
+
+    /** Width of the band beside the picture in landscape; 0 = portrait. */
+    var sideBand: Float = 0f
+        set(value) { field = value; layoutControls(); invalidate() }
+
+    /** 1.0 is the default size. Smaller thumbs, bigger phones, personal
+     *  taste -- there is no single right answer, so it is a setting. */
+    var buttonScale: Float = 1f
+        set(value) { field = value; layoutControls(); invalidate() }
+
+    /** Space kept clear at the top for the settings button, which lives
+     *  in that corner and would otherwise sit on top of a shoulder. */
+    var topReserve: Float = 0f
+        set(value) { field = value; layoutControls(); invalidate() }
+
+    /** In edit mode a drag moves a control instead of pressing it. */
+    var editMode: Boolean = false
         set(value) {
             field = value
-            layoutControls()
+            releaseEverything()
             invalidate()
         }
 
-    /*
-     * In landscape the picture sits in the middle and the controls go
-     * either side of it, the way they do on the console itself. This is
-     * how wide each side band is; 0 means portrait, where the picture is
-     * above and the controls have the whole width below it.
-     */
-    var sideBand: Float = 0f
-        set(value) {
-            field = value
-            layoutControls()
-            invalidate()
-        }
+    /** Where the person put things, as fractions of the view. */
+    private val overrides = HashMap<Int, PointF>()
+
+    fun setOverride(code: Int, fx: Float, fy: Float) {
+        overrides[code] = PointF(fx, fy)
+        layoutControls()
+        invalidate()
+    }
+
+    fun clearOverrides() {
+        overrides.clear()
+        layoutControls()
+        invalidate()
+    }
 
     private class Control(
         val code: Int,
@@ -58,12 +91,20 @@ class PadOverlay(context: Context) : View(context) {
 
     private val controls = mutableListOf<Control>()
 
-    /* The d-pad is one control that yields four codes, not four
-     * controls: a finger placed between two directions has to produce
-     * both, and four separate rectangles cannot say that. */
+    /* The d-pad is one control yielding four codes, not four controls: a
+     * finger between two directions has to produce both, and four
+     * separate rectangles cannot say that. It needs an id of its own for
+     * the saved positions; the button codes start at 1. */
     private val dpadRect = RectF()
     private var dpadPointer = -1
     private val dpadHeld = HashSet<Int>()
+
+    private var dragging: Int? = null
+    private var dragDx = 0f
+    private var dragDy = 0f
+    private var pressStart = 0L
+    private var pressX = 0f
+    private var pressY = 0f
 
     private val fill = Paint(Paint.ANTI_ALIAS_FLAG)
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -80,225 +121,249 @@ class PadOverlay(context: Context) : View(context) {
         layoutControls()
     }
 
-    /*
-     * Three bands, so nothing can land on top of anything else.
-     *
-     *   top     shoulders
-     *   middle  d-pad on the left, face buttons on the right
-     *   bottom  SELECT and START
-     *
-     * The first version placed the shoulders at the top margin and
-     * everything else against the bottom, which on a tall phone left a
-     * hole in the middle and stacked B on START and Y on the d-pad. The
-     * bands are measured from the height that is actually available
-     * rather than from fixed offsets.
-     */
+    private fun unit(): Float {
+        val h = height.toFloat()
+        val base = if (sideBand > 0f) minOf(sideBand / 3.2f, h / 6.5f)
+                   else minOf(width.toFloat(), h * 0.55f) * 0.13f
+        return base * buttonScale
+    }
+
     private fun layoutControls() {
         controls.clear()
         val w = width.toFloat()
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
-        if (sideBand > 0f) {
-            layoutBeside(w, h)
-            return
-        }
 
-        val unit = minOf(w, h * 0.55f) * 0.16f
-        val margin = unit * 0.5f
-
-        val shoulderH = unit * 0.8f
-        val menuH = unit * 0.7f
-        val topBand = margin + shoulderH
-        val bottomBand = h - margin - menuH
-        /* Where the thumbs sit: the middle of what is left once the
-         * shoulders and the menu row have taken theirs. */
-        val midY = (topBand + bottomBand) / 2f
-
-        // --- shoulders, across the top
-        val sw = unit * 1.6f
-        val left = profile.shoulders.filter {
-            it.code == BsProtocol.BTN_L || it.code == BsProtocol.BTN_ZL
-        }
-        val right = profile.shoulders.filter {
-            it.code == BsProtocol.BTN_R || it.code == BsProtocol.BTN_ZR
-        }
-        left.forEachIndexed { i, b ->
-            val x = margin + i * (sw + margin)
-            controls.add(Control(b.code, b.label, RectF(x, margin, x + sw, margin + shoulderH), false))
-        }
-        right.forEachIndexed { i, b ->
-            val x = w - margin - sw - i * (sw + margin)
-            controls.add(Control(b.code, b.label, RectF(x, margin, x + sw, margin + shoulderH), false))
-        }
-
-        // --- d-pad, middle left
-        val dpadSize = unit * 3.0f
-        dpadRect.set(margin, midY - dpadSize / 2f, margin + dpadSize, midY + dpadSize / 2f)
-
-        // --- face buttons, middle right, in the diamond these machines
-        //     all use: Y left, A right, X top, B bottom.
-        val r = unit * 0.66f
-        val spread = unit * 1.25f
-        val cx = w - margin - spread - r
-        val cy = midY
-        fun face(code: Int, label: String, dx: Float, dy: Float) {
-            controls.add(
-                Control(code, label,
-                    RectF(cx + dx - r, cy + dy - r, cx + dx + r, cy + dy + r), true)
-            )
-        }
-        for (b in profile.faceButtons) {
-            when (b.code) {
-                BsProtocol.BTN_A -> face(b.code, b.label, spread, 0f)
-                BsProtocol.BTN_B -> face(b.code, b.label, 0f, spread)
-                BsProtocol.BTN_X -> face(b.code, b.label, 0f, -spread)
-                BsProtocol.BTN_Y -> face(b.code, b.label, -spread, 0f)
-            }
-        }
-
-        // --- SELECT and START, centred along the bottom
-        val mw = unit * 1.9f
-        val gap = margin
-        val total = profile.menuButtons.size * mw + (profile.menuButtons.size - 1) * gap
-        var mx = (w - total) / 2f
-        for (b in profile.menuButtons) {
-            controls.add(Control(b.code, b.label, RectF(mx, bottomBand, mx + mw, bottomBand + menuH), false))
-            mx += mw + gap
-        }
-
-        text.textSize = unit * 0.40f
+        if (sideBand > 0f) layoutBeside(w, h) else layoutBelow(w, h)
+        applyOverrides(w, h)
+        text.textSize = unit() * 0.42f
     }
 
-    /*
-     * Landscape: one band down each side of the picture.
-     *
-     *   left    L on top, d-pad in the middle, SELECT below
-     *   right   R on top, face buttons in the middle, START below
-     *
-     * Which is where they are on a DS, so a thumb goes where it expects
-     * to rather than where a phone layout happened to put them.
-     */
-    private fun layoutBeside(w: Float, h: Float) {
-        val band = sideBand
-        val unit = minOf(band / 2.7f, h / 5.5f)
-        val margin = unit * 0.42f
+    /* Portrait: three bands down the screen -- shoulders, then d-pad and
+     * face buttons, then the menu row. Fixed offsets put a hole in the
+     * middle of a tall phone and stacked B on START. */
+    private fun layoutBelow(w: Float, h: Float) {
+        val u = unit()
+        val margin = u * 0.55f
+        val shoulderH = u * 0.85f
+        val menuH = u * 0.75f
+        val top = margin + topReserve
+        val midY = (top + shoulderH + (h - margin - menuH)) / 2f
 
-        val shoulderH = unit * 0.75f
-        val menuH = unit * 0.65f
+        addShoulders(w, margin, top, u * 1.8f, shoulderH, false)
+
+        val dpadSize = u * 3.0f
+        dpadRect.set(margin, midY - dpadSize / 2f, margin + dpadSize, midY + dpadSize / 2f)
+
+        addFaceDiamond(w - margin - u * 1.3f - u * 0.7f, midY, u)
+
+        val mw = u * 2.0f
+        val total = profile.menuButtons.size * mw + (profile.menuButtons.size - 1) * margin
+        var mx = (w - total) / 2f
+        for (b in profile.menuButtons) {
+            controls.add(Control(b.code, b.label,
+                RectF(mx, h - margin - menuH, mx + mw, h - margin), false))
+            mx += mw + margin
+        }
+    }
+
+    /* Landscape: a band down each side of the picture, which is where a
+     * console keeps them, so a thumb goes where it expects to. */
+    private fun layoutBeside(w: Float, h: Float) {
+        val u = unit()
+        val band = sideBand
+        val margin = u * 0.45f
+        val shoulderH = u * 0.8f
+        val menuH = u * 0.7f
         val midY = h / 2f
 
-        val sw = minOf(unit * 1.7f, band - margin * 2f)
-        val leftShoulders = profile.shoulders.filter {
-            it.code == BsProtocol.BTN_L || it.code == BsProtocol.BTN_ZL
-        }
-        val rightShoulders = profile.shoulders.filter {
-            it.code == BsProtocol.BTN_R || it.code == BsProtocol.BTN_ZR
-        }
-        leftShoulders.forEachIndexed { i, b ->
-            val y = margin + i * (shoulderH + margin * 0.6f)
-            controls.add(Control(b.code, b.label,
-                RectF(margin, y, margin + sw, y + shoulderH), false))
-        }
-        rightShoulders.forEachIndexed { i, b ->
-            val y = margin + i * (shoulderH + margin * 0.6f)
-            controls.add(Control(b.code, b.label,
-                RectF(w - margin - sw, y, w - margin, y + shoulderH), false))
-        }
+        addShoulders(w, margin, margin + topReserve,
+                     minOf(u * 1.8f, band - margin * 2f), shoulderH, true)
 
-        val dpadSize = minOf(unit * 2.8f, band - margin * 2f)
+        val dpadSize = minOf(u * 2.9f, band - margin * 2f)
         val dpadCx = band / 2f
         dpadRect.set(dpadCx - dpadSize / 2f, midY - dpadSize / 2f,
                      dpadCx + dpadSize / 2f, midY + dpadSize / 2f)
 
-        val r = unit * 0.6f
-        val spread = unit * 1.15f
-        val cx = w - band / 2f
-        fun face(code: Int, label: String, dx: Float, dy: Float) {
-            controls.add(Control(code, label,
-                RectF(cx + dx - r, midY + dy - r, cx + dx + r, midY + dy + r), true))
-        }
-        for (b in profile.faceButtons) {
-            when (b.code) {
-                BsProtocol.BTN_A -> face(b.code, b.label, spread, 0f)
-                BsProtocol.BTN_B -> face(b.code, b.label, 0f, spread)
-                BsProtocol.BTN_X -> face(b.code, b.label, 0f, -spread)
-                BsProtocol.BTN_Y -> face(b.code, b.label, -spread, 0f)
-            }
-        }
+        addFaceDiamond(w - band / 2f, midY, u)
 
-        /* SELECT goes under the d-pad and START under the face buttons,
-         * one per band, rather than both crowding one side. */
-        val mw = minOf(unit * 1.9f, band - margin * 2f)
+        val mw = minOf(u * 2.0f, band - margin * 2f)
         profile.menuButtons.forEachIndexed { i, b ->
             val centre = if (i == 0) band / 2f else w - band / 2f
             controls.add(Control(b.code, b.label,
                 RectF(centre - mw / 2f, h - margin - menuH,
                       centre + mw / 2f, h - margin), false))
         }
+    }
 
-        text.textSize = unit * 0.38f
+    private fun addShoulders(
+        w: Float, x0: Float, y0: Float, sw: Float, sh: Float, stacked: Boolean
+    ) {
+        val left = profile.shoulders.filter {
+            it.code == BsProtocol.BTN_L || it.code == BsProtocol.BTN_ZL
+        }
+        val right = profile.shoulders.filter {
+            it.code == BsProtocol.BTN_R || it.code == BsProtocol.BTN_ZR
+        }
+        val step = if (stacked) sh + y0 * 0.7f else sw + x0
+        left.forEachIndexed { i, b ->
+            val x = if (stacked) x0 else x0 + i * step
+            val y = if (stacked) y0 + i * step else y0
+            controls.add(Control(b.code, b.label, RectF(x, y, x + sw, y + sh), false))
+        }
+        right.forEachIndexed { i, b ->
+            val x = if (stacked) w - x0 - sw else w - x0 - sw - i * step
+            val y = if (stacked) y0 + i * step else y0
+            controls.add(Control(b.code, b.label, RectF(x, y, x + sw, y + sh), false))
+        }
+    }
+
+    /* Y left, A right, X top, B bottom -- the diamond all three machines
+     * use. */
+    private fun addFaceDiamond(cx: Float, cy: Float, u: Float) {
+        val r = u * 0.62f
+        val spread = u * 1.2f
+        fun face(code: Int, label: String, dx: Float, dy: Float) {
+            controls.add(Control(code, label,
+                RectF(cx + dx - r, cy + dy - r, cx + dx + r, cy + dy + r), true))
+        }
+        for (b in profile.faceButtons) {
+            when (b.code) {
+                BsProtocol.BTN_A -> face(b.code, b.label, spread, 0f)
+                BsProtocol.BTN_B -> face(b.code, b.label, 0f, spread)
+                BsProtocol.BTN_X -> face(b.code, b.label, 0f, -spread)
+                BsProtocol.BTN_Y -> face(b.code, b.label, -spread, 0f)
+            }
+        }
+    }
+
+    private fun applyOverrides(w: Float, h: Float) {
+        overrides[DPAD]?.let { recentre(dpadRect, it.x * w, it.y * h) }
+        for (c in controls) overrides[c.code]?.let { recentre(c.rect, it.x * w, it.y * h) }
+    }
+
+    private fun recentre(r: RectF, cx: Float, cy: Float) {
+        val hw = r.width() / 2f
+        val hh = r.height() / 2f
+        r.set(cx - hw, cy - hh, cx + hw, cy + hh)
     }
 
     override fun onDraw(canvas: Canvas) {
-        val unit = if (sideBand > 0f) minOf(sideBand / 2.7f, height / 5.5f)
-                   else minOf(width.toFloat(), height * 0.55f) * 0.16f
+        val u = unit()
 
-        // D-pad
         val cx = dpadRect.centerX()
         val cy = dpadRect.centerY()
         val arm = dpadRect.width() / 3f
-        fill.color = if (dpadHeld.isNotEmpty()) HELD else IDLE
-        stroke.color = EDGE
+        fill.color = if (dpadHeld.isNotEmpty()) HELD else idle()
+        stroke.color = edge()
         canvas.drawRect(cx - arm / 2f, dpadRect.top, cx + arm / 2f, dpadRect.bottom, fill)
         canvas.drawRect(dpadRect.left, cy - arm / 2f, dpadRect.right, cy + arm / 2f, fill)
         canvas.drawRect(cx - arm / 2f, dpadRect.top, cx + arm / 2f, dpadRect.bottom, stroke)
         canvas.drawRect(dpadRect.left, cy - arm / 2f, dpadRect.right, cy + arm / 2f, stroke)
 
         for (c in controls) {
-            fill.color = if (c.pressed) HELD else IDLE
-            stroke.color = EDGE
+            fill.color = if (c.pressed) HELD else idle()
+            stroke.color = edge()
             if (c.round) {
                 val r = c.rect.width() / 2f
                 canvas.drawCircle(c.rect.centerX(), c.rect.centerY(), r, fill)
                 canvas.drawCircle(c.rect.centerX(), c.rect.centerY(), r, stroke)
             } else {
-                val r = unit * 0.18f
+                val r = u * 0.18f
                 canvas.drawRoundRect(c.rect, r, r, fill)
                 canvas.drawRoundRect(c.rect, r, r, stroke)
             }
-            canvas.drawText(
-                c.label, c.rect.centerX(),
-                c.rect.centerY() - (text.descent() + text.ascent()) / 2f, text
-            )
+            canvas.drawText(c.label, c.rect.centerX(),
+                c.rect.centerY() - (text.descent() + text.ascent()) / 2f, text)
         }
     }
 
+    /* Edit mode brightens everything, so it is obvious at a glance that a
+     * drag will move a button rather than press it. */
+    private fun idle() = if (editMode) 0x55FFFFFF else 0x30FFFFFF
+    private fun edge() = if (editMode) 0xB0FFFFFF.toInt() else 0x60FFFFFF
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (editMode) return editTouch(event)
+
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 val i = event.actionIndex
-                press(event.getPointerId(i), event.getX(i), event.getY(i))
+                pressStart = System.currentTimeMillis()
+                pressX = event.getX(i)
+                pressY = event.getY(i)
+                press(event.getPointerId(i), pressX, pressY)
             }
             MotionEvent.ACTION_MOVE -> {
                 for (i in 0 until event.pointerCount) {
-                    val id = event.getPointerId(i)
-                    if (id == dpadPointer) updateDpad(event.getX(i), event.getY(i))
+                    if (event.getPointerId(i) == dpadPointer)
+                        updateDpad(event.getX(i), event.getY(i))
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
-                release(event.getPointerId(event.actionIndex))
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                for (c in controls) if (c.pressed) {
-                    c.pointerId = -1
-                    onButton?.invoke(c.code, false)
+                val i = event.actionIndex
+                /* A long press on bare background is the other way into
+                 * the settings, for when the corner button is not where
+                 * a thumb wants to be. */
+                if (event.actionMasked == MotionEvent.ACTION_UP &&
+                    System.currentTimeMillis() - pressStart > 600 &&
+                    hypot(event.getX(i) - pressX, event.getY(i) - pressY) < 40f &&
+                    hitTest(pressX, pressY) == null && !nearDpad(pressX, pressY)
+                ) {
+                    onLongPress?.invoke()
                 }
-                clearDpad()
+                release(event.getPointerId(i))
+            }
+            MotionEvent.ACTION_CANCEL -> releaseEverything()
+        }
+        invalidate()
+        return true
+    }
+
+    private fun editTouch(event: MotionEvent): Boolean {
+        val x = event.getX(0)
+        val y = event.getY(0)
+        when (event.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                val hit = hitTest(x, y)
+                if (hit != null) {
+                    dragging = hit.code
+                    dragDx = x - hit.rect.centerX()
+                    dragDy = y - hit.rect.centerY()
+                } else if (nearDpad(x, y)) {
+                    dragging = DPAD
+                    dragDx = x - dpadRect.centerX()
+                    dragDy = y - dpadRect.centerY()
+                }
+            }
+            MotionEvent.ACTION_MOVE -> {
+                val code = dragging ?: return true
+                val cx = (x - dragDx).coerceIn(0f, width.toFloat())
+                val cy = (y - dragDy).coerceIn(0f, height.toFloat())
+                if (code == DPAD) recentre(dpadRect, cx, cy)
+                else controls.firstOrNull { it.code == code }?.let { recentre(it.rect, cx, cy) }
+            }
+            MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                val code = dragging
+                dragging = null
+                if (code != null && width > 0 && height > 0) {
+                    val r = if (code == DPAD) dpadRect
+                            else controls.firstOrNull { it.code == code }?.rect
+                    if (r != null) {
+                        val fx = r.centerX() / width
+                        val fy = r.centerY() / height
+                        overrides[code] = PointF(fx, fy)
+                        onMoved?.invoke(code, fx, fy)
+                    }
+                }
             }
         }
         invalidate()
         return true
     }
+
+    private fun hitTest(x: Float, y: Float): Control? =
+        controls.firstOrNull { it.rect.contains(x, y) }
 
     private fun press(pointerId: Int, x: Float, y: Float) {
         if (dpadRect.contains(x, y) || nearDpad(x, y)) {
@@ -316,8 +381,8 @@ class PadOverlay(context: Context) : View(context) {
         }
     }
 
-    /* A little slack around the d-pad, because a thumb that slides just
-     * off the edge mid-movement should keep walking, not stop dead. */
+    /* Slack around the d-pad, because a thumb that slides just off the
+     * edge mid-movement should keep walking, not stop dead. */
     private fun nearDpad(x: Float, y: Float): Boolean {
         val r = dpadRect.width() * 0.6f
         return hypot(x - dpadRect.centerX(), y - dpadRect.centerY()) < r
@@ -340,15 +405,11 @@ class PadOverlay(context: Context) : View(context) {
         dpadHeld.addAll(wanted)
     }
 
-    private fun clearDpad() {
-        for (code in dpadHeld) onButton?.invoke(code, false)
-        dpadHeld.clear()
-        dpadPointer = -1
-    }
-
     private fun release(pointerId: Int) {
         if (pointerId == dpadPointer) {
-            clearDpad()
+            for (code in dpadHeld) onButton?.invoke(code, false)
+            dpadHeld.clear()
+            dpadPointer = -1
             return
         }
         for (c in controls) {
@@ -359,9 +420,20 @@ class PadOverlay(context: Context) : View(context) {
         }
     }
 
+    private fun releaseEverything() {
+        for (c in controls) if (c.pressed) {
+            c.pointerId = -1
+            onButton?.invoke(c.code, false)
+        }
+        for (code in dpadHeld) onButton?.invoke(code, false)
+        dpadHeld.clear()
+        dpadPointer = -1
+        dragging = null
+    }
+
     companion object {
-        private const val IDLE = 0x30FFFFFF
+        /** The d-pad's id for saved positions; button codes start at 1. */
+        const val DPAD = 0
         private const val HELD = 0x90FFFFFF.toInt()
-        private const val EDGE = 0x60FFFFFF
     }
 }

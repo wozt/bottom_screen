@@ -57,11 +57,11 @@ static void *input_thread(void *arg)
 
     while (!a->srv->stop && !a->gone) {
         uint8_t type = 0;
-        long n = bs_recv_msg(a->conn, &type, buf, sizeof(buf));
-        if (n <= 0)
+        size_t n = 0;
+        if (bs_recv_msg(a->conn, &type, buf, sizeof(buf), &n) != 0)
             break;
 
-        if (type == BS_MSG_INPUT && (size_t)n >= sizeof(BsInputEvent)) {
+        if (type == BS_MSG_INPUT && n >= sizeof(BsInputEvent)) {
             BsInputEvent ev;
             memcpy(&ev, buf, sizeof(ev));
             switch (ev.type) {
@@ -88,7 +88,7 @@ static void *input_thread(void *arg)
             bs_send_msg(a->conn, BS_MSG_PONG, NULL, 0, NULL, 0);
         } else if (type == BS_MSG_REQUEST_KEYFRAME) {
             bs_encoder_request_keyframe(a->srv->enc);
-        } else if (type == BS_MSG_SET_QUALITY && (size_t)n >= sizeof(BsQuality)) {
+        } else if (type == BS_MSG_SET_QUALITY && n >= sizeof(BsQuality)) {
             BsQuality q;
             memcpy(&q, buf, sizeof(q));
             a->srv->pending_bitrate = (int)q.bitrate;

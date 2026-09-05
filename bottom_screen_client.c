@@ -274,18 +274,18 @@ int main(int argc, char **argv)
         int pr = poll(&pfd, 1, 4);
         if (pr > 0 && (pfd.revents & POLLIN)) {
             uint8_t type = 0;
-            long n = bs_recv_msg(conn, &type, buf, BS_MAX_PAYLOAD);
-            if (n <= 0) {
+            size_t n = 0;
+            if (bs_recv_msg(conn, &type, buf, BS_MAX_PAYLOAD, &n) != 0) {
                 printf("server closed the connection\n");
                 break;
             }
-            if (type == BS_MSG_VIDEO && (size_t)n > sizeof(BsVideoHeader)) {
+            if (type == BS_MSG_VIDEO && n > sizeof(BsVideoHeader)) {
                 BsVideoHeader vh;
                 memcpy(&vh, buf, sizeof(vh));
 
                 BsDecodedFrame f;
                 int got = bs_decoder_decode(dec, buf + sizeof(vh),
-                                            (size_t)n - sizeof(vh), &f);
+                                            n - sizeof(vh), &f);
                 if (got == 1) {
                     SDL_UpdateYUVTexture(tex, NULL,
                         f.y, f.y_stride, f.u, f.u_stride, f.v, f.v_stride);

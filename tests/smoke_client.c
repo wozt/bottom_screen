@@ -2,6 +2,8 @@
 #include "bs_net.h"
 #include "bs_protocol.h"
 
+#define BS_MSG_HEADER_LEN (sizeof(BsMsgHeader))
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -113,10 +115,11 @@ int main(int argc, char **argv)
 
     while (decoded < want_frames) {
         uint8_t type = 0;
-        long n = bs_recv_msg(conn, &type, buf, BS_MAX_PAYLOAD);
-        if (n <= 0) return fail("stream ended early");
+        size_t n = 0;
+        if (bs_recv_msg(conn, &type, buf, BS_MAX_PAYLOAD, &n) != 0)
+            return fail("stream ended early");
         if (type != BS_MSG_VIDEO) continue;
-        if ((size_t)n <= sizeof(BsVideoHeader)) return fail("truncated video message");
+        if (n <= sizeof(BsVideoHeader)) return fail("truncated video message");
 
         BsVideoHeader vh;
         memcpy(&vh, buf, sizeof(vh));
@@ -127,7 +130,7 @@ int main(int argc, char **argv)
 
         BsDecodedFrame f;
         int got = bs_decoder_decode(dec, buf + sizeof(vh),
-                                    (size_t)n - sizeof(vh), &f);
+                                    n - sizeof(vh), &f);
         if (got < 0) return fail("decode error");
         if (got == 1) {
             if (f.width != exp_w || f.height != exp_h)
@@ -170,6 +173,18 @@ int main(int argc, char **argv)
              * forever -- which is exactly what the DS firmware's warning
              * screen does.
              */
+            /* The Android client asks for a keyframe as soon as its
+             * decoder exists, so the test has to exercise that path too
+             * -- it was the one difference between the two clients when
+             * the phone's connection kept dying. */
+            if (decoded == 5) {
+                uint8_t kf[BS_MSG_HEADER_LEN];
+                memset(kf, 0, sizeof(kf));
+                if (bs_send_msg(conn, BS_MSG_REQUEST_KEYFRAME, NULL, 0, NULL, 0) < 0)
+                    return fail("could not request a keyframe");
+                (void)kf;
+            }
+
             int phase = decoded % 40;
             if (phase == 20 || phase == 28) {
                 BsInputEvent ev;
