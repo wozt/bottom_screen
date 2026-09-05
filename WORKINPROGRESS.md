@@ -127,10 +127,20 @@ booléen `padView` qui traverse tout le pipeline de rendu.
 | Validité du tactile | `src/Cafe/OS/libs/vpad/vpad.cpp:237` — `tpData.validity` |
 | État tactile du pad | `src/input/InputManager.h:90` — `MouseInfo m_pad_touch` (position + `left_down`), lu via `get_mouse_position(bool pad_window)` |
 
-Le point d'injection tactile le plus probable est `m_pad_touch` :
-alimenter cette structure depuis le réseau au lieu de la souris de la
-fenêtre GamePad. **Non vérifié** — le chemin complet entre `m_pad_touch`
-et le remplissage de `tpData` dans `VPADRead` reste à tracer.
+Chemin tactile **vérifié le 2026-09-05**, il n'est plus supposé :
+
+`src/gui/wxgui/PadViewFrame.cpp:180-185` est ce qui alimente le tactile.
+La fenêtre GamePad y écrit, sous le mutex de la structure, la position
+physique du pointeur, `left_down`, et `left_down_toggle`. En face,
+`InputManager::get_mouse_position(bool pad_window)` et
+`get_left_down_mouse_info()` (InputManager.cpp:823 et 837) sont les
+lecteurs.
+
+C'est donc le même schéma que melonDS : écrire dans les champs que le
+frontend remplit déjà, au lieu d'élargir une interface. Le jeu lit
+ensuite via `VPADRead`, et `VPADGetTPCalibratedPoint` convertit depuis
+un espace brut de 0x500 × 0x2d0 — 1280 × 720, la résolution tactile
+native du GamePad, à ne pas confondre avec les 854 × 480 de son écran.
 
 Côté vidéo, `LatteRenderTarget_copyToBackbuffer(texView, true)` ligne
 1010 est le point unique où passe l'image du GamePad. C'est là qu'on
