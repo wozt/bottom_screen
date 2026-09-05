@@ -17,6 +17,7 @@ struct BsServer {
     BsServerConfig cfg;
 
     int       listen_fd;
+    uint16_t  port;          /* the one actually bound, not the one asked for */
     pthread_t thread;
     int       thread_started;
 
@@ -305,8 +306,24 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     if (!srv->enc)
         goto fail;
 
-    uint16_t port = srv->cfg.port ? srv->cfg.port : BS_DEFAULT_PORT;
-    srv->listen_fd = bs_listen(port, err, errlen);
+    /*
+     * Take the next free port rather than refusing to start.
+     *
+     * Three emulators can be running at once, and each wants a server.
+     * Failing because a sibling got there first would mean the second
+     * one silently has no stream, which is a confusing thing to debug
+     * from a phone. The port actually bound is announced, and
+     * bs_server_port reports it.
+     */
+    uint16_t wanted = srv->cfg.port ? srv->cfg.port : BS_DEFAULT_PORT;
+    for (int i = 0; i < 20; i++) {
+        uint16_t try_port = (uint16_t)(wanted + i);
+        srv->listen_fd = bs_listen(try_port, err, errlen);
+        if (srv->listen_fd >= 0) {
+            srv->port = try_port;
+            break;
+        }
+    }
     if (srv->listen_fd < 0)
         goto fail;
 
@@ -319,7 +336,7 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     if (!srv->cfg.quiet)
         printf("bottom_screen: %dx%d @ %d fps, %s, listening on port %u\n",
                srv->info.width, srv->info.height, srv->info.fps,
-               bs_encoder_name(srv->enc), (unsigned)port);
+               bs_encoder_name(srv->enc), (unsigned)srv->port);
     return srv;
 
 fail:
@@ -361,5 +378,6 @@ void bs_server_destroy(BsServer *srv)
     free(srv);
 }
 
+uint16_t bs_server_port(const BsServer *srv) { return srv ? srv->port : 0; }
 int bs_server_has_client(const BsServer *srv) { return srv ? srv->has_client : 0; }
 uint32_t bs_server_frames(const BsServer *srv) { return srv ? srv->frames : 0; }

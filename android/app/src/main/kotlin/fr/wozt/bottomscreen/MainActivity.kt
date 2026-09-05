@@ -50,6 +50,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private var quality = Quality.AUTO
     private var buttonScale = 1f
     private var fullscreen = false
+    private var startInEdit = false
 
     private var frames = 0
     private var lastReport = 0L
@@ -85,6 +86,21 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 portField.setText(it.toString())
             }
             root.post { connect() }
+        }
+
+        /* Development affordances, so a layout or a mode can be checked
+         * with one adb command instead of a sequence of blind taps:
+         *   --ez edit true        start in move-buttons mode
+         *   --ez fullscreen true  start immersive
+         */
+        intent?.let { i ->
+            if (i.getBooleanExtra("fullscreen", false)) {
+                fullscreen = true
+                applyFullscreen()
+            }
+            /* The pad does not exist until a connection brings one, so
+             * this is remembered and applied when it is built. */
+            startInEdit = i.getBooleanExtra("edit", false)
         }
     }
 
@@ -258,6 +274,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             onLongPress = { showSettings() }
         }
         loadPositions(overlay, landscape)
+        if (startInEdit) overlay.editMode = true
         pad = overlay
 
         /*
@@ -448,7 +465,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     private fun loadPositions(overlay: PadOverlay, landscape: Boolean) {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val codes = listOf(PadOverlay.DPAD) + (1..15)
+        val codes = listOf(PadOverlay.DPAD, PadOverlay.FACE) + (1..15)
         for (code in codes) {
             val raw = prefs.getString(posKey(code, landscape), null) ?: continue
             val parts = raw.split(",")
@@ -462,7 +479,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val edit = prefs.edit()
         for (land in listOf(true, false))
-            for (code in listOf(PadOverlay.DPAD) + (1..15))
+            for (code in listOf(PadOverlay.DPAD, PadOverlay.FACE) + (1..15))
                 edit.remove(posKey(code, land))
         edit.apply()
         pad?.clearOverrides()

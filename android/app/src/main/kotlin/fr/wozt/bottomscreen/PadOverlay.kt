@@ -96,6 +96,11 @@ class PadOverlay(context: Context) : View(context) {
      * separate rectangles cannot say that. It needs an id of its own for
      * the saved positions; the button codes start at 1. */
     private val dpadRect = RectF()
+
+    /* The face buttons move as one diamond, never individually. Dragging
+     * A away from B is not a layout anybody wants, and the relationship
+     * between the four is the thing a thumb has learned. */
+    private val faceCentre = PointF()
     private var dpadPointer = -1
     private val dpadHeld = HashSet<Int>()
 
@@ -110,6 +115,10 @@ class PadOverlay(context: Context) : View(context) {
     private val stroke = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
         strokeWidth = 2f
+    }
+    private val frame = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        color = 0xFFFFD400.toInt()
     }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
@@ -221,6 +230,7 @@ class PadOverlay(context: Context) : View(context) {
     /* Y left, A right, X top, B bottom -- the diamond all three machines
      * use. */
     private fun addFaceDiamond(cx: Float, cy: Float, u: Float) {
+        faceCentre.set(cx, cy)
         val r = u * 0.62f
         val spread = u * 1.2f
         fun face(code: Int, label: String, dx: Float, dy: Float) {
@@ -239,7 +249,31 @@ class PadOverlay(context: Context) : View(context) {
 
     private fun applyOverrides(w: Float, h: Float) {
         overrides[DPAD]?.let { recentre(dpadRect, it.x * w, it.y * h) }
-        for (c in controls) overrides[c.code]?.let { recentre(c.rect, it.x * w, it.y * h) }
+        overrides[FACE]?.let { moveFaceTo(it.x * w, it.y * h) }
+        for (c in controls) {
+            if (isFace(c.code)) continue      /* moved as a group, above */
+            overrides[c.code]?.let { recentre(c.rect, it.x * w, it.y * h) }
+        }
+    }
+
+    private fun isFace(code: Int) = code == BsProtocol.BTN_A ||
+        code == BsProtocol.BTN_B || code == BsProtocol.BTN_X || code == BsProtocol.BTN_Y
+
+    private fun moveFaceTo(cx: Float, cy: Float) {
+        val dx = cx - faceCentre.x
+        val dy = cy - faceCentre.y
+        for (c in controls) if (isFace(c.code)) c.rect.offset(dx, dy)
+        faceCentre.set(cx, cy)
+    }
+
+    /* The bounding box of the diamond, for the frame drawn round it in
+     * edit mode -- one frame for the group, not four. */
+    private fun faceBounds(): RectF? {
+        var box: RectF? = null
+        for (c in controls) if (isFace(c.code)) {
+            box = box?.apply { union(c.rect) } ?: RectF(c.rect)
+        }
+        return box
     }
 
     private fun recentre(r: RectF, cx: Float, cy: Float) {
@@ -250,6 +284,7 @@ class PadOverlay(context: Context) : View(context) {
 
     override fun onDraw(canvas: Canvas) {
         val u = unit()
+        val pad = u * 0.22f
 
         val cx = dpadRect.centerX()
         val cy = dpadRect.centerY()
@@ -276,6 +311,26 @@ class PadOverlay(context: Context) : View(context) {
             canvas.drawText(c.label, c.rect.centerX(),
                 c.rect.centerY() - (text.descent() + text.ascent()) / 2f, text)
         }
+
+        if (!editMode) return
+
+        /*
+         * A yellow frame round everything that can be dragged, and one
+         * frame round the whole diamond rather than four.
+         *
+         * Edit mode has to be unmistakable: a person who does not
+         * realise they are in it will press a button, watch it slide,
+         * and conclude the pad is broken.
+         */
+        frame.strokeWidth = maxOf(3f, u * 0.06f)
+        drawFrame(canvas, dpadRect, pad)
+        faceBounds()?.let { drawFrame(canvas, it, pad) }
+        for (c in controls) if (!isFace(c.code)) drawFrame(canvas, c.rect, pad)
+    }
+
+    private fun drawFrame(canvas: Canvas, r: RectF, pad: Float) {
+        val box = RectF(r.left - pad, r.top - pad, r.right + pad, r.bottom + pad)
+        canvas.drawRoundRect(box, pad, pad, frame)
     }
 
     /* Edit mode brightens everything, so it is obvious at a glance that a
@@ -326,7 +381,11 @@ class PadOverlay(context: Context) : View(context) {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 val hit = hitTest(x, y)
-                if (hit != null) {
+                if (hit != null && isFace(hit.code)) {
+                    dragging = FACE
+                    dragDx = x - faceCentre.x
+                    dragDy = y - faceCentre.y
+                } else if (hit != null) {
                     dragging = hit.code
                     dragDx = x - hit.rect.centerX()
                     dragDy = y - hit.rect.centerY()
@@ -340,15 +399,22 @@ class PadOverlay(context: Context) : View(context) {
                 val code = dragging ?: return true
                 val cx = (x - dragDx).coerceIn(0f, width.toFloat())
                 val cy = (y - dragDy).coerceIn(0f, height.toFloat())
-                if (code == DPAD) recentre(dpadRect, cx, cy)
-                else controls.firstOrNull { it.code == code }?.let { recentre(it.rect, cx, cy) }
+                when (code) {
+                    DPAD -> recentre(dpadRect, cx, cy)
+                    FACE -> moveFaceTo(cx, cy)
+                    else -> controls.firstOrNull { it.code == code }
+                        ?.let { recentre(it.rect, cx, cy) }
+                }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val code = dragging
                 dragging = null
                 if (code != null && width > 0 && height > 0) {
-                    val r = if (code == DPAD) dpadRect
-                            else controls.firstOrNull { it.code == code }?.rect
+                    val r = when (code) {
+                        DPAD -> dpadRect
+                        FACE -> RectF(faceCentre.x, faceCentre.y, faceCentre.x, faceCentre.y)
+                        else -> controls.firstOrNull { it.code == code }?.rect
+                    }
                     if (r != null) {
                         val fx = r.centerX() / width
                         val fy = r.centerY() / height
@@ -434,6 +500,10 @@ class PadOverlay(context: Context) : View(context) {
     companion object {
         /** The d-pad's id for saved positions; button codes start at 1. */
         const val DPAD = 0
+
+        /** The face diamond's id. It moves as one, so it saves one
+         *  position rather than four. */
+        const val FACE = -1
         private const val HELD = 0x90FFFFFF.toInt()
     }
 }

@@ -23,6 +23,10 @@
 typedef struct BsServer BsServer;
 
 typedef struct {
+    /* The port to try first. If it is taken the server walks upwards
+     * until it finds a free one, so several emulators can run at once
+     * without being told about each other. bs_server_port reports which
+     * one it settled on. */
     uint16_t    port;       /* 0 = BS_DEFAULT_PORT */
     int         bitrate;    /* 0 = derived from the resolution */
     int         gop;        /* 0 = one keyframe per second */
@@ -39,6 +43,10 @@ void bs_server_stop(BsServer *srv);
 
 /* Stops if still running, then frees. */
 void bs_server_destroy(BsServer *srv);
+
+/* The port the server actually bound, which may not be the one asked
+ * for. 0 before it starts. */
+uint16_t bs_server_port(const BsServer *srv);
 
 /* 1 while a client is connected. */
 int bs_server_has_client(const BsServer *srv);
