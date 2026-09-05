@@ -333,10 +333,17 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     }
     srv->thread_started = 1;
 
+    /*
+     * stderr, not stdout: an emulator's stdout is usually redirected to
+     * a file and block-buffered, so this line would sit unseen in a
+     * buffer for minutes. It matters most exactly when it is surprising
+     * -- the port asked for was taken and the server moved -- and a
+     * message nobody sees is the same as no message.
+     */
     if (!srv->cfg.quiet)
-        printf("bottom_screen: %dx%d @ %d fps, %s, listening on port %u\n",
-               srv->info.width, srv->info.height, srv->info.fps,
-               bs_encoder_name(srv->enc), (unsigned)srv->port);
+        fprintf(stderr, "bottom_screen: %dx%d @ %d fps, %s, listening on port %u\n",
+                srv->info.width, srv->info.height, srv->info.fps,
+                bs_encoder_name(srv->enc), (unsigned)srv->port);
     return srv;
 
 fail:
