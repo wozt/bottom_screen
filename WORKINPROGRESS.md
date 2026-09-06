@@ -1,160 +1,132 @@
-# bottom_screen_server — suivi de travail
+# bottom_screen_server — work log
 
-Streamer l'écran du bas des consoles Nintendo (DS, 3DS, Wii U) depuis les
-émulateurs vers un téléphone Android ou un homebrew Switch 1, avec retour
-des inputs tactiles et boutons virtuels.
+Stream the bottom screen of Nintendo consoles (DS, 3DS, Wii U) out of
+their emulators and onto an Android phone or a Switch 1 homebrew, with
+touch and on-screen buttons travelling back.
 
-Cahier des charges initial : `prompt.md`, gardé hors du dépôt.
-
----
-
-## État (2026-09-04)
-
-Phase 2 terminée. melonDS stream son vrai écran du bas, et le tactile
-envoyé par le réseau pilote la console. Vérifié sur le firmware DS : le
-tap franchit l'écran d'avertissement et arrive au menu.
-
-### Fait
-
-- Miroirs privés créés sur `github.com/wozt` : `melonDS`, `azahar`, `Cemu`.
-- Clones locaux dans `emulators/`, `origin` = miroir privé (SSH),
-  `upstream` = repo officiel (HTTPS).
-- Submodules récupérés (`--depth 1`) : melonDS aucun, azahar 52, Cemu 9.
-- Repérage des API framebuffer et tactile dans les trois émulateurs
-  (voir « Points d'accroche » plus bas).
-- melonDS compilé tel quel sur Debian 13 : 223 cibles, 55 s sur 16 cœurs,
-  aucune erreur. Binaire `emulators/melonDS/build/melonDS`, version 1.1.
-- Phase 1 : serveur, client Linux et test headless écrits en C, zéro
-  warning avec `-Wall -Wextra`. Voir « Phase 1 : mesures » plus bas.
-- Phase 2 : melonDS patché et fonctionnel. Voir « Phase 2 : melonDS ».
-
-### Pas encore commencé
-
-Les clients Android et Switch, UDP, et les deux autres émulateurs.
+The original brief is `prompt.md`, kept out of the repository.
 
 ---
 
-## Décisions arrêtées
+## State
 
-**Pas de capture de fenêtre.** On récupère le framebuffer de l'écran du
-bas directement dans l'émulateur, avant composition. Une capture X11 /
-Wayland ajouterait une copie, une conversion et de la latence, pour un
-résultat moins fiable (fenêtre masquée, changement de layout, etc.).
+Video, touch, buttons, sticks and sound work on all three emulators.
+Internal resolution follows on all three. Four clients can watch at
+once. A GTK launcher sets everything up.
 
-**H.264, pas VP8.** Les deux clients cibles — Android et Switch 1 — ont
-un décodeur H.264 matériel. Le coût d'encodage est négligeable à ces
-résolutions ; c'est le décodage côté client qui compte.
+What is left is in [ROADMAP.md](ROADMAP.md); the two large pieces are
+the Switch homebrew and the web client.
 
-**Miroirs privés, pas de forks.** GitHub interdit qu'un fork d'un repo
-public soit privé. Les trois repos sont donc des copies privées poussées
-manuellement. Conséquence : pas de PR possible vers l'upstream depuis
-ces repos, et la resynchro se fait à la main via le remote `upstream`.
+---
 
-**Résolutions natives, jamais d'étirement.** Le serveur envoie la
-résolution native ; le client peut agrandir par multiples entiers, mais
-le framebuffer décodé reste natif.
+## Settled decisions
 
-| Console | Résolution écran bas |
+**No window capture.** The bottom screen's framebuffer is taken inside
+the emulator, before composition. An X11 or Wayland capture would add a
+copy, a conversion and latency, for a less reliable result — an occluded
+window, a changed layout, and so on.
+
+**H.264, not VP8.** Both target clients — Android and Switch 1 — have a
+hardware H.264 decoder. Encoding costs nothing at these resolutions; it
+is decoding on the client that matters.
+
+**Private mirrors, not forks.** GitHub does not allow a fork of a public
+repository to be private. The three repositories are therefore private
+copies pushed by hand. The consequence is that no pull request upstream
+is possible from them, and resyncing happens manually through the
+`upstream` remote.
+
+**Native resolutions, never stretched.** The server sends the native
+resolution; the client may enlarge it, but the decoded framebuffer stays
+native.
+
+| Console | Bottom screen |
 |---|---|
 | Nintendo DS | 256 × 192 |
 | Nintendo 3DS | 320 × 240 |
 | Wii U GamePad | 854 × 480 |
 
-Vérifié dans `emulators/azahar/src/core/3ds.h:16-19` : l'écran du bas
-de la 3DS fait bien 320×240, c'est celui **du haut** qui fait 400×240.
-Le 400×240 souvent cité pour le tactile est une erreur courante.
+Checked in `emulators/azahar/src/core/3ds.h:16-19`: the 3DS bottom
+screen really is 320×240; it is the **top** one that is 400×240. The
+400×240 often quoted for touch is a common mistake.
 
 ---
 
-## Points d'accroche dans le code
+## Hook points in the code
 
-Repéré par lecture du code, pas encore testé à l'exécution.
+### melonDS — the simplest of the three
 
-### melonDS — le plus simple des trois
-
-Tout est déjà exposé proprement, sans rien à refactoriser.
-
-| Quoi | Où |
+| What | Where |
 |---|---|
-| Framebuffers séparés haut / bas | `src/GPU.h:75` — `GPU::GetFramebuffers(void** top, void** bottom)` |
-| Injection tactile | `src/NDS.h:419` — `NDS::TouchScreen(u16 x, u16 y)` |
-| Relâchement tactile | `src/NDS.h:420` — `NDS::ReleaseScreen()` |
-| Boutons | `src/NDS.h:422` — `NDS::SetKeyMask(u32 mask)` |
-| Boucle où tout est appliqué | `src/frontend/qt_sdl/EmuThread.cpp:258` |
+| Separate top / bottom framebuffers | `src/GPU.h:75` — `GPU::GetFramebuffers(void** top, void** bottom)` |
+| Touch injection | `src/NDS.h:419` — `NDS::TouchScreen(u16 x, u16 y)` |
+| Touch release | `src/NDS.h:420` — `NDS::ReleaseScreen()` |
+| Buttons | `src/NDS.h:422` — `NDS::SetKeyMask(u32 mask)` |
+| The loop where it is all applied | `src/frontend/qt_sdl/EmuThread.cpp:258` |
 
-`GetFramebuffers` renvoie `true` si les framebuffers sont en RAM, `false`
-si le renderer est GPU — dans ce cas les valeurs sont spécifiques au
-renderer (handle de texture OpenGL). Il faudra gérer les deux cas, ou
-forcer le renderer software pour le premier prototype.
+`GetFramebuffers` returns `true` when the framebuffers are in RAM and
+`false` when the renderer is on the GPU — in which case the values are
+renderer-specific. Both cases are handled; see "GPU readback" below.
 
-`EmuThread.cpp:258` montre le modèle exact à suivre : le thread
-d'émulation lit `emuInstance->isTouching` / `touchX` / `touchY` à chaque
-frame. Injecter le tactile réseau revient à écrire dans ces champs
-depuis le serveur — pas besoin de toucher au cœur de l'émulation.
+`EmuThread.cpp:258` shows the pattern to follow: the emulation thread
+reads `emuInstance->isTouching` / `touchX` / `touchY` every frame.
+Injecting network touch means writing those fields from the server — no
+need to touch the emulation core.
 
-### Azahar — bonne base, déjà un readback existant
+### Azahar
 
-| Quoi | Où |
+| What | Where |
 |---|---|
-| Tactile appuyé | `src/core/frontend/emu_window.h:200` — `TouchPressed(x, y)` |
-| Tactile déplacé | `src/core/frontend/emu_window.h:210` — `TouchMoved(x, y)` |
-| Tactile relâché | `src/core/frontend/emu_window.h:203` — `TouchReleased()` |
-| Géométrie des écrans | `src/core/frontend/framebuffer_layout.h:28` — `struct FramebufferLayout` avec `bottom_screen` et `bottom_screen_enabled` |
-| Textures des écrans | `src/video_core/renderer_opengl/renderer_opengl.h:98` — `std::array<ScreenInfo, 3> screen_infos` |
-| Readback GPU déjà écrit | `src/video_core/renderer_opengl/frame_dumper_opengl.h:33` — `FrameDumperOpenGL`, avec PBO et `PresentLoop` |
+| Touch pressed | `src/core/frontend/emu_window.h:200` — `TouchPressed(x, y)` |
+| Touch moved | `src/core/frontend/emu_window.h:210` — `TouchMoved(x, y)` |
+| Touch released | `src/core/frontend/emu_window.h:203` — `TouchReleased()` |
+| Screen geometry | `src/core/frontend/framebuffer_layout.h:28` — `struct FramebufferLayout` with `bottom_screen` and `bottom_screen_enabled` |
+| Screen textures | `src/video_core/renderer_opengl/renderer_opengl.h:98` — `std::array<ScreenInfo, 3> screen_infos` |
+| GPU readback already written | `src/video_core/renderer_opengl/frame_dumper_opengl.h:33` — `FrameDumperOpenGL`, with PBOs and `PresentLoop` |
 
-`FrameDumperOpenGL` est la trouvaille intéressante : Azahar sait déjà
-faire un readback de frames avec des PBO pour l'enregistrement vidéo.
-C'est le modèle à copier — voire à réutiliser — pour extraire l'écran
-du bas sans stall GPU.
+`TouchPressed` takes **framebuffer** coordinates rather than screen
+coordinates, so `FramebufferLayout` does the conversion — usefully, the
+emulator already has it.
 
-`TouchPressed` prend des coordonnées **framebuffer**, pas des
-coordonnées écran : il faudra passer par `FramebufferLayout` pour
-convertir. Bon point, la conversion est déjà faite par l'émulateur.
+### Cemu — the model matches the need exactly
 
-### Cemu — le modèle correspond exactement au besoin
+Cemu already renders the GamePad screen separately from the TV, through
+a plain `padView` boolean that runs through the whole render pipeline.
 
-Cemu rend déjà l'écran GamePad séparément de l'écran TV, via un simple
-booléen `padView` qui traverse tout le pipeline de rendu.
-
-| Quoi | Où |
+| What | Where |
 |---|---|
-| Copie vers le backbuffer | `src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp:865` — `LatteRenderTarget_copyToBackbuffer(textureView, bool isPadView)` |
-| Appel TV vs GamePad | même fichier, lignes 1010 (pad) et 1012 (TV) |
-| Géométrie de la vue | même fichier, ligne 828 — `LatteRenderTarget_getScreenImageArea(..., bool padView)` |
-| Interface renderer | `src/Cafe/HW/Latte/Renderer/Renderer.h:78` — `DrawBackbufferQuad(..., bool padView, ...)` |
-| Lecture VPAD par le jeu | `src/Cafe/OS/libs/vpad/vpad.cpp:220` — `VPADRead()` |
-| Validité du tactile | `src/Cafe/OS/libs/vpad/vpad.cpp:237` — `tpData.validity` |
-| État tactile du pad | `src/input/InputManager.h:90` — `MouseInfo m_pad_touch` (position + `left_down`), lu via `get_mouse_position(bool pad_window)` |
+| Copy to the backbuffer | `src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp:865` — `LatteRenderTarget_copyToBackbuffer(textureView, bool isPadView)` |
+| TV versus GamePad call | same file, lines 1010 (pad) and 1012 (TV) |
+| View geometry | same file, line 828 — `LatteRenderTarget_getScreenImageArea(..., bool padView)` |
+| Renderer interface | `src/Cafe/HW/Latte/Renderer/Renderer.h:78` — `DrawBackbufferQuad(..., bool padView, ...)` |
+| The game reading VPAD | `src/Cafe/OS/libs/vpad/vpad.cpp:220` — `VPADRead()` |
+| Touch validity | `src/Cafe/OS/libs/vpad/vpad.cpp:237` — `tpData.validity` |
+| Pad touch state | `src/input/InputManager.h:90` — `MouseInfo m_pad_touch` (position + `left_down`), read through `get_mouse_position(bool pad_window)` |
 
-Chemin tactile **vérifié le 2026-09-05**, il n'est plus supposé :
+The touch path was **traced on 2026-09-05**, not assumed:
 
-`src/gui/wxgui/PadViewFrame.cpp:180-185` est ce qui alimente le tactile.
-La fenêtre GamePad y écrit, sous le mutex de la structure, la position
-physique du pointeur, `left_down`, et `left_down_toggle`. En face,
-`InputManager::get_mouse_position(bool pad_window)` et
-`get_left_down_mouse_info()` (InputManager.cpp:823 et 837) sont les
-lecteurs.
+`src/gui/wxgui/PadViewFrame.cpp:180-185` is what feeds touch. The
+GamePad window writes the pointer's physical position, `left_down` and
+`left_down_toggle` there, under the structure's mutex. On the other
+side, `InputManager::get_mouse_position(bool pad_window)` and
+`get_left_down_mouse_info()` (InputManager.cpp:823 and 837) are the
+readers.
 
-C'est donc le même schéma que melonDS : écrire dans les champs que le
-frontend remplit déjà, au lieu d'élargir une interface. Le jeu lit
-ensuite via `VPADRead`, et `VPADGetTPCalibratedPoint` convertit depuis
-un espace brut de 0x500 × 0x2d0 — 1280 × 720, la résolution tactile
-native du GamePad, à ne pas confondre avec les 854 × 480 de son écran.
-
-Côté vidéo, `LatteRenderTarget_copyToBackbuffer(texView, true)` ligne
-1010 est le point unique où passe l'image du GamePad. C'est là qu'on
-branche l'encodeur.
+So it is the same shape as melonDS: write into the fields the frontend
+already fills, rather than widening an interface. The game then reads
+through `VPADRead`, and `VPADGetTPCalibratedPoint` converts from a raw
+0x500 × 0x2d0 space — 1280 × 720, the GamePad's native touch resolution,
+not to be confused with its 854 × 480 screen.
 
 ---
 
-## Build sur Debian 13
+## Building on Debian 13
 
-### melonDS — vérifié le 2026-09-04
+### melonDS
 
-Le `BUILD.md` amont ne liste que Ubuntu, Fedora et Arch. Équivalent
-Debian 13 (`libpcap-dev` remplace `libpcap0.8-dev`, qui n'est qu'un
-paquet de transition) :
+Upstream's `BUILD.md` lists only Ubuntu, Fedora and Arch. The Debian 13
+equivalent (`libpcap-dev` replaces `libpcap0.8-dev`, which is only a
+transitional package):
 
 ```bash
 sudo apt install extra-cmake-modules libcurl4-gnutls-dev libpcap-dev \
@@ -168,273 +140,266 @@ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j$(nproc)
 ```
 
-Aucun correctif nécessaire, aucune dépendance hors dépôts Debian
-stable. CMake détecte Wayland 1.23.1 et EGL 1.5 tout seul. `build/`
-est déjà dans le `.gitignore` amont, donc l'arbre reste propre.
+No patches needed, no dependency outside Debian stable. CMake finds
+Wayland 1.23.1 and EGL 1.5 on its own. `build/` is already in upstream's
+`.gitignore`, so the tree stays clean.
 
-Toolchain de référence : cmake 3.31.6, g++ 14.2, ninja, Debian 13.6.
-
-### Azahar et Cemu
-
-Pas encore tentés. Cemu passe par vcpkg (submodule `dependencies/vcpkg`),
-donc son premier build sera nettement plus long.
-
-## Briques réutilisables de capture2cloud
-
-`/home/wozt/dev/capture2cloud` contient déjà l'essentiel du côté client
-et du transport.
-
-| Brique | Fichier | Réutilisation |
-|---|---|---|
-| Protocole binaire natif | `c2s_protocol.h` | base du protocole vidéo + input |
-| Client Switch homebrew | `switch_homebrew/` | squelette du client Switch |
-| Stream Switch | `switch_stream.c`, `switch_stream.h` | transport direct socket, sans WebRTC |
-| App Android native | `android/` | squelette du client Android |
-| Boutons virtuels tactiles | `web/`, `page.html` | logique d'overlay multitouch, d-pad avec diagonales |
-| Remapping manette | `gamepad_bridge.c` | mapping des manettes physiques |
-
-Le chemin « socket + protocole binaire » déjà utilisé pour la Switch et
-Android est exactement ce qu'il faut ici : pas de WebRTC, pas de jitter
-buffer.
+Reference toolchain: cmake 3.31.6, g++ 14.2, ninja, Debian 13.6.
 
 ---
 
-## Phase 1 : mesures
+## Reusable pieces from capture2cloud
 
-Mesuré le 2026-09-04, serveur et client sur la même machine, boucle
-locale, DS 256×192 à 60 fps, `libx264` en `ultrafast` + `zerolatency`.
+`/home/wozt/dev/capture2cloud` already holds most of the client side and
+the transport.
+
+| Piece | File | Reuse |
+|---|---|---|
+| Native binary protocol | `c2s_protocol.h` | basis for the video + input protocol |
+| Switch homebrew client | `switch_homebrew/` | skeleton of the Switch client |
+| Switch stream | `switch_stream.c`, `switch_stream.h` | direct socket transport, no WebRTC |
+| Native Android app | `android/` | skeleton of the Android client |
+| On-screen buttons | `web/`, `page.html` | multitouch overlay logic, d-pad with diagonals |
+| Pad remapping | `gamepad_bridge.c` | mapping physical controllers |
+
+---
+
+## Phase 1: measurements
+
+Measured on 2026-09-04, server and client on the same machine, loopback,
+DS 256×192 at 60 fps, `libx264` in `ultrafast` + `zerolatency`.
 
 | | |
 |---|---|
-| Débit | 0,75 – 0,84 Mbit/s |
-| Cadence | 60,0 fps, stable |
-| Latence pipeline | **0,7 ms** |
+| Bitrate | 0.75 – 0.84 Mbit/s |
+| Frame rate | 60.0 fps, steady |
+| Pipeline latency | **0.7 ms** |
 
-Ce que ce 0,7 ms contient : conversion BGRA→YUV, encodage, transport TCP
-sur la boucle locale, décodage. Ce qu'il ne contient pas : le Wi-Fi, et
-la présentation à l'écran du client. Autrement dit le codec n'est pas le
-problème — le budget de latence sera dépensé ailleurs, ce qui est
-exactement ce qu'on voulait savoir avant d'aller plus loin.
+What that 0.7 ms contains: BGRA→YUV conversion, encoding, TCP over
+loopback, decoding. What it does not: wifi, and presenting on the
+client's screen. In other words the codec is not the problem — the
+latency budget will be spent elsewhere, which is exactly what needed
+knowing before going further.
 
-Le débit mérite d'être relu quand la source sera un vrai jeu : la mire
-est en grande partie statique, donc x264 la compresse très bien.
+The bitrate is worth rereading once the source is a real game: the test
+pattern is largely static, so x264 compresses it very well.
 
-### Fichiers
+### Files
 
-| Fichier | Rôle |
+| File | Role |
 |---|---|
-| `bs_protocol.h` | protocole, inclus par les deux bouts |
-| `bs_source.h` | le joint que les backends émulateurs rempliront |
-| `bs_encoder.c/.h` | encodage H.264 via libavcodec |
-| `bs_decoder.c/.h` | décodage, pour le client Linux uniquement |
-| `bs_net.c/.h` | transport TCP et cadrage des messages |
-| `testpattern.c` | source synthétique, affiche aussi les inputs reçus |
-| `bottom_screen_server.c` | serveur |
-| `bottom_screen_client.c` | client Linux SDL |
-| `tests/smoke_client.c` | vérification bout en bout sans écran |
+| `bs_protocol.h` | the protocol, included by both ends |
+| `bs_source.h` | the seam the emulator backends fill in |
+| `bs_encoder.c/.h` | H.264 encoding through libavcodec |
+| `bs_decoder.c/.h` | decoding, for the Linux client only |
+| `bs_net.c/.h` | TCP transport and message framing |
+| `bs_audio.c/.h` | Opus encoding, with swresample |
+| `bs_mailbox.c/.h` | the adapter between a pushing emulator and a pulling server |
+| `bs_server.c/.h` | the server, as a library |
+| `testpattern.c` | synthetic source, also shows the input it receives |
+| `bottom_screen_server.c` | the standalone server |
+| `bottom_screen_client.c` | the SDL Linux client |
+| `launcher/bs_launcher.c` | the GTK launcher |
+| `tests/smoke_client.c` | end-to-end check with no screen |
+| `tests/input_merge.c` | button merging across several clients |
 
 ```bash
-make                          # les deux binaires
-make test                     # vérification headless
+make                          # everything
+make test                     # headless checks
 ./bottom_screen_server --console ds
 ./bottom_screen_client --scale 3
 ```
 
-### Décisions prises en écrivant le code
+### Decisions taken while writing the code
 
-**`TCP_NODELAY`, systématiquement.** Sans lui, Nagle retient les petits
-paquets jusqu'à 40 ms — plus de deux frames à 60 Hz, et parfaitement
-invisible dans un test de débit.
+**`TCP_NODELAY`, always.** Without it Nagle holds small packets for up
+to 40 ms — more than two frames at 60 Hz, and perfectly invisible in a
+throughput test.
 
-**Pas de `AV_CODEC_FLAG_GLOBAL_HEADER`.** Avec ce drapeau, les SPS/PPS ne
-vivent que dans l'extradata et n'apparaissent jamais dans le flux : un
-client qui arrive en cours de route, ou qui a perdu le premier datagramme
-en UDP, ne peut plus configurer son décodeur. Sans lui, x264 répète les
-en-têtes avant chaque keyframe et n'importe quel client peut démarrer à
-la keyframe suivante.
+**No `AV_CODEC_FLAG_GLOBAL_HEADER`.** With that flag the SPS/PPS live
+only in the extradata and never appear in the stream: a client arriving
+mid-flow, or one that lost the first datagram over UDP, can no longer
+configure its decoder. Without it, x264 repeats the headers before every
+keyframe and any client can start at the next one.
 
-**Pas de B-frames.** Elles imposent de retenir une image pour coder la
-suivante : une frame entière de latence pour un gain de compression dont
-on n'a pas besoin à cette taille.
+**No B-frames.** They require holding a picture back to encode the next:
+a whole frame of latency for a compression gain nobody needs at this
+size.
 
-**Le client sort du YUV, pas du RGB.** SDL téléverse le YUV directement
-au GPU qui fait la conversion en dessinant. Convertir en RGB côté CPU
-ajouterait une passe pleine image par frame pour un résultat que le GPU
-produit gratuitement.
+**The client outputs YUV, not RGB.** SDL uploads YUV straight to the GPU
+which converts while drawing. Converting to RGB on the CPU would add a
+full-frame pass for something the GPU does for free.
 
-**Le thread d'input est séparé de la boucle vidéo.** La boucle vidéo
-passe son temps bloquée sur l'échéance de la frame suivante ; y lire
-aussi l'input retiendrait chaque événement jusqu'à cette échéance.
+**The input thread is separate from the video loop.** The video loop
+spends its time blocked on the next frame's deadline; reading input
+there would hold every event until that deadline.
 
-**Ratio conservé, zoom fractionnaire.** Révisé le 2026-09-04 : la
-première version n'autorisait que des multiples entiers, pour que chaque
-pixel source reste exactement carré. Sur un téléphone ça coûtait un tiers
-de l'écran, pour une source qui fait 256 pixels de large — il ne reste
-pas grand-chose de « carré » à protéger. L'image remplit donc l'espace
-disponible avec le zoom qui rentre, quel qu'il soit.
+**Aspect kept, fractional zoom.** Revised on 2026-09-04: the first
+version allowed only integer multiples, so every source pixel stayed
+exactly square. On a phone that cost a third of the screen, for a source
+256 pixels wide — there is not much "square" left to protect. The
+picture now fills the space with whatever zoom fits.
 
-Ce qui reste interdit, c'est d'étirer les deux axes indépendamment : ça,
-ça déforme. Un zoom fractionnaire, non.
+What stays forbidden is stretching the two axes independently: that
+distorts. A fractional zoom does not.
 
-Conséquence côté client Linux : le filtrage est passé en linéaire. En
-plus proche voisin à facteur non entier, certaines lignes source
-occupent deux lignes écran et leurs voisines une seule, ce qui donne une
-grille scintillante — pire qu'un léger flou.
+The Linux client's filtering went linear as a consequence. Nearest
+neighbour at a non-integer factor makes some source lines occupy two
+screen lines and their neighbours one, which shimmers — worse than a
+slight blur.
 
-### Un bug que le test a attrapé
+### A bug the test caught
 
-Le thread d'input positionnait le drapeau d'arrêt **global** quand le
-client se déconnectait : le serveur s'arrêtait complètement dès le
-premier client parti, au lieu de se remettre en écoute. Corrigé avec un
-drapeau par connexion. C'est le genre de chose qu'un test manuel ne voit
-pas — on relance le serveur sans y penser.
+The input thread set the **global** stop flag when a client
+disconnected: the server shut down entirely as soon as the first client
+left, instead of going back to listening. Fixed with a per-connection
+flag. That is the kind of thing a manual test misses — you restart the
+server without thinking about it.
 
-Ajouté dans la foulée : `bs_encoder_request_keyframe()`, appelé à chaque
-connexion. Un client qui arrive n'a aucune image de référence et ne
-décode rien jusqu'à la keyframe suivante, soit jusqu'à une seconde de
-fenêtre noire.
+Added at the same time: `bs_encoder_request_keyframe()`, called on every
+connection. A client that has just arrived has no reference picture and
+decodes nothing until the next keyframe, which is up to a second of
+black window.
 
-### Limites connues
+---
 
-- Un seul client à la fois, et l'encodeur est partagé. Plusieurs clients
-  simultanés demanderont soit un encodeur par client, soit un encodage
-  partagé — à trancher quand le cas se présentera.
-- TCP uniquement. Les champs de fragmentation existent dans l'en-tête
-  mais ne sont pas utilisés.
-- La latence affichée n'a de sens que si les deux bouts partagent une
-  horloge, donc sur la même machine. Entre deux machines c'est la
-  différence entre deux horloges monotones sans rapport.
+## Phase 2: melonDS
 
-## Phase 2 : melonDS
-
-Mesuré le 2026-09-04 sur le firmware DS, renderer software, boucle
-locale.
+Measured on 2026-09-04 on the DS firmware, software renderer, loopback.
 
 | | |
 |---|---|
-| Cadence | 60,2 fps |
-| Débit | 0,57 Mbit/s (écran de menu) |
-| Luma | min 0, max 255, moyenne 168 |
+| Frame rate | 60.2 fps |
+| Bitrate | 0.57 Mbit/s (menu screen) |
+| Luma | min 0, max 255, mean 168 |
 
-Le débit varie énormément selon le contenu : 0,03 Mbit/s sur l'écran noir
-du démarrage, 0,57 sur le menu. Un vrai jeu en mouvement sera bien plus
-haut — ces chiffres ne sont pas une prévision.
+The bitrate varies enormously with content: 0.03 Mbit/s on the black
+boot screen, 0.57 on the menu. A real game in motion will be far higher
+— these numbers are not a forecast.
 
-Les statistiques de luminance existent pour une raison précise : un flux
-peut être parfaitement bien formé et ne rien montrer du tout. Si
-l'émulateur avait passé un buffer vide, toutes les frames se
-décoderaient, à une cadence plausible, et entièrement blanches. C'est
-l'écart entre « le tuyau tourne » et « le tuyau transporte une image ».
+The luminance statistics exist for a precise reason: a stream can be
+perfectly well formed and show nothing at all. Had the emulator handed
+over an empty buffer, every frame would decode, at a plausible rate, and
+entirely white. That is the difference between "the pipe runs" and "the
+pipe carries a picture".
 
-### Comment le tactile a été prouvé
+### How touch was proved
 
-Le firmware DS s'arrête sur un écran d'avertissement qui attend un appui
-tactile. En envoyant un tap depuis le réseau, l'écran est passé au menu
-DS. C'est une preuve difficile à contester : rien d'autre ne pouvait
-faire avancer cet écran.
+The DS firmware stops on a warning screen that waits for a touch.
+Sending a tap over the network moved that screen on to the DS menu. That
+is hard to argue with: nothing else could have advanced it.
 
-Ça a d'ailleurs révélé un défaut du test : il envoyait des `TOUCH_DOWN`
-sans jamais de `TOUCH_UP`. La console voyait donc un stylet posé et
-jamais relevé, et un logiciel qui attend un appui attendait
-indéfiniment. Le test fait maintenant de vrais taps.
+It also exposed a flaw in the test: it sent `TOUCH_DOWN` without ever
+sending `TOUCH_UP`. The console therefore saw a stylus set down and
+never lifted, and software waiting for a press waited forever. The test
+now makes real taps.
 
-### Ce qui a été modifié dans melonDS
+### What was changed in melonDS
 
-Trois fichiers, et volontairement peu :
-
-| Fichier | Changement |
+| File | Change |
 |---|---|
-| `src/frontend/qt_sdl/BottomScreenBridge.cpp/.h` | nouveau, le seul C++ du chemin |
-| `src/frontend/qt_sdl/EmuThread.cpp` | 34 lignes : un include et deux hooks |
-| `src/frontend/qt_sdl/CMakeLists.txt` | 39 lignes, intégration optionnelle |
+| `src/frontend/qt_sdl/BottomScreenBridge.cpp/.h` | new, the only C++ in the path |
+| `src/frontend/qt_sdl/EmuThread.cpp` | an include and two hooks |
+| `src/frontend/qt_sdl/CMakeLists.txt` | optional integration |
 
-`EmuInstance` n'est pas touché du tout. Ses champs d'input sont privés,
-mais `EmuThread` est déjà déclaré `friend` — en accrochant là, on écrit
-dans les mêmes champs que le frontend Qt, au même moment de la frame,
-plutôt que d'élargir une interface.
+`EmuInstance` is not touched at all. Its input fields are private, but
+`EmuThread` is already declared `friend` — hooking there writes into the
+same fields as the Qt frontend, at the same moment of the frame, rather
+than widening an interface.
 
-Le pont ne démarre le serveur qu'à la première frame soumise, donc rien
-ne s'ouvre tant qu'aucun jeu ne tourne.
+The bridge only starts the server on the first frame submitted, so
+nothing opens until a game is running.
 
 ```bash
-BOTTOM_SCREEN=0      # désactiver
-BOTTOM_SCREEN_PORT   # port d'écoute, défaut 5090
+BOTTOM_SCREEN=0      # turn it off
+BOTTOM_SCREEN_PORT   # listen port, 5090 by default
 ```
 
-Ce sont des variables d'environnement et non un panneau de réglages :
-une vraie interface Qt demanderait de toucher beaucoup plus de melonDS
-que ce que ça vaut à ce stade.
+These override the emulator's own settings, which exist too — the
+variables are what a scripted launch or the GTK launcher uses.
 
-### Le serveur est devenu une bibliothèque
+### GPU readback
 
-La logique vivait dans un `main()`, ce qui allait tant que la seule
-source était une mire. Un émulateur ne se réorganise pas autour du
-`main` de quelqu'un d'autre, donc tout est passé dans `bs_server.c` et
-tourne sur son propre thread. Le binaire autonome est maintenant un
-`main` mince par-dessus le même code — les deux ne peuvent plus diverger.
+melonDS scales only in its OpenGL renderer, and that renderer keeps the
+screens in a GPU array texture rather than RAM: `GetFramebuffers`
+returns `false` and puts the texture handle in the first pointer, with
+the top screen on layer 0 and the bottom on layer 1, at 256×N by 192×N.
 
-`bs_mailbox.c` fait le joint entre les deux modèles. La mire fabrique
-une frame quand on lui en demande une ; un émulateur, lui, finit sa frame
-et passe à autre chose sans qu'on puisse le faire attendre. La boîte aux
-lettres est en « le dernier gagne » : si deux frames arrivent avant que
-le serveur en prenne une, la première est perdue. C'est voulu — une file
-échangerait une frame perdue contre de la latence croissante, et sur un
-écran de jeu, en retard est pire qu'absent.
+For a while the bridge simply warned and streamed nothing there, which
+also meant the internal resolution was out of reach. It now reads that
+layer back into the same BGRA the software path produces, so nothing
+downstream knows which renderer drew the frame.
 
-### Limites connues
+The size is asked of the texture rather than derived from the scale
+setting. The opposite shortcut on the Azahar side — trusting a size that
+described the console rather than the texture — read six times past the
+end of a buffer.
 
-- **Renderer OpenGL non supporté.** `GetFramebuffers` renvoie `false` et
-  le pointeur est alors un identifiant de texture : l'écran du bas est
-  sur le GPU, il n'y a rien en RAM à streamer. Le pont l'écrit une fois
-  sur la sortie d'erreur au lieu de streamer du vide. Le readback GPU
-  reste à faire.
-- **Les boutons ne sont pas vérifiés visuellement.** Le mapping est lu
-  depuis l'ordre réel des touches de melonDS, et le masque est actif à
-  l'état bas comme il se doit, mais aucun test n'a encore appuyé sur un
-  bouton pour le voir agir.
-- Le tactile local garde la priorité : un client ne pilote l'écran que
-  si la souris n'est pas déjà dessus.
+Touch is scaled from the announced size for the same reason. It divided
+by the native 256×192, which is right only at x1; at x4 the whole screen
+folded into its top-left quarter, which looks like a calibration problem
+rather than the arithmetic it is.
 
-## Phase 6 : Cemu — vérifié
+Verified with a commercial DS title at x4: 1024×768 announced, the bottom
+screen the right way up in the right colours, and a tap at the centre of
+the announced space starting the game.
 
-Testé le 2026-09-05 sur a commercial Wii U title, un vrai jeu Wii U natif en
-fichiers libres, sans aucune clé de titre.
+### The server became a library
+
+The logic lived in a `main()`, which was fine while the only source was
+a test pattern. An emulator cannot be reorganised around somebody else's
+`main`, so it all moved into `bs_server.c` and runs on its own thread.
+The standalone binary is now a thin `main` over the same code — the two
+can no longer drift apart.
+
+`bs_mailbox.c` is the joint between the two models. The test pattern
+makes a frame when asked; an emulator finishes its frame and moves on,
+and cannot be made to wait. The mailbox is latest-wins: if two frames
+arrive before the server collects one, the first is lost. That is
+deliberate — a queue would trade a dropped frame for growing latency,
+and on a screen you are playing on, late is worse than missing.
+
+---
+
+## Phase 6: Cemu
+
+Tested on 2026-09-05 with a commercial Wii U title, a real native Wii U game
+in loose files, with no title key at all.
 
 | | |
 |---|---|
-| Résolution | 854×480, la résolution native du GamePad |
-| Cadence | 30 fps annoncés, 30,5 mesurés |
-| Débit | 2,7 à 6,1 Mbit/s selon la scène |
-| Latence | 3,0 ms, machine locale |
-| Tactile | **vérifié** — 427,208 envoyés et reçus |
-| Boutons | **vérifié** — A reçu par la boucle de `VPADController` |
-| Sticks | **vérifiés** — déflexion 0,75 reçue par `VPADController` |
+| Resolution | 854×480, the GamePad's native resolution |
+| Frame rate | 30 fps announced, 30.5 measured |
+| Bitrate | 2.7 to 6.1 Mbit/s depending on the scene |
+| Latency | 3.0 ms, local machine |
+| Touch | **verified** — 427,208 sent and received |
+| Buttons | **verified** — A received by `VPADController`'s loop |
+| Sticks | **verified** — 0.75 deflection received by `VPADController` |
 
-La trace des boutons vaut plus que les deux autres : elle est placée
-dans `IsButtonHeld`, appelée *par* `VPADController`. Elle ne se déclenche
-donc que si Cemu a réellement une manette émulée — la condition dont
-l'absence faisait disparaître toutes les entrées en silence. Et comme le
-tactile est lu quelques lignes plus haut dans le même `update()`, cette
-ligne l'établit aussi.
+The button trace is worth more than the other two: it sits inside
+`IsButtonHeld`, which is called *by* `VPADController`. So it only fires
+if Cemu really has an emulated pad — the condition whose absence made
+every input vanish in silence. And since touch is read a few lines above
+in the same `update()`, that line establishes it too.
 
-Le tactile a été validé avec le **client Linux**, pas avec un téléphone :
-il envoie déjà des événements à la souris, et c'est exactement l'outil
-qu'il fallait. Chemin complet confirmé : client → réseau → serveur →
-`m_pad_touch` → `InputManager` → VPAD.
+Touch was validated with the **Linux client**, not a phone: it already
+sends mouse events, and it was exactly the right tool. Full path
+confirmed: client → network → server → `m_pad_touch` → `InputManager` →
+VPAD.
 
-### Une manette doit être configurée
+### A pad must be configured
 
-Sans profil de manette, Cemu ne construit **aucun** `VPADController`, et
-sa méthode `update()` ne tourne jamais. Le pont a beau écrire dans
-`m_pad_touch` et tenir l'état des boutons et des axes, personne ne le
-lit — et rien ne le signale.
+Without a controller profile Cemu builds **no** `VPADController` at all,
+and its `update()` never runs. The bridge can write into `m_pad_touch`
+and hold the button and axis state all it likes; nobody reads it — and
+nothing says so.
 
-C'est ce qui m'a fait annoncer trop tôt que le tactile était vérifié :
-ma trace était placée dans notre pont, en amont du consommateur. Elle
-prouvait la livraison, pas la réception.
+That is what made me announce too early that touch was verified: my
+trace sat inside our own bridge, upstream of the consumer. It proved
+delivery, not reception.
 
-Le minimum suffit, sans aucune correspondance physique puisque les
-entrées viennent du réseau :
+The minimum is enough, with no physical mapping since the input comes
+from the network:
 
 ```xml
 <!-- ~/.config/Cemu/controllerProfiles/controller0.xml -->
@@ -444,150 +409,89 @@ entrées viennent du réseau :
 </emulated_controller>
 ```
 
-### Quatre pièges à connaître
+### Traps worth knowing
 
-**La fenêtre GamePad doit être ouverte.** Sans elle, `copyToBackbuffer`
-n'est jamais appelé avec `isPadView` et rien n'est capturé — aucune
-erreur, juste un serveur qui ne démarre pas. Le réglage est `open_pad`
-dans `settings.xml`, et **Cemu le réécrit en quittant** : il faut le
-poser avant chaque lancement, ou cocher « Open separate pad screen » dans
-l'assistant. Le raccourci CTRL+TAB existe mais ne réagit pas aux
-événements synthétiques d'xdotool.
+**The GamePad window must be open.** Without it `copyToBackbuffer` is
+never called with `isPadView` and nothing is captured — no error, just a
+server that does not start. The setting is `open_pad` in `settings.xml`,
+and **Cemu rewrites it on exit**: it has to be set before each launch,
+or "Open separate pad screen" ticked in the wizard. The CTRL+TAB
+shortcut exists but ignores xdotool's synthetic events. The GTK launcher
+sets it for you.
 
-**Le renderer doit être OpenGL.** Vulkan est le défaut sur Linux, et le
-readback n'est pas implémenté pour lui. Le pont le dit une fois sur
-stderr en nommant le réglage exact.
+**The announced port is not necessarily the one asked for.** If 5090 is
+taken the server moves up. I lost several minutes believing something
+had failed while Cemu was listening on 5091 — which is why that message
+went to stderr, where it is visible even when stdout is redirected.
 
-**Le port annoncé n'est pas forcément celui demandé.** Si 5090 est pris,
-le serveur monte. J'ai perdu plusieurs minutes à croire à une panne
-alors que Cemu écoutait sur 5091 — d'où le passage de ce message sur
-stderr, où il est visible même quand stdout est redirigé.
+### A fix that made things worse
 
-### Une correction qui a créé un bug pire
+The first attempt announced a hardcoded 60 fps for a game running at 30.
+The fix measured the rate — during the first seconds, while shaders
+compile and caches are cold: it reported **12**.
 
-Le premier essai annonçait 60 fps en dur pour un jeu tournant à 30. La
-correction a mesuré la cadence — pendant les premières secondes, où les
-shaders compilent et les caches sont froids : elle a rapporté **12**.
-
-C'était pire que l'hypothèse remplacée. L'encodeur dérive de ce nombre
-son contrôle de débit *et* son intervalle de keyframes : à 12, il
-dépensait tout le budget et émettait trois fois trop de keyframes. La
-mesure ignore maintenant les 90 premières frames et compte sur 90
-suivantes.
-
-## Plan par phases
-
-### Phase 0 — préparation
-- [x] Miroirs privés des trois émulateurs
-- [x] Clones locaux + submodules
-- [x] Repérage des points d'accroche
-- [x] Compiler melonDS tel quel sur Debian 13, sans modification
-
-### Phase 1 — tuyau bout en bout, sans émulateur
-- [x] Définir le protocole (`VIDEO_CONFIG`, paquets vidéo, paquets input)
-- [x] Serveur : mire de test → H.264 → réseau
-- [x] Client Linux : réseau → décodage → fenêtre
-- [x] Mode TCP de debug avant l'UDP
-- [x] Mesurer la latence de bout en bout
-
-### Phase 2 — melonDS
-- [x] Extraire le framebuffer du bas via `GetFramebuffers`
-- [x] Injecter le tactile via `TouchScreen` / `ReleaseScreen`
-- [x] Injecter les boutons via `SetKeyMask`
-- [x] Garder l'écran du haut sur le PC, inchangé
-
-### Phase 3 — client Android
-- [x] Décodage H.264 par MediaCodec
-- [x] Affichage au ratio natif, zoom fractionnaire
-- [x] Tactile → réseau
-- [x] Boutons virtuels, profils DS / 3DS / Wii U
-- [x] Mode portrait et paysage
-- [ ] Manette Bluetooth
-
-### Phase 4 — client Switch homebrew
-- [ ] Décodage matériel
-- [ ] Tactile + boutons virtuels
-- [ ] Joy-Con pour les boutons normaux
-
-### Phase 5 — Azahar (3DS)
-- [ ] Backend framebuffer sur le modèle de `FrameDumperOpenGL`
-- [ ] Tactile via `TouchPressed` / `TouchMoved` / `TouchReleased`
-- [ ] Profil de boutons 3DS (ZL/ZR, circle pad, C-stick)
-
-### Phase 7 — client web (plus tard)
-- [ ] Encodage VP8 en parallèle du H.264
-- [ ] Transport WebRTC
-- [ ] Page JS avec écran, tactile et boutons virtuels
-
-### Phase 6 — Cemu (Wii U)
-- [x] Backend sur `LatteRenderTarget_copyToBackbuffer(_, true)`
-- [x] Tracer et brancher le chemin tactile VPAD
-- [ ] Profil de boutons Wii U
+That was worse than the assumption it replaced. The encoder derives both
+its rate control *and* its keyframe interval from that number: at 12 it
+spent the whole budget and emitted three times too many keyframes. The
+measurement now discards the first 90 frames and counts over the next
+90.
 
 ---
 
-## Un client web, plus tard
+## A web client, later
 
-Prévu, pas commencé : une page JS pour jouer depuis n'importe quel
-navigateur, sans rien installer.
+Planned, not started: a JS page to play from any browser with nothing
+installed.
 
-Ce sera **VP8, pas H.264**, contrairement aux deux clients natifs. Le
-raisonnement s'inverse complètement selon la cible :
+It will be **VP8, not H.264**, unlike the two native clients. The
+reasoning inverts completely with the target:
 
-- Android et Switch décodent le H.264 **en matériel**, donc c'est là que
-  le décodage coûte le moins cher. C'est ce qui a décidé le codec du
-  projet.
-- Un navigateur passe par WebRTC, où VP8 est la ligne de base garantie.
-  Le H.264 y est possible mais dépend du navigateur, de la plateforme et
-  parfois de brevets ; VP8 marche partout, tout de suite.
+- Android and Switch decode H.264 **in hardware**, so that is where
+  decoding is cheapest. That decided the project's codec.
+- A browser goes through WebRTC, where VP8 is the guaranteed baseline.
+  H.264 is possible there but depends on the browser, the platform and
+  sometimes patents; VP8 works everywhere, immediately.
 
-Et surtout, capture2cloud fait déjà exactement ça : sa chaîne
-`gst_webrtc.c` produit du VP8 sur WebRTC pour son client navigateur, avec
-la signalisation et le DataChannel d'entrées déjà écrits. Il y a là un
-travail qui n'a pas à être refait.
-
-Ce que ça demandera de notre côté :
+And capture2cloud already does exactly this: its `gst_webrtc.c` chain
+produces VP8 over WebRTC for its browser client, with the signalling and
+the input DataChannel already written.
 
 | | |
 |---|---|
-| Encodeur | `bs_encoder` prend déjà un nom d'encodeur en paramètre, donc VP8 est une valeur, pas une réécriture |
-| Transport | WebRTC en parallèle du protocole binaire, pas à sa place — les clients natifs n'en veulent pas |
-| Entrées | même protocole, transporté par un DataChannel au lieu d'un socket |
-| Interface | les profils de boutons existent déjà en Kotlin, à refaire en JS |
+| Encoder | `bs_encoder` already takes an encoder name, so VP8 is a value rather than a rewrite |
+| Transport | WebRTC alongside the binary protocol, not instead of it — the native clients do not want it |
+| Input | the same protocol, carried by a DataChannel instead of a socket |
+| Interface | the button profiles exist in Kotlin, to be redone in JS |
 
-À faire après les émulateurs, pas avant : un troisième transport sur un
-projet dont le premier ne fait pas encore d'UDP serait mettre la
-complexité au mauvais endroit.
+After the emulators, not before: a third transport on a project whose
+first one does not do UDP yet would put the complexity in the wrong
+place.
 
-## Questions ouvertes
+---
 
-**Bibliothèque partagée ou code dupliqué ?** L'idée d'un
-`libbottomscreen.so` intégré aux trois émulateurs est séduisante, mais
-les trois ont des systèmes de build et des contraintes de licence
-différents. À trancher après melonDS — inutile de concevoir
-l'abstraction avant d'avoir un cas qui marche.
+## Open questions
 
-**Readback CPU ou partage GPU ?** On commence par le readback CPU le
-plus simple. À ces résolutions, ça peut suffire largement. On
-n'optimise qu'après mesure.
+**Shared library or duplicated code?** A `libbottomscreen.so` linked
+into all three emulators is appealing, but the three have different
+build systems and licence constraints. So far the C sources are compiled
+into each, which has cost nothing.
 
-**Détection des frames identiques.** Ne rien envoyer quand l'image du
-bas n'a pas changé (menus, jeux statiques) peut économiser beaucoup.
-À évaluer une fois le pipeline en place, pas avant.
+**Identical frame detection.** Sending nothing when the bottom screen
+has not changed (menus, static games) could save a lot. Worth measuring
+once everything else is in place.
 
-**Resynchro avec l'upstream.** Nos modifications vivent sur des
-branches dédiées, à décider : `bottom-screen` sur chaque miroir, rebasé
-périodiquement sur `upstream/master`.
+**Resyncing with upstream.** Our changes live on a `bottom-screen`
+branch on each mirror, to be rebased on `upstream/master` periodically.
 
 ---
 
 ## Licences
 
-| Émulateur | Licence | Contrainte |
+| Emulator | Licence | Constraint |
 |---|---|---|
-| melonDS | GPL-3.0 | sources à publier si distribution de binaires modifiés |
-| Azahar | GPL-2.0 | idem |
-| Cemu | MPL-2.0 | seuls les fichiers modifiés seraient à publier |
+| melonDS | GPL-3.0 | sources must be published if modified binaries are distributed |
+| Azahar | GPL-2.0 | same |
+| Cemu | MPL-2.0 | only the modified files would need publishing |
 
-Aucune contrainte tant que les modifications restent locales. Les
-copies privées sont autorisées par les trois licences.
+No constraint while the changes stay local. Private copies are allowed
+by all three licences.

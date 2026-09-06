@@ -1,46 +1,47 @@
-# Feuille de route
+# Roadmap
 
-Ce qui reste à faire après la preuve de concept. L'état de ce qui marche
-déjà est dans [WORKINPROGRESS.md](WORKINPROGRESS.md).
+What is left after the proof of concept. What already works is in
+[WORKINPROGRESS.md](WORKINPROGRESS.md).
 
-Ordre indicatif : les dépendances entre points comptent plus que la
-numérotation. Le son et le multiclient touchent au protocole, donc mieux
-vaut les faire avant de multiplier les clients qui devront les parler.
+The order is indicative: the dependencies between items matter more than
+the numbering. Sound and multi-client touch the protocol, so they come
+before multiplying the clients that would have to speak them.
 
 ---
 
-## A. Émulateurs
+## A. Emulators
 
 ### A1. Azahar (3DS)
-- [x] Backend : lecture de `screen_infos[2]`, avec rotation
-- [x] Tactile via `TouchPressed` / `TouchMoved` / `TouchReleased`
-- [x] Profil 3DS complet : ZL/ZR, circle pad, C-stick
+- [x] Backend: reads `screen_infos[2]`, with rotation
+- [x] Touch through `TouchPressed` / `TouchMoved` / `TouchReleased`
+- [x] Full 3DS profile: ZL/ZR, circle pad, C-stick
 
 ### A2. Cemu (Wii U)
-- [x] Backend sur `LatteRenderTarget_copyToBackbuffer(_, true)`
-- [x] Tactile, boutons et sticks branchés et vérifiés
-- [x] Profil de boutons Wii U, sticks compris
+- [x] Backend on `LatteRenderTarget_copyToBackbuffer(_, true)`
+- [x] Touch, buttons and sticks wired and verified
+- [x] Wii U button profile, sticks included
 
-### A3bis. 3DS : la configuration système plante — en suspens
+### A3bis. 3DS: system setup crashes — parked
 
-Session du 2026-09-05. L'Artic Setup Tool est la seule voie supportée
-par Azahar pour installer les titres système, et elle plante
-systématiquement. Tout ce qui était configurable a été éliminé :
+Session of 2026-09-05. The Artic Setup Tool is the only route Azahar
+supports for installing the system titles, and it crashes every time.
+Everything configurable has been eliminated:
 
-| Vérifié | État |
+| Checked | State |
 |---|---|
-| Luma3DS | v13.4, au-delà du v13.3.1 exigé |
-| Artic Setup Tool | v1.0.3, la dernière publiée (avril 2025) |
-| Confirmation par A sur la console | faite |
-| État NAND partiel | nettoyé avant essai |
-| Voie d'accès | dialogue **et** URL `articinio://` |
-| Version d'Azahar | `2126.1-rc3` **et** stable `2126.0` |
-| Réseau | jamais un octet au-dessus du bruit de fond |
+| Luma3DS | v13.4, past the v13.3.1 required |
+| Artic Setup Tool | v1.0.3, the latest released (April 2025) |
+| Confirmation with A on the console | done |
+| Partial NAND state | cleaned before the attempt |
+| Route in | the dialog **and** the `articinio://` URL |
+| Azahar version | `2126.1-rc3` **and** stable `2126.0` |
+| Network | never a byte above the noise floor |
 
-Ce n'est donc ni le réseau, ni le débit, ni une erreur de manipulation.
+So it is neither the network, nor the bandwidth, nor a mistake at the
+console.
 
-**Ce qu'on sait du crash.** SIGSEGV reproductible. Sur le build `master`,
-la pile était :
+**What is known about the crash.** A reproducible SIGSEGV. On the
+`master` build the stack was:
 
 ```
 Service::HTTP::InstallInterfaces
@@ -50,288 +51,292 @@ Service::HTTP::InstallInterfaces
              └─ Certificate::GetPublicKeyECC       ← SIGSEGV
 ```
 
-`ct_cert` n'est pas lu depuis un fichier : il est **dérivé de l'OTP** par
-`BuildECC()` (unique_data.cpp:180), vérifié contre la clé racine ligne
-184, et invalidé si la vérification échoue. La garde ligne 292 teste
-`IsValid()`. Le certificat passe donc la vérification puis casse à la
-lecture de sa clé publique — une incohérence entre ce que le contrôle
-accepte et ce que la lecture suppose.
+`ct_cert` is not read from a file: it is **derived from the OTP** by
+`BuildECC()` (unique_data.cpp:180), checked against the root key on line
+184, and invalidated if that check fails. The guard on line 292 tests
+`IsValid()`. So the certificate passes the check and then breaks when
+its public key is read — an inconsistency between what the check accepts
+and what the read assumes.
 
-Sur `2126.0` le crash arrive plus tôt encore, avant même l'écriture des
-données uniques. La pile ci-dessus vaut pour l'autre binaire ; il faudra
-refaire une passe `gdb` sur la stable avant de corriger quoi que ce soit.
+On `2126.0` the crash comes earlier still, before the unique data is
+even written. The stack above belongs to the other binary; a fresh `gdb`
+pass on the stable one is needed before fixing anything.
 
-**Piège à connaître.** Chaque tentative réécrit les données uniques
-(`otp.bin`, `movable.sed`, `SecureInfo_A`, `LocalFriendCodeSeed_B`) avant
-de planter. Un nettoyage manuel est donc défait au coup d'après, et
-repartir sans nettoyer redonne le crash. Le dialogue d'Azahar appelle
-`UninstallSystemFiles()` pour cette raison.
+**A trap worth knowing.** Every attempt rewrites the unique data
+(`otp.bin`, `movable.sed`, `SecureInfo_A`, `LocalFriendCodeSeed_B`)
+before crashing. A manual cleanup is therefore undone on the next go,
+and starting again without cleaning brings the crash back. Azahar's own
+dialog calls `UninstallSystemFiles()` for this reason.
 
-**Pistes, par ordre de coût croissant :**
+**Leads, cheapest first:**
 
-- [ ] **Essayer l'autre 3DS.** Si le crash tient à la dérivation du
-      certificat depuis cet OTP précis, une autre console tranche la
-      question immédiatement. C'est le test le plus discriminant et le
-      moins cher.
-- [ ] Voir si l'outil peut servir sans passer par la mise à jour
-      système — c'est ce chemin, avec ClCertA et le module NIM, qui
-      casse.
-- [ ] Ouvrir un ticket chez Azahar : on a un cas de reproduction net et
-      une pile d'appel.
-- [ ] En dernier recours, corriger le fork. Pas avant d'avoir la pile
-      exacte du binaire concerné : une garde posée à l'aveugle
-      déplacerait l'échec sans donner le menu HOME.
+- [ ] **Try the other 3DS.** If the crash comes from deriving the
+      certificate from this particular OTP, another console settles it
+      immediately. The most discriminating test and the cheapest.
+- [ ] See whether the tool can be used without going through the system
+      update — that path, with ClCertA and the NIM module, is the one
+      that breaks.
+- [ ] Open a ticket with Azahar: there is a clean reproduction and a
+      call stack.
+- [ ] As a last resort, patch the fork. Not before having the exact
+      stack from the binary in question: a guard added blindly would
+      move the failure rather than produce the HOME menu.
 
-Rien de tout ça ne bloque le projet : le backend Azahar peut s'écrire
-sur `FrameDumperOpenGL` et se valider plus tard.
+None of this blocks the project: the Azahar backend can be written
+against `FrameDumperOpenGL` and validated later.
 
-**Note de version.** Le dépôt Azahar est resté sur le tag `2126.0`
-(HEAD détaché). Avant d'écrire le backend il faudra une branche dédiée,
-comme `bottom-screen` sur melonDS.
+**Version note.** The Azahar checkout stayed on tag `2126.0` (detached
+HEAD). A dedicated branch is needed before writing the backend, like
+`bottom-screen` on melonDS.
 
-### A3. BIOS et fichiers système — bloqué
+### A3. BIOS and system files — blocked
 
-**Je ne les téléchargerai pas.** Les BIOS et firmwares 3DS et Wii U sont
-des fichiers Nintendo sous copyright ; aller les chercher en ligne serait
-du piratage, et je ne le ferai pas même si le projet est privé.
+**I will not download them.** The 3DS and Wii U BIOS and firmware are
+copyrighted Nintendo files; going and finding them online would be
+piracy, and I will not do it even for a private project.
 
-La voie légitime est de les extraire de tes propres consoles. Ce dont on
-a besoin, et où le déposer :
+The legitimate route is dumping them from your own consoles. What is
+needed, and where to put it:
 
-| Console | Fichiers | Comment |
+| Console | Files | How |
 |---|---|---|
-| DS | `bios7.bin`, `bios9.bin`, `firmware.bin` | **déjà en place**, dans `~/Téléchargements/bios/` |
-| 3DS | `boot9.bin`, `boot11.bin`, `seeddb.bin`, `aes_keys.txt` | GodMode9 sur une 3DS à toi |
-| Wii U | `otp.bin`, `seeprom.bin`, clés de titres | dumper la console |
+| DS | `bios7.bin`, `bios9.bin`, `firmware.bin` | **already in place**, in `~/Téléchargements/bios/` |
+| 3DS | `boot9.bin`, `boot11.bin`, `seeddb.bin`, `aes_keys.txt` | GodMode9 on a 3DS of yours |
+| Wii U | `otp.bin`, `seeprom.bin`, title keys | dump the console |
 
-Dépose-les où tu veux et donne-moi le chemin, ou mets-les dans
-`~/Téléchargements/bios/<console>/`. Je configurerai les émulateurs pour
-pointer dessus. Sans eux, Azahar et Cemu ne démarreront rien et les
-backends ne seront testables que sur une mire.
+Put them wherever you like and give me the path, or drop them in
+`~/Téléchargements/bios/<console>/`. I will point the emulators at them.
+Without them Azahar and Cemu boot nothing, and the backends can only be
+tested against a test pattern.
 
 ---
 
-## B. Protocole et serveur
+## B. Protocol and server
 
-Ces points changent le fil, donc ils passent avant les nouveaux clients.
+These change the wire, so they come before new clients.
 
-### B1. Son — fait pour melonDS et Android
-- [x] Capter le son des trois émulateurs
-- [x] Encoder en Opus et l'ajouter au protocole
-- [x] Lecture côté Android (le homebrew Switch reste à faire)
-- [x] Barre de volume et bouton muet dans le menu Android
+### B1. Sound — done
+- [x] Capture the sound of all three emulators
+- [x] Encode to Opus and add it to the protocol
+- [x] Playback on Android (the Switch homebrew is still to do)
+- [x] Volume bar and mute button in the Android menu
 
-Vérifié de bout en bout : `first audio decoded, 3840 of 3840 bytes
-written`, soit un bloc Opus de 20 ms à 48 kHz écrit sans perte.
+Verified end to end: `first audio decoded, 3840 of 3840 bytes written`,
+one 20 ms Opus block at 48 kHz written without loss.
 
-Deux choix à connaître. Le son est capté **avant** le volume et la
-sourdine locaux de melonDS : couper le son sur le PC ne doit pas couper
-celui du joueur.
+Two choices worth knowing. Sound is captured **before** melonDS's own
+volume and mute: silencing the emulator on the PC must not silence the
+player.
 
-Et le rééchantillonnage passe par `swresample`. Opus n'accepte que 8,
-12, 16, 24 ou 48 kHz, et le DSP de la 3DS sort à 32728 Hz — ni l'une de
-ces valeurs, ni même une fréquence ronde. Envoyer du 32 kHz brut est
-donc impossible, la conversion est obligatoire, et autant qu'elle soit
-correcte. melonDS et Cemu sortent déjà en 48 kHz et ne la traversent
-pas ; ils lient tout de même la bibliothèque, parce que `bs_audio.c`
-est partagé et que le lien se fait à la compilation, pas à l'exécution.
+And resampling goes through `swresample`. Opus accepts only 8, 12, 16,
+24 or 48 kHz, and the 3DS DSP runs at 32728 Hz — neither one of those
+nor even a round rate. Sending raw 32 kHz is therefore impossible, the
+conversion is compulsory, and it may as well be correct. melonDS and
+Cemu already produce 48 kHz and never cross it; they link the library
+all the same, because `bs_audio.c` is shared and linking happens at
+build time, not run time.
 
-Le son a sa propre horloge et sa propre latence ; le mêler au flux vidéo
-sur un seul chemin ferait dépendre l'un de l'autre. Un type de message
-distinct, avec son horodatage, laisse chaque client décider de sa
-synchronisation.
+Sound has its own clock and its own latency; mixing it into the video
+path would make one depend on the other. A separate message type, with
+its own timestamp, lets each client decide how to synchronise.
 
-### B2. Multiclient
-- [x] Plusieurs clients simultanés, même logique que capture2cloud
-- [x] Un encodeur partagé, pas un par client
-- [x] Entrées fusionnées entre clients (même logique manette)
-- [x] Refus explicite quand le serveur est plein
+### B2. Multi-client
+- [x] Several clients at once, the same idea as capture2cloud
+- [x] One shared encoder, not one per client
+- [x] Input merged across clients (same logic as a pad)
+- [x] An explicit refusal when the server is full
 
-Quatre clients par défaut (`BsServerConfig::max_clients`). La boucle
-vidéo est passée d'« une par connexion » à une seule pour tout le monde :
-l'image est encodée une fois et les mêmes paquets partent à chacun, donc
-un deuxième spectateur coûte de la bande passante, pas un cœur.
+Four clients by default (`BsServerConfig::max_clients`). The video loop
+went from one per connection to a single one for everybody: the picture
+is encoded once and the same packets go to each, so a second viewer
+costs bandwidth rather than a core.
 
-Chaque client a en revanche son propre fil d'envoi et sa propre file,
-parce que la seule chose qu'un encodeur partagé ne doit pas faire est de
-laisser le client le plus lent imposer son rythme. Un téléphone en
-mauvais wifi remplit sa file et, au-delà d'un demi-mégaoctet, est
-resynchronisé sur une image-clé.
+Each client does keep its own sending thread and queue, because the one
+thing a shared encoder must not do is let the slowest client set the
+pace. A phone on bad wifi fills its own queue and, past half a megabyte,
+is resynchronised on a keyframe.
 
-Cette resynchronisation ne pouvait pas se faire par « la dernière image
-gagne » comme pour les images brutes : une trame P est une correction de
-la précédente, donc en sauter une laisse le décodeur produire du bruit
-jusqu'à l'image-clé suivante. On saute donc délibérément jusque-là.
+That resynchronisation could not be "latest wins" the way raw frames
+are: a P frame is a correction to the one before it, so skipping one
+leaves the decoder producing noise until the next keyframe anyway. So it
+skips deliberately, all the way there.
 
-Les boutons sont fusionnés par OU entre clients, et un client qui part en
-maintenant une touche la relâche — sans quoi une déconnexion en plein
-saut laisse A enfoncé pour toujours, ce qui ressemble à un émulateur
-planté. Le tactile et les sticks restent au dernier arrivé : il n'y a
-qu'un doigt et qu'un stick à représenter.
+Buttons are merged with OR across clients, and a client that leaves
+while holding one releases it — without which a disconnection in the
+middle of a jump leaves A held for good, which looks like a hung
+emulator. Touch and sticks stay last-wins: there is only one finger and
+one stick to represent.
 
-Vérifié par `tests/run_multiclient.sh` (trois clients à 60 fps chacun,
-puis six sur quatre places) et `tests/input_merge.c` (six cas de fusion,
-dont les deux qui échouent silencieusement sans elle).
+Verified by `tests/run_multiclient.sh` (three clients at 60 fps each,
+then six for four places) and `tests/input_merge.c` (six merge cases,
+including the two that fail silently without it).
 
-### B3. Résolution
-- [x] Suivre le rendu interne des émulateurs (x2, x4, xN)
-- [x] Reconfigurer l'encodeur en direct quand la taille change
-- [x] Annoncer la nouvelle taille aux clients (`STREAM_INFO`)
-- [x] Lecture GPU pour melonDS (le dernier des trois)
-- [ ] Choix de la résolution de réception côté client
+### B3. Resolution
+- [x] Follow the emulators' internal resolution (x2, x4, xN)
+- [x] Reconfigure the encoder live when the size changes
+- [x] Announce the new size to clients (`STREAM_INFO`)
+- [x] GPU readback for melonDS (the last of the three)
+- [ ] Choice of receiving resolution on the client side
 
-melonDS ne met à l'échelle que dans son renderer OpenGL, qui garde les
-écrans dans une texture GPU au lieu de la RAM. `GetFramebuffers` renvoie
-alors `false` et pose le handle d'un tableau de textures : écran du haut
-sur la couche 0, écran du bas sur la couche 1, en 256×N par 192×N. Cette
-couche est maintenant relue en BGRA, le même format que le chemin
-logiciel, donc rien en aval ne sait quel renderer a dessiné l'image.
+melonDS scales only in its OpenGL renderer, which keeps the screens in a
+GPU texture rather than RAM. `GetFramebuffers` then returns `false` and
+hands back the handle of an array texture: the top screen on layer 0,
+the bottom on layer 1, at 256×N by 192×N. That layer is now read back as
+BGRA, the same format the software path produces, so nothing downstream
+knows which renderer drew the frame.
 
-La taille vient de la texture elle-même, pas du réglage d'échelle — le
-raccourci inverse, côté Azahar, avait lu six fois au-delà du tampon.
+The size comes from the texture itself rather than the scale setting —
+the opposite shortcut, on the Azahar side, read six times past the end
+of a buffer.
 
-Le tactile est converti depuis la taille annoncée pour la même raison.
-Il divisait par les 256×192 natifs, ce qui n'est juste qu'en x1 ; en x4
-tout l'écran se repliait dans son quart supérieur gauche. Azahar avait
-eu exactement ce bug.
+Touch is converted from the announced size for the same reason. It
+divided by the native 256×192, which is right only at x1; at x4 the
+whole screen folded into its top-left quarter. Azahar had this exact
+bug.
 
-Vérifié avec a commercial DS title en x4 : 1024×768 annoncés, écran du bas
-à l'endroit et aux bonnes couleurs, et un appui au centre de l'espace
-annoncé qui lance le jeu.
+Verified with a commercial DS title at x4: 1024×768 announced, the bottom
+screen the right way up in the right colours, and a tap at the centre of
+the announced space starting the game.
 
 ### B4. Port
-- [x] Si le port est pris au démarrage, incrémenter et réessayer
-- [x] Réglage du port dans melonDS et Cemu (Azahar reste à faire)
-- [x] Interrupteur actif par défaut, dans melonDS et Cemu
+- [x] If the port is taken at startup, increment and retry
+- [x] Port setting in all three emulators
+- [x] Switch on by default, in all three emulators
 
-Le premier point est petit et immédiat. Les deux autres demandent de
-toucher aux interfaces de réglages de trois émulateurs différents — à
-regarder au cas par cas, melonDS a un système de config typé qui s'y
-prête.
+### B5. Host controls
+- [x] Network input is merged with local input rather than replacing it:
+      a pad on the host keeps working
 
-### B5. Contrôles de l'hôte
-- [x] Les entrées réseau sont fusionnées avec les locales, pas
-      substituées : une manette sur l'hôte continue de fonctionner
+Already true on melonDS by construction: network buttons are merged with
+the local `inputMask`, and local touch keeps priority. To be checked
+properly, and reproduced on the other two.
 
-Déjà le cas sur melonDS par construction : les boutons réseau sont
-fusionnés avec `inputMask` local, et le tactile local garde la priorité.
-À vérifier vraiment, et à reproduire sur les deux autres.
+### B6. Every render backend
+
+- [ ] melonDS: software, OpenGL, OpenGL compute
+- [ ] Azahar: OpenGL, Vulkan, software
+- [ ] Cemu: OpenGL, Vulkan
+- [ ] Survive a backend changed while a client is watching
+
+The bridge must not care which renderer the emulator is using. Today it
+does: Azahar is hooked in `renderer_opengl` alone, and Cemu reads back
+only on OpenGL — which is the awkward one, since Vulkan is Cemu's
+default on Linux.
+
+Both emulators already move an image off the GPU on every backend, for
+screenshots. That machinery is what these readbacks should be built
+from rather than a second way of doing the same thing.
 
 ---
 
 ## C. Clients
 
-### C1. Homebrew Switch (NRO)
-- [ ] Décodage matériel
-- [ ] Tactile et boutons virtuels
-- [ ] Joy-Con pour les boutons normaux
-- [ ] Son
+### C1. Switch homebrew (NRO)
+- [ ] Hardware decoding
+- [ ] Touch and on-screen buttons
+- [ ] Joy-Con for the ordinary buttons
+- [ ] Sound
 
-Base : `switch_homebrew/` et `switch_stream.c` de capture2cloud.
+Starting point: `switch_homebrew/` and `switch_stream.c` from
+capture2cloud.
 
-### C2. App web JS
-- [ ] Encodage VP8 en parallèle du H.264
-- [ ] Transport WebRTC
-- [ ] Page avec écran, tactile et boutons virtuels
+### C2. Web app in JS
+- [ ] VP8 encoding alongside H.264
+- [ ] WebRTC transport
+- [ ] A page with the screen, touch and on-screen buttons
 
-Détail du raisonnement VP8 vs H.264 dans WORKINPROGRESS.
+The VP8 versus H.264 reasoning is in WORKINPROGRESS.
 
-### C3. Interface des menus
-- [ ] Reprendre l'ergonomie des menus de capture2cloud dans les trois
-      clients (js / nro / apk), avec les mêmes options
-- [ ] N'y garder que ce qui a du sens ici : pas de dongle, pas de carte
-      de capture, ce projet n'en utilise pas
+### C3. Menu design
+- [ ] Carry capture2cloud's menu design into all three clients (js / nro
+      / apk), with the same options
+- [ ] Keep only what makes sense here: no dongle, no capture card, this
+      project uses neither
 
-### C4. Boutons virtuels
-- [ ] Affichables ou masquables
-- [ ] Refléter une manette branchée quand il y en a une
-- [ ] Déplacement explicite : cadre jaune autour des boutons pendant le
-      réglage, comme capture2cloud
-- [ ] Les boutons de façade (A/B/X/Y) restent groupés quand on les
-      déplace — on bouge le losange, pas chaque bouton
+### C4. On-screen buttons
+- [ ] Showable and hideable
+- [ ] Reflect a connected pad when there is one
+- [ ] Explicit move mode: a yellow frame around the buttons while
+      arranging them, like capture2cloud
+- [ ] The face buttons (A/B/X/Y) stay grouped when moved — the diamond
+      moves, not each button
 
-### C5. Profils
-- [x] Plusieurs profils dans le menu des clients (Android)
-- [x] Basculer de l'un à l'autre quand plusieurs émulateurs tournent en
-      même temps
-- [ ] Même chose sur les clients js et nro, quand ils existeront
+### C5. Profiles
+- [x] Several profiles in the client menu (Android)
+- [x] Switch between them when several emulators are running at once
+- [ ] The same on the js and nro clients, once they exist
 
-Les serveurs connus sont listés au-dessus du champ d'adresse, un appui
-chacun. L'enregistrement se fait depuis les options **une fois
-connecté**, parce que c'est à ce moment-là qu'on connaît la console — le
-serveur l'annonce — et que « Wii U GamePad (5410) » vaut mieux que
-l'adresse qu'il remplace. Appui long pour oublier, avec confirmation :
-ces boutons sont faits pour être tapés vite.
+Known servers are listed above the address field, one tap each. Saving
+happens from the options **once connected**, because that is when the
+console is known — the server announces it — and "Wii U GamePad (5410)"
+is worth more than the address it replaces. Long press to forget, with a
+confirmation: these buttons are meant to be tapped in a hurry.
 
-Deux manques sont apparus en testant, qui rendaient la liste inutile :
+Two gaps turned up in testing that made the list useless:
 
-- le bouton retour quittait l'application au lieu de revenir à la liste,
-  donc les profils n'étaient atteignables qu'au démarrage à froid. Les
-  options ont maintenant « Change server ».
-- relancer l'app avec une adresse pendant qu'elle tournait ne faisait
-  rien du tout : les extras arrivaient sur un intent que `onCreate`
-  avait déjà lu. C'est précisément le mode d'emploi du lanceur GTK (D),
-  qui aurait donc échoué en silence. `onNewIntent` bascule maintenant.
+- the back button left the application instead of returning to the list,
+  so the profiles were only reachable from a cold start. The options now
+  offer "Change server".
+- relaunching the app with an address while it was running did nothing
+  at all: the extras arrived on an intent `onCreate` had already read.
+  That is exactly how the GTK launcher (D) drives it, so it would have
+  failed silently. `onNewIntent` now switches.
 
-Vérifié sur l'AVD : enregistrement des deux serveurs, bascule par la
-liste et par intent, oubli d'un profil, et libération de l'ancienne
-connexion côté serveur.
+Verified on the AVD: saving both servers, switching by list and by
+intent, forgetting a profile, and the old connection being released
+server-side.
 
 ---
 
-## D. Lanceur GTK
+## D. GTK launcher
 
-- [x] Une app GTK qui préconfigure et lance les trois émulateurs
-- [x] Réglage du rendu interne (x2, x4, xN) avant lancement
-- [x] Le reste — charger une ROM, les autres options — reste à la charge
-      de l'émulateur, on ne réimplémente pas ce qu'il fait déjà
+- [x] A GTK app that preconfigures and launches the three emulators
+- [x] Internal resolution (x2, x4, xN) set before launching
+- [x] The rest — loading a ROM, the other options — stays the
+      emulator's job; we do not reimplement what it already does
 
-`launcher/bs_launcher.c`, GTK3, `make launcher/bs_launcher`. Les
-émulateurs sont trouvés relativement au lanceur, donc ça marche depuis
-un clone sans rien installer.
+`launcher/bs_launcher.c`, GTK3, `make launcher/bs_launcher`. The
+emulators are found relative to the launcher, so it works from a
+checkout with nothing installed.
 
-L'interrupteur et le port passent par l'environnement (`BOTTOM_SCREEN`,
-`BOTTOM_SCREEN_PORT`), que les trois lisent maintenant — Cemu ne le
-faisait pas, c'est ajouté. Un lancement ne réécrit donc jamais un
-réglage posé à la main, et Cemu jetterait une telle modification en
-sortant de toute façon.
+The switch and the port travel through the environment
+(`BOTTOM_SCREEN`, `BOTTOM_SCREEN_PORT`), which all three now read — Cemu
+did not, so that was added. A launch therefore never rewrites a
+preference set by hand, and Cemu would throw such an edit away on exit
+in any case.
 
-La résolution, elle, ne peut pas passer par là, et chaque émulateur la
-range ailleurs :
+The resolution cannot travel that way, and each emulator keeps it
+somewhere else:
 
-- **Azahar** : `resolution_factor` dans `qt-config.ini`, écrit avec son
-  marqueur `\default=false` — sans quoi la valeur est ignorée en
+- **Azahar**: `resolution_factor` in `qt-config.ini`, written with its
+  `\default=false` marker — without which the value is ignored in
   silence.
-- **Cemu** : `<pad_size>` dans `settings.xml`, avec `<open_pad>true` et
-  `<api>0` (OpenGL) au passage, les deux réglages sans lesquels rien
-  n'est capturé du tout.
-- **melonDS** : `ScaleFactor` dans `melonDS.toml`, avec le renderer
-  OpenGL et l'affichage GL sélectionnés au passage — c'est là et nulle
-  part ailleurs que melonDS met à l'échelle, donc un facteur sans le
-  renderer ne ferait rien du tout.
+- **Cemu**: `<pad_size>` in `settings.xml`, with `<open_pad>true` and
+  `<api>0` (OpenGL) alongside, the two settings without which nothing is
+  captured at all.
+- **melonDS**: `ScaleFactor` in `melonDS.toml`, with the OpenGL renderer
+  and GL display selected alongside — that is where melonDS scales and
+  nowhere else, so a factor without the renderer would do nothing.
 
-Les fichiers modifiés sont sauvegardés à côté (`.bs-backup`) : ils
-contiennent des chemins de jeux et des comptes qui ont coûté une soirée
-à quelqu'un.
+Edited files are backed up beside themselves (`.bs-backup`): they hold
+game paths and accounts that took someone an evening to set up.
 
-Le lanceur lit la sortie de l'émulateur et affiche le port **réellement
-ouvert**, pas celui demandé — ils diffèrent dès qu'un port est pris.
-« Send to phone » vise ce port-là via adb.
+The launcher reads the emulator's output and shows the port **actually
+bound**, not the one asked for — they differ as soon as a port is taken.
+"Send to phone" aims at that port over adb.
 
-`--set-resolution <emu> <n>` fait le réglage sans ouvrir de fenêtre :
-utile pour un script, et c'est ainsi que les écritures de configuration
-sont testées.
+`--set-resolution <emu> <n>` does the same with no window: useful in a
+script, and it is how the config writers are tested.
 
 ---
 
-## E. Publication
+## E. Publishing
 
-À la toute fin, quand l'ensemble marche.
-
-- [ ] Publier sur GitHub en privé
-- [ ] Publier aussi sur le serveur git perso (`192.168.2.101:2222`)
-- [ ] Faire une release
-- [ ] README renvoyant vers les forks d'émulateurs (`wozt/melonDS`,
-      `wozt/azahar`, `wozt/Cemu`), qui sont privés — donc utilisable par
-      toi seul, ce qui est assumé
-- [x] `goal.md` renommé en `prompt.md` et exclu du dépôt
+- [x] Published privately on GitHub
+- [x] Published on the personal git server too (`192.168.2.101:2222`)
+- [x] A v0.1.0 tag with release notes
+- [ ] Turn that tag into a GitHub Release (needs a valid `gh` token)
+- [x] README pointing at the emulator forks (`wozt/melonDS`,
+      `wozt/azahar`, `wozt/Cemu`), which are private — so usable by you
+      alone, which is deliberate
+- [x] `goal.md` renamed to `prompt.md` and kept out of the repository
