@@ -406,8 +406,16 @@ fichiers libres, sans aucune clé de titre.
 | Cadence | 30 fps annoncés, 30,5 mesurés |
 | Débit | 2,7 à 6,1 Mbit/s selon la scène |
 | Latence | 3,0 ms, machine locale |
-| Tactile | envoyé et reçu par le pont ; lu par le jeu une fois une manette configurée |
+| Tactile | **vérifié** — 427,208 envoyés et reçus |
+| Boutons | **vérifié** — A reçu par la boucle de `VPADController` |
 | Sticks | **vérifiés** — déflexion 0,75 reçue par `VPADController` |
+
+La trace des boutons vaut plus que les deux autres : elle est placée
+dans `IsButtonHeld`, appelée *par* `VPADController`. Elle ne se déclenche
+donc que si Cemu a réellement une manette émulée — la condition dont
+l'absence faisait disparaître toutes les entrées en silence. Et comme le
+tactile est lu quelques lignes plus haut dans le même `update()`, cette
+ligne l'établit aussi.
 
 Le tactile a été validé avec le **client Linux**, pas avec un téléphone :
 il envoie déjà des événements à la souris, et c'est exactement l'outil
