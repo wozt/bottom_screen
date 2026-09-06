@@ -67,7 +67,7 @@ int main(int argc, char **argv)
     if (bs_read_exact(conn, &ack, sizeof(ack)) != 0)
         return fail("no ack");
     if (ack.magic != BS_MAGIC)  return fail("ack magic mismatch");
-    if (!ack.accepted)          return fail("server refused");
+    if (!ack.accepted)          return fail("server full");
     if (ack.codec != BS_CODEC_H264) return fail("unexpected codec");
     if (ack.extradata_size) {
         uint8_t skip[4096];

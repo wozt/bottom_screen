@@ -32,6 +32,11 @@ typedef struct {
     int         gop;        /* 0 = one keyframe per second */
     const char *encoder;    /* NULL = libx264 */
     int         quiet;      /* 1 = no progress on stdout */
+
+    /* How many clients may watch at once. 0 = 4. They share one
+     * encoder, so a second viewer costs bandwidth rather than a core --
+     * and shares the quality setting with everyone else. */
+    int         max_clients;
 } BsServerConfig;
 
 /* Creates the server and starts its thread. */
@@ -48,8 +53,11 @@ void bs_server_destroy(BsServer *srv);
  * for. 0 before it starts. */
 uint16_t bs_server_port(const BsServer *srv);
 
-/* 1 while a client is connected. */
+/* 1 while at least one client is connected. */
 int bs_server_has_client(const BsServer *srv);
+
+/* How many clients are watching right now. */
+int bs_server_clients(const BsServer *srv);
 
 /* Frames sent since the server started. */
 uint32_t bs_server_frames(const BsServer *srv);

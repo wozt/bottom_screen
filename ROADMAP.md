@@ -142,13 +142,36 @@ distinct, avec son horodatage, laisse chaque client décider de sa
 synchronisation.
 
 ### B2. Multiclient
-- [ ] Plusieurs clients simultanés, même logique que capture2cloud
-- [ ] Un encodeur partagé, pas un par client
-- [ ] Entrées fusionnées entre clients (même logique manette)
+- [x] Plusieurs clients simultanés, même logique que capture2cloud
+- [x] Un encodeur partagé, pas un par client
+- [x] Entrées fusionnées entre clients (même logique manette)
+- [x] Refus explicite quand le serveur est plein
 
-Aujourd'hui le serveur sert un client à la fois. L'encodeur est déjà
-unique et indépendant du client — c'est la boucle d'envoi qui est liée à
-une connexion. À découpler avant d'ajouter des clients.
+Quatre clients par défaut (`BsServerConfig::max_clients`). La boucle
+vidéo est passée d'« une par connexion » à une seule pour tout le monde :
+l'image est encodée une fois et les mêmes paquets partent à chacun, donc
+un deuxième spectateur coûte de la bande passante, pas un cœur.
+
+Chaque client a en revanche son propre fil d'envoi et sa propre file,
+parce que la seule chose qu'un encodeur partagé ne doit pas faire est de
+laisser le client le plus lent imposer son rythme. Un téléphone en
+mauvais wifi remplit sa file et, au-delà d'un demi-mégaoctet, est
+resynchronisé sur une image-clé.
+
+Cette resynchronisation ne pouvait pas se faire par « la dernière image
+gagne » comme pour les images brutes : une trame P est une correction de
+la précédente, donc en sauter une laisse le décodeur produire du bruit
+jusqu'à l'image-clé suivante. On saute donc délibérément jusque-là.
+
+Les boutons sont fusionnés par OU entre clients, et un client qui part en
+maintenant une touche la relâche — sans quoi une déconnexion en plein
+saut laisse A enfoncé pour toujours, ce qui ressemble à un émulateur
+planté. Le tactile et les sticks restent au dernier arrivé : il n'y a
+qu'un doigt et qu'un stick à représenter.
+
+Vérifié par `tests/run_multiclient.sh` (trois clients à 60 fps chacun,
+puis six sur quatre places) et `tests/input_merge.c` (six cas de fusion,
+dont les deux qui échouent silencieusement sans elle).
 
 ### B3. Résolution
 - [x] Suivre le rendu interne des émulateurs (x2, x4, xN)

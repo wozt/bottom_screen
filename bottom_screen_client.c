@@ -173,9 +173,12 @@ int main(int argc, char **argv)
     }
 
     BsHelloAck ack;
-    if (bs_read_exact(conn, &ack, sizeof(ack)) != 0 ||
-        ack.magic != BS_MAGIC || !ack.accepted) {
-        fprintf(stderr, "server refused the connection\n");
+    if (bs_read_exact(conn, &ack, sizeof(ack)) != 0 || ack.magic != BS_MAGIC) {
+        fprintf(stderr, "no usable answer from the server\n");
+        return 1;
+    }
+    if (!ack.accepted) {
+        fprintf(stderr, "the server is full\n");
         return 1;
     }
     if (ack.extradata_size) {

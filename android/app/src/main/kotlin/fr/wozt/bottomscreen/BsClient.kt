@@ -99,7 +99,7 @@ class BsClient(
             input.readFully(ackBytes)
             val ack = BsProtocol.parseHelloAck(ackBytes)
                 ?: throw IllegalStateException("bad handshake")
-            if (!ack.accepted) throw IllegalStateException("server refused")
+            if (!ack.accepted) throw IllegalStateException("the server is full")
             if (ack.codec != BsProtocol.CODEC_H264)
                 throw IllegalStateException("unexpected codec ${ack.codec}")
             if (ack.extradataSize > 0) {

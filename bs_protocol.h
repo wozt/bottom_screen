@@ -82,7 +82,10 @@ typedef struct __attribute__((packed)) {
 typedef struct __attribute__((packed)) {
     uint32_t magic;
     uint8_t  version;
-    uint8_t  accepted;   /* 0 = refused; the connection then closes */
+    uint8_t  accepted;   /* 0 = refused; the connection then closes.
+                          * The only refusal today is a full server --
+                          * it serves a fixed number of clients at once
+                          * -- so a client may say so plainly. */
     uint8_t  console;    /* BsConsole */
     uint8_t  codec;      /* BsCodec */
     uint16_t width;      /* native, never scaled by the server */
