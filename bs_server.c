@@ -117,6 +117,11 @@ struct BsServer {
 
     /* Guards the roster: in_use, gone, and the merged button state. */
     pthread_mutex_t roster;
+
+    /* Held while reaping. Both the pump and the accept thread clean up
+     * after departed clients, and two of them joining the same thread
+     * is undefined behaviour rather than a wasted call. */
+    pthread_mutex_t reap_lock;
     pthread_cond_t  roster_cond;   /* wakes the pump when someone arrives */
 
     uint32_t  merged_buttons;
@@ -432,6 +437,11 @@ static void *client_recv_thread(void *arg)
     pthread_mutex_lock(&cl->lock);
     pthread_cond_signal(&cl->cond);
     pthread_mutex_unlock(&cl->lock);
+
+    /* Wake the pump so it can clean up after us. */
+    pthread_mutex_lock(&srv->roster);
+    pthread_cond_broadcast(&srv->roster_cond);
+    pthread_mutex_unlock(&srv->roster);
     return NULL;
 }
 
@@ -453,6 +463,7 @@ static int server_live_clients(BsServer *srv)
  */
 static void server_reap(BsServer *srv)
 {
+    pthread_mutex_lock(&srv->reap_lock);
     for (int i = 0; i < srv->max_clients; i++) {
         BsClient *cl = &srv->clients[i];
         if (!cl->in_use || !cl->gone)
@@ -480,6 +491,7 @@ static void server_reap(BsServer *srv)
         memset(cl, 0, sizeof(*cl));
         cl->srv = keep;
     }
+    pthread_mutex_unlock(&srv->reap_lock);
 }
 
 /*
@@ -681,9 +693,21 @@ static void *pump_thread(void *arg)
         audio_buf = malloc((size_t)audio_chunk * srv->info.audio_channels * sizeof(int16_t));
 
     while (!srv->stop) {
+        /*
+         * Nobody watching: let go of whoever just left before settling
+         * down to wait. Reaping only when the next client arrives would
+         * park a socket and two threads for as long as nobody does --
+         * which, on a machine serving one person, is for good.
+         */
         pthread_mutex_lock(&srv->roster);
-        while (!srv->stop && server_live_clients(srv) == 0)
+        while (!srv->stop && server_live_clients(srv) == 0) {
+            pthread_mutex_unlock(&srv->roster);
+            server_reap(srv);
+            pthread_mutex_lock(&srv->roster);
+            if (srv->stop || server_live_clients(srv) > 0)
+                break;
             pthread_cond_wait(&srv->roster_cond, &srv->roster);
+        }
         pthread_mutex_unlock(&srv->roster);
         if (srv->stop)
             break;
@@ -801,6 +825,7 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
         goto fail;
     }
     pthread_mutex_init(&srv->roster, NULL);
+    pthread_mutex_init(&srv->reap_lock, NULL);
     pthread_cond_init(&srv->roster_cond, NULL);
 
     BsEncoderConfig ecfg = {
@@ -939,6 +964,7 @@ void bs_server_destroy(BsServer *srv)
         bs_audio_destroy(srv->aenc);
     if (srv->clients) {
         pthread_cond_destroy(&srv->roster_cond);
+        pthread_mutex_destroy(&srv->reap_lock);
         pthread_mutex_destroy(&srv->roster);
         free(srv->clients);
     }

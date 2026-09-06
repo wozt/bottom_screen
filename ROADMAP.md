@@ -235,12 +235,31 @@ Détail du raisonnement VP8 vs H.264 dans WORKINPROGRESS.
       déplace — on bouge le losange, pas chaque bouton
 
 ### C5. Profils
-- [ ] Plusieurs profils dans le menu des clients
-- [ ] Basculer de l'un à l'autre quand plusieurs émulateurs tournent en
+- [x] Plusieurs profils dans le menu des clients (Android)
+- [x] Basculer de l'un à l'autre quand plusieurs émulateurs tournent en
       même temps
+- [ ] Même chose sur les clients js et nro, quand ils existeront
 
-Suppose que chaque émulateur écoute sur son propre port — donc dépend de
-B4.
+Les serveurs connus sont listés au-dessus du champ d'adresse, un appui
+chacun. L'enregistrement se fait depuis les options **une fois
+connecté**, parce que c'est à ce moment-là qu'on connaît la console — le
+serveur l'annonce — et que « Wii U GamePad (5410) » vaut mieux que
+l'adresse qu'il remplace. Appui long pour oublier, avec confirmation :
+ces boutons sont faits pour être tapés vite.
+
+Deux manques sont apparus en testant, qui rendaient la liste inutile :
+
+- le bouton retour quittait l'application au lieu de revenir à la liste,
+  donc les profils n'étaient atteignables qu'au démarrage à froid. Les
+  options ont maintenant « Change server ».
+- relancer l'app avec une adresse pendant qu'elle tournait ne faisait
+  rien du tout : les extras arrivaient sur un intent que `onCreate`
+  avait déjà lu. C'est précisément le mode d'emploi du lanceur GTK (D),
+  qui aurait donc échoué en silence. `onNewIntent` bascule maintenant.
+
+Vérifié sur l'AVD : enregistrement des deux serveurs, bascule par la
+liste et par intent, oubli d'un profil, et libération de l'ancienne
+connexion côté serveur.
 
 ---
 

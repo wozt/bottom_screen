@@ -1,6 +1,7 @@
 package fr.wozt.bottomscreen
 
 import android.app.AlertDialog
+import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Bundle
@@ -50,6 +51,11 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private var muted = false
     private var surfaceReady = false
     private var profile = ConsoleProfile.DS
+    private var settingsDialog: AlertDialog? = null
+
+    /* Set while leaving a server on purpose, so the closing socket does
+     * not report itself as a failure on the way out. */
+    private var leavingOnPurpose = false
     private var ack: BsProtocol.HelloAck? = null
     private var quality = Quality.AUTO
     private var buttonScale = 1f
@@ -86,28 +92,42 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
          *   am start -n fr.wozt.bottomscreen/.MainActivity \
          *     --es host 127.0.0.1 --ei port 5090
          */
-        intent?.getStringExtra("host")?.let { h ->
-            hostField.setText(h)
-            intent.getIntExtra("port", BsProtocol.DEFAULT_PORT).let {
-                portField.setText(it.toString())
-            }
-            root.post { connect() }
-        }
+        intent?.let { applyLaunchIntent(it, running = false) }
+    }
 
-        /* Development affordances, so a layout or a mode can be checked
-         * with one adb command instead of a sequence of blind taps:
-         *   --ez edit true        start in move-buttons mode
-         *   --ez fullscreen true  start immersive
-         */
-        intent?.let { i ->
-            if (i.getBooleanExtra("fullscreen", false)) {
-                fullscreen = true
-                applyFullscreen()
-            }
-            /* The pad does not exist until a connection brings one, so
-             * this is remembered and applied when it is built. */
-            startInEdit = i.getBooleanExtra("edit", false)
+    /*
+     * The same address may arrive at an app that is already open.
+     *
+     * A launcher aimed at another emulator sends a second intent, and
+     * without this it does nothing at all: the extras land on an intent
+     * onCreate has already read and will not read again, so the app just
+     * comes to the front still showing the console you were leaving.
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        applyLaunchIntent(intent, running = true)
+    }
+
+    private fun applyLaunchIntent(i: Intent, running: Boolean) {
+        if (i.getBooleanExtra("fullscreen", false)) {
+            fullscreen = true
+            applyFullscreen()
         }
+        /* The pad does not exist until a connection brings one, so this
+         * is remembered and applied when it is built. */
+        startInEdit = i.getBooleanExtra("edit", false)
+
+        val host = i.getStringExtra("host") ?: return
+        val port = i.getIntExtra("port", BsProtocol.DEFAULT_PORT)
+
+        /* Already playing somewhere else: put that down first, or the
+         * old stream keeps painting over the new one. */
+        if (running) disconnectToForm()
+
+        hostField.setText(host)
+        portField.setText(port.toString())
+        root.post { connect() }
     }
 
     private fun buildForm() {
@@ -133,14 +153,18 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             setTextColor(Color.WHITE)
             setHintTextColor(Color.GRAY)
         }
-        form.addView(hostField)
-
         portField = EditText(this).apply {
             hint = "port"
             setText(prefs.getInt("port", BsProtocol.DEFAULT_PORT).toString())
             setTextColor(Color.WHITE)
             setHintTextColor(Color.GRAY)
         }
+
+        /* The known servers come first, because the whole point of
+         * keeping them is not to type an address again. */
+        addSavedServers(pad)
+
+        form.addView(hostField)
         form.addView(portField)
 
         form.addView(Button(this).apply {
@@ -155,6 +179,87 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         form.addView(status)
 
         root.addView(form)
+    }
+
+    /*
+     * One tap per server this phone already knows.
+     *
+     * Three emulators run at once, each on its own port -- and a server
+     * whose port was taken moves to the next one and says so -- which
+     * makes the address the thing you would otherwise retype every time
+     * you change console.
+     */
+    private fun addSavedServers(pad: Int) {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val saved = Profiles.load(prefs)
+        if (saved.isEmpty()) return
+
+        form.addView(TextView(this).apply {
+            text = "Saved servers"
+            setTextColor(Color.GRAY)
+            setPadding(0, 0, 0, pad / 2)
+        })
+        for (p in saved) {
+            form.addView(Button(this).apply {
+                text = "${p.name}\n${p.where}"
+                setOnClickListener {
+                    hostField.setText(p.host)
+                    portField.setText(p.port.toString())
+                    connect()
+                }
+                /* Deleting is a long press with a confirmation: these
+                 * buttons are meant to be tapped in a hurry, and a
+                 * delete that shares that gesture would be tapped by
+                 * accident. */
+                setOnLongClickListener {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("Forget ${p.name}?")
+                        .setMessage(p.where)
+                        .setPositiveButton("Forget") { _, _ ->
+                            Profiles.remove(prefs, p)
+                            rebuildForm()
+                        }
+                        .setNegativeButton("Keep", null)
+                        .show()
+                    true
+                }
+            })
+        }
+    }
+
+    private fun rebuildForm() {
+        root.removeView(form)
+        buildForm()
+    }
+
+    /*
+     * Offered once connected rather than before, because that is when
+     * the console is known -- the server announces it -- and a name like
+     * "Wii U (5092)" is worth more than the address it replaces.
+     */
+    private fun promptSaveProfile() {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        val host = prefs.getString("host", "") ?: ""
+        val port = prefs.getInt("port", BsProtocol.DEFAULT_PORT)
+        if (host.isEmpty()) return
+
+        val nameEdit = EditText(this).apply {
+            setText(Profiles.suggestName(profile.label, host, port))
+            setSelectAllOnFocus(true)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Save this server")
+            .setMessage("$host:$port")
+            .setView(nameEdit)
+            .setPositiveButton("Save") { _, _ ->
+                val name = nameEdit.text.toString().trim()
+                Profiles.upsert(prefs, Profile(
+                    name = name.ifEmpty { "$host:$port" },
+                    host = host,
+                    port = port))
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun connect() {
@@ -261,6 +366,12 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     override fun onDisconnected(reason: String) {
         runOnUiThread {
+            if (leavingOnPurpose) {
+                /* Already torn down by disconnectToForm, which left a
+                 * message of its own. */
+                leavingOnPurpose = false
+                return@runOnUiThread
+            }
             decoder?.release()
             decoder = null
             audio?.release()
@@ -270,10 +381,37 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             play = null
             screen = null
             pad = null
-            if (form.parent == null) root.addView(form)
-            form.visibility = View.VISIBLE
+            /* Rebuilt rather than merely shown again, so a server saved
+             * during this session is in the list when we land back on
+             * it. */
+            rebuildForm()
             status.text = "Disconnected: $reason"
         }
+    }
+
+    /*
+     * Back out to the server list without leaving the app.
+     *
+     * The back button quits altogether, so until this the only way to
+     * reach a different emulator was to close the app and start it
+     * again -- which is exactly what keeping a list of servers was
+     * supposed to spare you.
+     */
+    private fun disconnectToForm() {
+        leavingOnPurpose = true
+        client?.stop()
+        client = null
+        decoder?.release()
+        decoder = null
+        audio?.release()
+        audio = null
+        surfaceReady = false
+        play?.let { root.removeView(it) }
+        play = null
+        screen = null
+        pad = null
+        rebuildForm()
+        status.text = "Choose a server"
     }
 
     // --- the playing layout ------------------------------------------
@@ -654,6 +792,17 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             addView(TextView(this@MainActivity).apply { text = "Server" })
             addView(hostEdit)
             addView(portEdit)
+            addView(Button(this@MainActivity).apply {
+                text = "Save this server"
+                setOnClickListener { promptSaveProfile() }
+            })
+            addView(Button(this@MainActivity).apply {
+                text = "Change server"
+                setOnClickListener {
+                    settingsDialog?.dismiss()
+                    disconnectToForm()
+                }
+            })
             addView(TextView(this@MainActivity).apply {
                 text = "Stream quality"
                 setPadding(0, gap, 0, 0)
@@ -670,7 +819,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             addView(fullBox)
         }
 
-        AlertDialog.Builder(this)
+        settingsDialog = AlertDialog.Builder(this)
             .setTitle("Settings")
             .setView(body)
             .setPositiveButton("Apply") { _, _ ->
