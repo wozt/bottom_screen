@@ -86,8 +86,18 @@ int main(int argc, char **argv)
     case BS_CONSOLE_WIIU: exp_w = BS_WIIU_WIDTH; exp_h = BS_WIIU_HEIGHT; break;
     default: return fail("unknown console in ack");
     }
-    if (ack.width != exp_w || ack.height != exp_h)
-        return fail("announced size is not the console's native size");
+    /*
+     * The aspect ratio, not the exact size: an emulator rendering at a
+     * higher internal resolution is doing the right thing and the
+     * stream simply arrives sharper. What must not change is the shape,
+     * which is what catches a framebuffer handed over rotated -- the
+     * 3DS stores its screens in portrait, so 240x320 where 320x240 was
+     * expected is a real defect and not a matter of scale.
+     */
+    const double want = (double)exp_w / exp_h;
+    const double got  = (double)ack.width / ack.height;
+    if (got < want * 0.98 || got > want * 1.02)
+        return fail("announced aspect ratio is not the console's");
 
     printf("handshake ok: console=%u %ux%u @%u fps\n",
            ack.console, ack.width, ack.height, ack.fps);
@@ -143,8 +153,11 @@ int main(int argc, char **argv)
                                     n - sizeof(vh), &f);
         if (got < 0) return fail("decode error");
         if (got == 1) {
-            if (f.width != exp_w || f.height != exp_h)
-                return fail("decoded picture is not the native size");
+            /* Against what the handshake announced, not the console's
+             * own size: an emulator may render larger, and the contract
+             * is that the picture matches what was promised. */
+            if (f.width != ack.width || f.height != ack.height)
+                return fail("decoded picture is not the announced size");
             decoded++;
 
             for (int row = 0; row < f.height; row++) {
