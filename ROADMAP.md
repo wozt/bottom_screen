@@ -177,11 +177,27 @@ dont les deux qui échouent silencieusement sans elle).
 - [x] Suivre le rendu interne des émulateurs (x2, x4, xN)
 - [x] Reconfigurer l'encodeur en direct quand la taille change
 - [x] Annoncer la nouvelle taille aux clients (`STREAM_INFO`)
+- [x] Lecture GPU pour melonDS (le dernier des trois)
 - [ ] Choix de la résolution de réception côté client
 
-Dépend du readback GPU : le rendu mis à l'échelle n'existe que sur les
-renderers matériels, et notre pont ne lit que la RAM. Voir la limite
-connue dans WORKINPROGRESS.
+melonDS ne met à l'échelle que dans son renderer OpenGL, qui garde les
+écrans dans une texture GPU au lieu de la RAM. `GetFramebuffers` renvoie
+alors `false` et pose le handle d'un tableau de textures : écran du haut
+sur la couche 0, écran du bas sur la couche 1, en 256×N par 192×N. Cette
+couche est maintenant relue en BGRA, le même format que le chemin
+logiciel, donc rien en aval ne sait quel renderer a dessiné l'image.
+
+La taille vient de la texture elle-même, pas du réglage d'échelle — le
+raccourci inverse, côté Azahar, avait lu six fois au-delà du tampon.
+
+Le tactile est converti depuis la taille annoncée pour la même raison.
+Il divisait par les 256×192 natifs, ce qui n'est juste qu'en x1 ; en x4
+tout l'écran se repliait dans son quart supérieur gauche. Azahar avait
+eu exactement ce bug.
+
+Vérifié avec a commercial DS title en x4 : 1024×768 annoncés, écran du bas
+à l'endroit et aux bonnes couleurs, et un appui au centre de l'espace
+annoncé qui lance le jeu.
 
 ### B4. Port
 - [x] Si le port est pris au démarrage, incrémenter et réessayer
@@ -289,10 +305,10 @@ range ailleurs :
 - **Cemu** : `<pad_size>` dans `settings.xml`, avec `<open_pad>true` et
   `<api>0` (OpenGL) au passage, les deux réglages sans lesquels rien
   n'est capturé du tout.
-- **melonDS** : impossible, et c'est dit dans l'interface plutôt que
-  masqué. melonDS ne mise à l'échelle que dans son renderer OpenGL, qui
-  garde les écrans sur le GPU ; le pont lit la RAM, que seul le renderer
-  logiciel remplit. C'est le blocage de B3, pas un oubli.
+- **melonDS** : `ScaleFactor` dans `melonDS.toml`, avec le renderer
+  OpenGL et l'affichage GL sélectionnés au passage — c'est là et nulle
+  part ailleurs que melonDS met à l'échelle, donc un facteur sans le
+  renderer ne ferait rien du tout.
 
 Les fichiers modifiés sont sauvegardés à côté (`.bs-backup`) : ils
 contiennent des chemins de jeux et des comptes qui ont coûté une soirée

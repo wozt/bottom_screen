@@ -22,7 +22,7 @@
 
 /* Where the internal resolution lives, which is different every time. */
 typedef enum {
-    SCALE_NONE,     /* melonDS: not possible while streaming, see below */
+    SCALE_MELONDS,  /* [3D.GL] ScaleFactor in melonDS.toml */
     SCALE_AZAHAR,   /* [Renderer] resolution_factor in qt-config.ini */
     SCALE_CEMU      /* <pad_size> in settings.xml */
 } ScaleKind;
@@ -49,17 +49,15 @@ static Emu emus[] = {
         .console = "Nintendo DS",
         .native_w = 256, .native_h = 192,
         .default_port = BS_DEFAULT_PORT,
-        .scale_kind = SCALE_NONE,
+        .scale_kind = SCALE_MELONDS,
         /*
-         * Not an oversight. melonDS only scales in its OpenGL renderer,
-         * and that renderer keeps the screens on the GPU: the bridge
-         * reads the framebuffers out of RAM, which the software renderer
-         * is the only one to fill. Raising it would trade the picture for
-         * the resolution, so it is not offered.
+         * Anything above 1x means the OpenGL renderer, which is where
+         * melonDS scales -- so the launcher selects it. That renderer
+         * keeps the screens in a GPU texture rather than RAM, which the
+         * bridge now reads back.
          */
-        .scale_note = "Fixed at 256\xc3\x97""192 \xe2\x80\x94 scaling needs the OpenGL "
-                      "renderer, which keeps the screen on the GPU where "
-                      "the bridge cannot read it.",
+        .scale_note = "Switches melonDS to its OpenGL renderer, which is "
+                      "where the scale lives.",
     },
     {
         .name = "Azahar",
@@ -180,6 +178,61 @@ static gboolean azahar_set_scale(int factor, char **why)
         g_string_append_printf(out, "\nresolution_factor=%d\n", factor);
     if (in_renderer && !wrote_default)
         g_string_append(out, "resolution_factor\\default=false\n");
+
+    gboolean ok = write_file_with_backup(path, out->str);
+    if (!ok)
+        *why = g_strdup_printf("cannot write %s", path);
+
+    g_string_free(out, TRUE);
+    g_strfreev(lines);
+    g_free(text);
+    g_free(path);
+    return ok;
+}
+
+/* ------------------------------------------------------ melonds config */
+
+/*
+ * melonDS scales in its OpenGL renderer and nowhere else, so setting a
+ * factor means selecting that renderer too. Both are written here rather
+ * than left for someone to discover: a scale that silently does nothing
+ * because the software renderer is selected is worse than no control.
+ */
+static gboolean melonds_set_scale(int factor, char **why)
+{
+    char *path = home_config("melonDS/melonDS.toml");
+    gsize len = 0;
+    char *text = read_file(path, &len);
+    if (!text) {
+        *why = g_strdup_printf("cannot read %s", path);
+        g_free(path);
+        return FALSE;
+    }
+
+    char **lines = g_strsplit(text, "\n", -1);
+    GString *out = g_string_new(NULL);
+    char section[64] = "";
+
+    for (int i = 0; lines[i]; i++) {
+        const char *l = lines[i];
+
+        if (l[0] == '[')
+            g_strlcpy(section, l, sizeof(section));
+
+        if (!g_strcmp0(section, "[3D]") && g_str_has_prefix(l, "Renderer =")) {
+            g_string_append(out, "Renderer = 1");
+        } else if (!g_strcmp0(section, "[3D.GL]") &&
+                   g_str_has_prefix(l, "ScaleFactor =")) {
+            g_string_append_printf(out, "ScaleFactor = %d", factor);
+        } else if (!g_strcmp0(section, "[Screen]") &&
+                   g_str_has_prefix(l, "UseGL =")) {
+            g_string_append(out, "UseGL = true");
+        } else {
+            g_string_append(out, l);
+        }
+        if (lines[i + 1])
+            g_string_append_c(out, '\n');
+    }
 
     gboolean ok = write_file_with_backup(path, out->str);
     if (!ok)
@@ -323,19 +376,21 @@ static void on_child_gone(GPid pid, gint status, gpointer user)
     set_status(e, "<small>not running</small>");
 }
 
+static gboolean set_scale_for(Emu *e, int factor, char **why)
+{
+    switch (e->scale_kind) {
+    case SCALE_MELONDS: return melonds_set_scale(factor, why);
+    case SCALE_AZAHAR:  return azahar_set_scale(factor, why);
+    default:            return cemu_set_pad(e->native_w * factor,
+                                            e->native_h * factor, why);
+    }
+}
+
 static void apply_scale(Emu *e)
 {
-    if (e->scale_kind == SCALE_NONE)
-        return;
-
     int factor = gtk_combo_box_get_active(GTK_COMBO_BOX(e->scale)) + 1;
     char *why = NULL;
-    gboolean ok = FALSE;
-
-    if (e->scale_kind == SCALE_AZAHAR)
-        ok = azahar_set_scale(factor, &why);
-    else
-        ok = cemu_set_pad(e->native_w * factor, e->native_h * factor, &why);
+    gboolean ok = set_scale_for(e, factor, &why);
 
     if (!ok && why) {
         char *msg = g_markup_printf_escaped("<small>%s</small>", why);
@@ -483,7 +538,6 @@ static GtkWidget *build_emu_panel(Emu *e)
         gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(e->scale), item);
     }
     gtk_combo_box_set_active(GTK_COMBO_BOX(e->scale), 0);
-    gtk_widget_set_sensitive(e->scale, e->scale_kind != SCALE_NONE);
     gtk_box_pack_start(GTK_BOX(srow), e->scale, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), srow, FALSE, FALSE, 0);
 
@@ -580,15 +634,8 @@ static int apply_from_command_line(const char *which, const char *factor_text)
         Emu *e = &emus[i];
         if (g_ascii_strcasecmp(which, e->name) != 0)
             continue;
-        if (e->scale_kind == SCALE_NONE) {
-            fprintf(stderr, "%s: %s\n", e->name, e->scale_note);
-            return 3;
-        }
-
         char *why = NULL;
-        gboolean ok = (e->scale_kind == SCALE_AZAHAR)
-            ? azahar_set_scale(factor, &why)
-            : cemu_set_pad(e->native_w * factor, e->native_h * factor, &why);
+        gboolean ok = set_scale_for(e, factor, &why);
         if (!ok) {
             fprintf(stderr, "%s: %s\n", e->name, why ? why : "failed");
             g_free(why);

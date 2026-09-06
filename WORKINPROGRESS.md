@@ -4,7 +4,7 @@ Streamer l'écran du bas des consoles Nintendo (DS, 3DS, Wii U) depuis les
 émulateurs vers un téléphone Android ou un homebrew Switch 1, avec retour
 des inputs tactiles et boutons virtuels.
 
-Cahier des charges initial : [goal.md](goal.md).
+Cahier des charges initial : `prompt.md`, gardé hors du dépôt.
 
 ---
 
