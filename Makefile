@@ -17,8 +17,8 @@ SERVER_LIBS   := $(shell pkg-config --libs   $(SERVER_PKGS)) -lpthread
 CLIENT_CFLAGS := $(shell pkg-config --cflags $(CLIENT_PKGS))
 CLIENT_LIBS   := $(shell pkg-config --libs   $(CLIENT_PKGS))
 
-SERVER_SRC := bottom_screen_server.c bs_server.c bs_encoder.c bs_net.c \
-              bs_mailbox.c testpattern.c
+SERVER_SRC := bottom_screen_server.c bs_server.c bs_encoder.c bs_audio.c \
+              bs_net.c bs_mailbox.c testpattern.c
 CLIENT_SRC := bottom_screen_client.c bs_decoder.c bs_net.c
 SMOKE_SRC  := tests/smoke_client.c bs_decoder.c bs_net.c
 
@@ -28,7 +28,7 @@ all: $(BINARIES)
 
 bottom_screen_server: $(SERVER_SRC) bs_server.h bs_encoder.h bs_net.h \
                       bs_protocol.h bs_source.h bs_mailbox.h
-	$(CC) $(CFLAGS) $(SERVER_CFLAGS) -o $@ $(SERVER_SRC) $(LDFLAGS) $(SERVER_LIBS)
+	$(CC) $(CFLAGS) $(SERVER_CFLAGS) -o $@ $(SERVER_SRC) $(LDFLAGS) $(SERVER_LIBS) -lm
 
 bottom_screen_client: $(CLIENT_SRC) bs_decoder.h bs_net.h bs_protocol.h
 	$(CC) $(CFLAGS) $(CLIENT_CFLAGS) -o $@ $(CLIENT_SRC) $(LDFLAGS) $(CLIENT_LIBS)

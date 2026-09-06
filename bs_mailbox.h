@@ -31,9 +31,20 @@ typedef struct {
     int16_t  axis[4];      /* indexed by BsAxis - 1 */
 } BsInputState;
 
-/* pixfmt and the size must match what the emulator actually hands over. */
+/* pixfmt and the size must match what the emulator actually hands over.
+ * audio_rate of 0 means the emulator sends no sound. */
 BsSource *bs_mailbox_create(BsConsole console, int width, int height,
-                            int fps, BsPixFmt pixfmt);
+                            int fps, BsPixFmt pixfmt,
+                            int audio_rate, int audio_channels);
+
+/*
+ * Called from the emulator's audio callback. Never blocks.
+ *
+ * Overruns drop the oldest samples rather than the newest: if the link
+ * cannot keep up, the sound you want is the sound from now, and a queue
+ * that only grows would turn a hiccup into a permanent delay.
+ */
+void bs_mailbox_submit_audio(BsSource *src, const int16_t *samples, int frames);
 
 /* Called from the emulator's thread. Never blocks, never fails. */
 void bs_mailbox_submit(BsSource *src, const void *pixels, int stride);

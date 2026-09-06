@@ -1,4 +1,5 @@
 #include "bs_server.h"
+#include "bs_audio.h"
 #include "bs_encoder.h"
 #include "bs_net.h"
 #include "bs_protocol.h"
@@ -14,6 +15,7 @@ struct BsServer {
     BsSource      *source;
     BsSourceInfo   info;
     BsEncoder     *enc;
+    BsAudioEncoder *aenc;      /* NULL when the source is silent */
     BsServerConfig cfg;
 
     int       listen_fd;
@@ -99,6 +101,26 @@ static void *input_thread(void *arg)
     /* This client left. The server has not. */
     a->gone = 1;
     return NULL;
+}
+
+typedef struct {
+    BsConn  *conn;
+    uint32_t audio_seq;
+    int      failed_audio;
+} AudioCtx;
+
+static void on_audio(const uint8_t *data, size_t size, void *user)
+{
+    AudioCtx *a = user;
+    if (a->failed_audio)
+        return;
+
+    BsAudioHeader ah;
+    ah.timestamp_us = bs_now_us();
+    ah.sequence     = a->audio_seq++;
+
+    if (bs_send_msg(a->conn, BS_MSG_AUDIO, &ah, sizeof(ah), data, size) < 0)
+        a->failed_audio = 1;
 }
 
 typedef struct {
@@ -191,6 +213,11 @@ static void serve_client(BsServer *srv, BsConn *conn)
     ack.height  = (uint16_t)srv->info.height;
     ack.fps     = (uint16_t)srv->info.fps;
     ack.extradata_size = (uint16_t)extra_size;
+    if (srv->aenc) {
+        ack.audio_codec    = BS_ACODEC_OPUS;
+        ack.audio_channels = (uint8_t)srv->info.audio_channels;
+        ack.audio_rate     = (uint16_t)48000;   /* what Opus actually carries */
+    }
 
     if (bs_write_all(conn, &ack, sizeof(ack)) != 0)
         return;
@@ -207,7 +234,18 @@ static void serve_client(BsServer *srv, BsConn *conn)
     bs_encoder_request_keyframe(srv->enc);
 
     SendCtx sc = { .conn = conn, .frame_id = 0, .failed = 0, .bytes = 0 };
+    AudioCtx ac = { .conn = conn, .audio_seq = 0, .failed_audio = 0 };
     uint32_t started = bs_now_us();
+
+    /* One video frame's worth of sound is the natural drain size: the
+     * loop already runs once per frame, and asking for more would only
+     * add latency waiting to fill it. */
+    const int audio_chunk = srv->aenc && srv->info.audio_rate > 0
+                          ? srv->info.audio_rate / (srv->info.fps > 0 ? srv->info.fps : 30) + 64
+                          : 0;
+    int16_t *audio_buf = NULL;
+    if (audio_chunk > 0)
+        audio_buf = malloc((size_t)audio_chunk * srv->info.audio_channels * sizeof(int16_t));
 
     while (!srv->stop && !sc.failed && !ia.gone) {
         if (srv->quality_dirty) {
@@ -230,6 +268,15 @@ static void serve_client(BsServer *srv, BsConn *conn)
         sc.frame_id++;
         srv->frames++;
 
+        /* Sound goes out alongside, in its own messages. A client that
+         * cannot keep up drops one without disturbing the other. */
+        if (audio_buf && srv->source->take_audio) {
+            int got = srv->source->take_audio(srv->source->self,
+                                              audio_buf, audio_chunk);
+            if (got > 0)
+                bs_audio_encode(srv->aenc, audio_buf, got, on_audio, &ac);
+        }
+
         if (!srv->cfg.quiet &&
             sc.frame_id % (uint32_t)(srv->info.fps * 5) == 0) {
             uint32_t elapsed = bs_now_us() - started;
@@ -239,6 +286,7 @@ static void serve_client(BsServer *srv, BsConn *conn)
         }
     }
 
+    free(audio_buf);
     ia.gone = 1;
     if (have_thread) {
         shutdown(bs_conn_fd(conn), SHUT_RDWR);
@@ -315,6 +363,18 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
      * from a phone. The port actually bound is announced, and
      * bs_server_port reports it.
      */
+    if (srv->info.audio_rate > 0 && srv->info.audio_channels > 0) {
+        BsAudioConfig acfg = {
+            .rate = srv->info.audio_rate,
+            .channels = srv->info.audio_channels,
+            .bitrate = 0,
+        };
+        char aerr[128] = "";
+        srv->aenc = bs_audio_create(&acfg, aerr, sizeof(aerr));
+        if (!srv->aenc && !srv->cfg.quiet)
+            fprintf(stderr, "bottom_screen: no sound (%s)\n", aerr);
+    }
+
     uint16_t wanted = srv->cfg.port ? srv->cfg.port : BS_DEFAULT_PORT;
     for (int i = 0; i < 20; i++) {
         uint16_t try_port = (uint16_t)(wanted + i);
@@ -382,6 +442,8 @@ void bs_server_destroy(BsServer *srv)
         close(srv->listen_fd);
     if (srv->enc)
         bs_encoder_destroy(srv->enc);
+    if (srv->aenc)
+        bs_audio_destroy(srv->aenc);
     free(srv);
 }
 

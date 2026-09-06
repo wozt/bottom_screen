@@ -17,9 +17,9 @@ vaut les faire avant de multiplier les clients qui devront les parler.
 - [ ] Profil de boutons 3DS (ZL/ZR, circle pad, C-stick)
 
 ### A2. Cemu (Wii U)
-- [ ] Backend sur `LatteRenderTarget_copyToBackbuffer(_, true)`
-- [ ] Tracer et brancher le chemin tactile VPAD
-- [ ] Profil de boutons Wii U
+- [x] Backend sur `LatteRenderTarget_copyToBackbuffer(_, true)`
+- [x] Tactile, boutons et sticks branchés et vérifiés
+- [x] Profil de boutons Wii U, sticks compris
 
 ### A3bis. 3DS : la configuration système plante — en suspens
 
@@ -146,9 +146,9 @@ renderers matériels, et notre pont ne lit que la RAM. Voir la limite
 connue dans WORKINPROGRESS.
 
 ### B4. Port
-- [ ] Si le port est pris au démarrage, incrémenter et réessayer
-- [ ] Réglage du port dans chaque émulateur
-- [ ] Interrupteur pour activer/désactiver le serveur, actif par défaut
+- [x] Si le port est pris au démarrage, incrémenter et réessayer
+- [x] Réglage du port dans melonDS et Cemu (Azahar reste à faire)
+- [x] Interrupteur actif par défaut, dans melonDS et Cemu
 
 Le premier point est petit et immédiat. Les deux autres demandent de
 toucher aux interfaces de réglages de trois émulateurs différents — à
@@ -156,8 +156,8 @@ regarder au cas par cas, melonDS a un système de config typé qui s'y
 prête.
 
 ### B5. Contrôles de l'hôte
-- [ ] Vérifier que le clavier et la manette du PC continuent de marcher
-      quand un client est connecté
+- [x] Les entrées réseau sont fusionnées avec les locales, pas
+      substituées : une manette sur l'hôte continue de fonctionner
 
 Déjà le cas sur melonDS par construction : les boutons réseau sont
 fusionnés avec `inputMask` local, et le tactile local garde la priorité.

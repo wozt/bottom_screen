@@ -108,6 +108,9 @@ int main(int argc, char **argv)
     int y_min = 255, y_max = 0;
     long long y_sum = 0; long long y_count = 0;
 
+    int audio_packets = 0;
+    size_t audio_bytes = 0;
+
     int decoded = 0, keyframes = 0;
     uint32_t first_id = 0, last_id = 0;
     uint64_t total_bytes = 0;
@@ -118,6 +121,13 @@ int main(int argc, char **argv)
         size_t n = 0;
         if (bs_recv_msg(conn, &type, buf, BS_MAX_PAYLOAD, &n) != 0)
             return fail("stream ended early");
+        if (type == BS_MSG_AUDIO) {
+            if (n > sizeof(BsAudioHeader)) {
+                audio_packets++;
+                audio_bytes += n - sizeof(BsAudioHeader);
+            }
+            continue;
+        }
         if (type != BS_MSG_VIDEO) continue;
         if (n <= sizeof(BsVideoHeader)) return fail("truncated video message");
 
@@ -213,6 +223,13 @@ int main(int argc, char **argv)
 
     printf("decoded %d frames, %d keyframes, %.1f fps, %.2f Mbit/s\n",
            decoded, keyframes, fps, mbps);
+    if (ack.audio_rate > 0)
+        printf("audio: %d paquets, %.1f ko, %u Hz %u canaux\n",
+               audio_packets, audio_bytes / 1024.0,
+               (unsigned)ack.audio_rate, (unsigned)ack.audio_channels);
+    else
+        printf("audio: aucun annonce par le serveur\n");
+
     printf("luma: min %d, max %d, mean %.1f\n",
            y_min, y_max, y_count ? (double)y_sum / (double)y_count : 0.0);
     if (y_min == y_max)

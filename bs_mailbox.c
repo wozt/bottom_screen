@@ -21,6 +21,16 @@ typedef struct {
     /* Input travels the other way, under the same lock. It is a handful
      * of scalars, so there is nothing to gain from a second one. */
     BsInputState input;
+
+    /*
+     * Sound, in its own ring so a slow link drops old samples instead of
+     * growing without limit. Half a second is plenty: past that the
+     * sound is no longer worth hearing, it is just late.
+     */
+    int16_t *audio;
+    int      audio_cap;      /* in frames */
+    int      audio_head;     /* next frame to read */
+    int      audio_count;    /* frames held */
 } Mailbox;
 
 static void mb_unblock(void *self);
@@ -78,6 +88,50 @@ void bs_mailbox_submit(BsSource *src, const void *pixels, int stride)
         pthread_cond_signal(&mb->frame_ready);
     }
     pthread_mutex_unlock(&mb->lock);
+}
+
+void bs_mailbox_submit_audio(BsSource *src, const int16_t *samples, int frames)
+{
+    if (!src || !samples || frames <= 0)
+        return;
+    Mailbox *mb = src->self;
+    if (!mb->audio || mb->info.audio_channels <= 0)
+        return;
+
+    const int ch = mb->info.audio_channels;
+    pthread_mutex_lock(&mb->lock);
+    for (int i = 0; i < frames; i++) {
+        if (mb->audio_count == mb->audio_cap) {
+            /* Full: drop the oldest frame to make room for this one. */
+            mb->audio_head = (mb->audio_head + 1) % mb->audio_cap;
+            mb->audio_count--;
+        }
+        const int slot = (mb->audio_head + mb->audio_count) % mb->audio_cap;
+        for (int c = 0; c < ch; c++)
+            mb->audio[(size_t)slot * ch + c] = samples[(size_t)i * ch + c];
+        mb->audio_count++;
+    }
+    pthread_mutex_unlock(&mb->lock);
+}
+
+static int mb_take_audio(void *self, int16_t *out, int max_frames)
+{
+    Mailbox *mb = self;
+    if (!mb->audio || max_frames <= 0)
+        return 0;
+
+    const int ch = mb->info.audio_channels;
+    pthread_mutex_lock(&mb->lock);
+    int n = mb->audio_count < max_frames ? mb->audio_count : max_frames;
+    for (int i = 0; i < n; i++) {
+        const int slot = (mb->audio_head + i) % mb->audio_cap;
+        for (int c = 0; c < ch; c++)
+            out[(size_t)i * ch + c] = mb->audio[(size_t)slot * ch + c];
+    }
+    mb->audio_head = (mb->audio_head + n) % mb->audio_cap;
+    mb->audio_count -= n;
+    pthread_mutex_unlock(&mb->lock);
+    return n;
 }
 
 void bs_mailbox_input(BsSource *src, BsInputState *out)
@@ -154,13 +208,15 @@ static void mb_destroy(void *self)
         return;
     free(mb->buf[0]);
     free(mb->buf[1]);
+    free(mb->audio);
     pthread_cond_destroy(&mb->frame_ready);
     pthread_mutex_destroy(&mb->lock);
     free(mb);
 }
 
 BsSource *bs_mailbox_create(BsConsole console, int width, int height,
-                            int fps, BsPixFmt pixfmt)
+                            int fps, BsPixFmt pixfmt,
+                            int audio_rate, int audio_channels)
 {
     if (width <= 0 || height <= 0 || fps <= 0)
         return NULL;
@@ -177,6 +233,8 @@ BsSource *bs_mailbox_create(BsConsole console, int width, int height,
     mb->info.fps     = fps;
     mb->info.pixfmt  = pixfmt;
     mb->info.console = console;
+    mb->info.audio_rate = audio_rate;
+    mb->info.audio_channels = audio_channels;
     mb->stride       = width * 4;   /* every format here is 32-bit */
     if (pixfmt == BS_PIXFMT_RGB24)
         mb->stride = width * 3;
@@ -188,6 +246,16 @@ BsSource *bs_mailbox_create(BsConsole console, int width, int height,
         return NULL;
     }
 
+    if (audio_rate > 0 && audio_channels > 0) {
+        mb->audio_cap = audio_rate / 2;          /* half a second */
+        mb->audio = calloc((size_t)mb->audio_cap * audio_channels,
+                           sizeof(int16_t));
+        if (!mb->audio) {
+            free(mb->buf[0]); free(mb->buf[1]); free(mb); free(src);
+            return NULL;
+        }
+    }
+
     pthread_mutex_init(&mb->lock, NULL);
     pthread_cond_init(&mb->frame_ready, NULL);
 
@@ -197,6 +265,7 @@ BsSource *bs_mailbox_create(BsConsole console, int width, int height,
     src->touch    = mb_touch;
     src->button   = mb_button;
     src->axis     = mb_axis;
+    src->take_audio = mb_take_audio;
     src->unblock  = mb_unblock;
     src->destroy  = mb_destroy;
     return src;

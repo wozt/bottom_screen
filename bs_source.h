@@ -26,6 +26,13 @@ typedef struct {
     int       fps;
     BsPixFmt  pixfmt;
     BsConsole console;
+
+    /* Sound, or zero for a source that has none. A source without audio
+     * is normal -- the test pattern had none for weeks -- so it is
+     * absence rather than an error, and the client draws no volume
+     * control instead of one that does nothing. */
+    int       audio_rate;      /* Hz, 0 = silent source */
+    int       audio_channels;  /* 1 or 2 */
 } BsSourceInfo;
 
 typedef struct BsSource BsSource;
@@ -58,6 +65,17 @@ struct BsSource {
      * shut down. A source whose acquire always returns within a frame
      * period -- the test pattern -- can leave this NULL. */
     void (*unblock)(void *self);
+
+    /*
+     * Drains up to max_frames of interleaved 16-bit samples the source
+     * has queued, returning how many it gave. Optional: a silent source
+     * leaves it NULL.
+     *
+     * Pull rather than push, matching the video: the server asks when it
+     * is ready, and a source that produces faster than the link can
+     * carry drops its oldest rather than growing a queue nobody drains.
+     */
+    int (*take_audio)(void *self, int16_t *out, int max_frames);
 
     void (*destroy)(void *self);
 };

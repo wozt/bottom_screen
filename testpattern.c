@@ -3,6 +3,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <time.h>
 
@@ -31,6 +32,12 @@ typedef struct {
     int          stride;
     uint32_t     frame;
     struct timespec next;
+
+    /* A quiet tone, so the sound path can be exercised without an
+     * emulator -- the same reason the picture is a moving bar rather
+     * than a still image. 440 Hz at a tenth of full scale: audible
+     * enough to confirm, gentle enough to leave running. */
+    double   phase;
 
     /* last input seen, drawn into the frame */
     int touch_x, touch_y, touching;
@@ -128,6 +135,30 @@ static const uint8_t *tp_acquire(void *self, int *stride, uint32_t *timestamp_us
     return tp->pixels;
 }
 
+#define TP_AUDIO_RATE     48000
+#define TP_AUDIO_CHANNELS 2
+
+static int tp_take_audio(void *self, int16_t *out, int max_frames)
+{
+    TestPattern *tp = self;
+    if (max_frames <= 0)
+        return 0;
+
+    /* Generated on demand rather than queued: a synthetic source has no
+     * reason to buffer, and this way it never drifts from the rate the
+     * server actually drains at. */
+    const double step = 2.0 * 3.14159265358979 * 440.0 / TP_AUDIO_RATE;
+    for (int i = 0; i < max_frames; i++) {
+        const int16_t v = (int16_t)(sin(tp->phase) * 3200.0);
+        tp->phase += step;
+        if (tp->phase > 2.0 * 3.14159265358979)
+            tp->phase -= 2.0 * 3.14159265358979;
+        for (int c = 0; c < TP_AUDIO_CHANNELS; c++)
+            out[(size_t)i * TP_AUDIO_CHANNELS + c] = v;
+    }
+    return max_frames;
+}
+
 static void tp_touch(void *self, BsInputType type, int x, int y)
 {
     TestPattern *tp = self;
@@ -202,6 +233,8 @@ BsSource *bs_testpattern_create(BsConsole console, int fps)
     tp->info.fps     = fps;
     tp->info.pixfmt  = BS_PIXFMT_BGRA;
     tp->info.console = console;
+    tp->info.audio_rate = TP_AUDIO_RATE;
+    tp->info.audio_channels = TP_AUDIO_CHANNELS;
     tp->stride       = w * 4;
     tp->pixels       = calloc(1, (size_t)tp->stride * h);
     if (!tp->pixels) {
@@ -215,6 +248,7 @@ BsSource *bs_testpattern_create(BsConsole console, int fps)
     src->touch    = tp_touch;
     src->button   = tp_button;
     src->axis     = tp_axis;
+    src->take_audio = tp_take_audio;
     src->destroy  = tp_destroy;
     return src;
 }

@@ -54,6 +54,16 @@ typedef enum {
     BS_CODEC_H264 = 1   /* both clients decode this in hardware */
 } BsCodec;
 
+/*
+ * Opus for sound, where H.264's argument does not apply: there is no
+ * hardware Opus decoder to court, and Opus is simply the best codec at
+ * the low bitrates and short frames this needs. Android decodes it, the
+ * Switch decodes it, and capture2cloud already streams it.
+ */
+typedef enum {
+    BS_ACODEC_OPUS = 1
+} BsAudioCodec;
+
 /* --- client -> server, once, immediately after connecting ---------- */
 
 typedef struct __attribute__((packed)) {
@@ -79,6 +89,12 @@ typedef struct __attribute__((packed)) {
     uint16_t height;
     uint16_t fps;
     uint16_t extradata_size;
+    /* Sound. rate of 0 means the server is sending none, which is what
+     * a source without audio reports -- the client then draws no volume
+     * control rather than one that does nothing. */
+    uint8_t  audio_codec;    /* BsAudioCodec */
+    uint8_t  audio_channels;
+    uint16_t audio_rate;     /* Hz; 0 = no audio on this stream */
     /* followed by extradata_size bytes of SPS/PPS */
 } BsHelloAck;
 
@@ -86,6 +102,7 @@ typedef struct __attribute__((packed)) {
 
 typedef enum {
     BS_MSG_VIDEO = 1,  /* BsVideoHeader + one fragment of a frame */
+    BS_MSG_AUDIO = 2,  /* BsAudioHeader + one encoded Opus packet */
     BS_MSG_INPUT = 16, /* BsInputEvent, client -> server */
     BS_MSG_PING  = 17, /* empty; keeps a silent connection alive */
     BS_MSG_PONG  = 18, /* empty; reply to PING */
@@ -141,6 +158,23 @@ typedef struct __attribute__((packed)) {
     uint8_t  flags;
     uint8_t  reserved[3];
 } BsVideoHeader;
+
+/* --- audio ---------------------------------------------------------- */
+
+/*
+ * Sound travels as its own message type rather than riding with the
+ * video.
+ *
+ * The two have different clocks and different tolerances: a late frame
+ * is a stutter you see once, a late sample is a click you hear. Tying
+ * them to one stream would make each wait for the other. Separate
+ * messages, each with its own timestamp, let a client decide its own
+ * synchronisation -- and let one be dropped without touching the other.
+ */
+typedef struct __attribute__((packed)) {
+    uint32_t timestamp_us;   /* when these samples were produced */
+    uint32_t sequence;       /* so a gap is visible rather than silent */
+} BsAudioHeader;
 
 /* --- quality -------------------------------------------------------- */
 
