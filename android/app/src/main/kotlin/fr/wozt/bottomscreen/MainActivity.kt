@@ -45,6 +45,9 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     private var client: BsClient? = null
     private var decoder: BsVideoDecoder? = null
+    private var audio: BsAudioPlayer? = null
+    private var volume = 1f
+    private var muted = false
     private var surfaceReady = false
     private var profile = ConsoleProfile.DS
     private var ack: BsProtocol.HelloAck? = null
@@ -66,6 +69,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         }
         val prefs0 = getSharedPreferences(PREFS, MODE_PRIVATE)
         quality = Quality.byName(prefs0.getString("quality", null))
+        volume = prefs0.getFloat("volume", 1f)
+        muted = prefs0.getBoolean("muted", false)
         buttonScale = prefs0.getFloat("pad_scale", 1f)
         fullscreen = prefs0.getBoolean("fullscreen", false)
         applyFullscreen()
@@ -170,8 +175,22 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     // --- BsClient.Listener, all on the network thread ----------------
 
+    override fun onAudio(data: ByteArray, offset: Int, length: Int) {
+        audio?.decode(data, offset, length)
+    }
+
     override fun onConnected(ack: BsProtocol.HelloAck) {
         this.ack = ack
+        /* Started here rather than with the video: a server with no
+         * sound reports rate 0, and then there is nothing to start and
+         * no volume control to draw. */
+        if (ack.hasAudio) {
+            val p = BsAudioPlayer(ack.audioRate, ack.audioChannels)
+            if (p.start()) {
+                p.volume = if (muted) 0f else volume
+                audio = p
+            }
+        }
         /* The server starts on its own default, so a saved preference
          * has to be re-sent on every connection or it silently does
          * nothing after the first one. */
@@ -219,6 +238,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         runOnUiThread {
             decoder?.release()
             decoder = null
+            audio?.release()
+            audio = null
             surfaceReady = false
             play?.let { root.removeView(it) }
             play = null
@@ -564,6 +585,35 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             })
         }
 
+        /* Only drawn when the server actually sends sound. A slider that
+         * does nothing is worse than no slider: it makes the silence
+         * look like a fault. */
+        val hasAudio = ack?.hasAudio == true
+        val volLabel = TextView(this).apply {
+            text = "Volume  ${(volume * 100).toInt()}%"
+            setPadding(0, gap, 0, 0)
+        }
+        val volBar = SeekBar(this).apply {
+            max = 100
+            progress = (volume * 100).toInt().coerceIn(0, 100)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
+                    volLabel.text = "Volume  $value%"
+                    // Live, so it can be judged by ear rather than by number.
+                    if (!muted) audio?.volume = value / 100f
+                }
+                override fun onStartTrackingTouch(sb: SeekBar?) {}
+                override fun onStopTrackingTouch(sb: SeekBar?) {}
+            })
+        }
+        val muteBox = CheckBox(this).apply {
+            text = "Mute"
+            isChecked = muted
+            setOnCheckedChangeListener { _, checked ->
+                audio?.volume = if (checked) 0f else volBar.progress / 100f
+            }
+        }
+
         val moveBox = CheckBox(this).apply {
             text = "Move buttons  (drag them where your thumbs are)"
             isChecked = pad?.editMode == true
@@ -584,6 +634,11 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 setPadding(0, gap, 0, 0)
             })
             addView(qualitySpinner)
+            if (hasAudio) {
+                addView(volLabel)
+                addView(volBar)
+                addView(muteBox)
+            }
             addView(sizeLabel)
             addView(sizeBar)
             addView(moveBox)
@@ -594,6 +649,14 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             .setTitle("Settings")
             .setView(body)
             .setPositiveButton("Apply") { _, _ ->
+                if (hasAudio) {
+                    volume = volBar.progress / 100f
+                    muted = muteBox.isChecked
+                    prefs.edit().putFloat("volume", volume)
+                        .putBoolean("muted", muted).apply()
+                    audio?.volume = if (muted) 0f else volume
+                }
+
                 buttonScale = 0.5f + sizeBar.progress / 100f
                 prefs.edit().putFloat("pad_scale", buttonScale).apply()
                 pad?.buttonScale = buttonScale
@@ -628,8 +691,9 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 }
             }
             .setNegativeButton("Cancel") { _, _ ->
-                /* Undo the live preview of the size slider. */
+                /* Undo the live previews. */
                 pad?.buttonScale = buttonScale
+                audio?.volume = if (muted) 0f else volume
             }
             .setNeutralButton("Reset layout") { _, _ -> clearPositions() }
             .show()
@@ -671,6 +735,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         super.onDestroy()
         client?.stop()
         decoder?.release()
+        audio?.release()
     }
 
     companion object {

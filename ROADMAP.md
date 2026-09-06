@@ -115,11 +115,21 @@ backends ne seront testables que sur une mire.
 
 Ces points changent le fil, donc ils passent avant les nouveaux clients.
 
-### B1. Son — important
-- [ ] Capter le son de l'émulateur
-- [ ] Encoder (Opus, comme capture2cloud) et l'ajouter au protocole
-- [ ] Lecture côté Android et Switch
-- [ ] Barre de volume et bouton muet dans les menus
+### B1. Son — fait pour melonDS et Android
+- [x] Capter le son de l'émulateur (melonDS ; Cemu et Azahar restent)
+- [x] Encoder en Opus et l'ajouter au protocole
+- [x] Lecture côté Android (le homebrew Switch reste à faire)
+- [x] Barre de volume et bouton muet dans le menu Android
+
+Vérifié de bout en bout : `first audio decoded, 3840 of 3840 bytes
+written`, soit un bloc Opus de 20 ms à 48 kHz écrit sans perte.
+
+Deux choix à connaître. Le son est capté **avant** le volume et la
+sourdine locaux de melonDS : couper le son sur le PC ne doit pas couper
+celui du joueur. Et le rééchantillonnage vers les 48 kHz qu'Opus exige
+se fait au plus proche voisin — inutile sur melonDS qui sort déjà en
+48 kHz, audible ailleurs, et `swresample` est le remplaçant direct si
+ça se voit.
 
 Le son a sa propre horloge et sa propre latence ; le mêler au flux vidéo
 sur un seul chemin ferait dépendre l'un de l'autre. Un type de message

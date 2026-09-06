@@ -29,8 +29,12 @@ object BsProtocol {
 
     const val CODEC_H264 = 1
 
+    /** Sound codec. */
+    const val ACODEC_OPUS = 1
+
     // Message types
     const val MSG_VIDEO = 1
+    const val MSG_AUDIO = 2
     const val MSG_INPUT = 16
     const val MSG_PING = 17
     const val MSG_PONG = 18
@@ -73,9 +77,10 @@ object BsProtocol {
     const val AXIS_RIGHT_Y = 4
 
     const val HELLO_SIZE = 8
-    const val HELLO_ACK_SIZE = 16
+    const val HELLO_ACK_SIZE = 20
     const val MSG_HEADER_SIZE = 8
     const val VIDEO_HEADER_SIZE = 16
+    const val AUDIO_HEADER_SIZE = 8
     const val INPUT_EVENT_SIZE = 16
 
     fun buffer(size: Int): ByteBuffer =
@@ -100,8 +105,16 @@ object BsProtocol {
         val width: Int,
         val height: Int,
         val fps: Int,
-        val extradataSize: Int
-    )
+        val extradataSize: Int,
+        /** 0 when the server sends no sound, which is a normal state
+         *  rather than an error -- the UI then draws no volume control
+         *  instead of one that does nothing. */
+        val audioRate: Int,
+        val audioChannels: Int,
+        val audioCodec: Int
+    ) {
+        val hasAudio: Boolean get() = audioRate > 0
+    }
 
     fun parseHelloAck(bytes: ByteArray): HelloAck? {
         if (bytes.size < HELLO_ACK_SIZE) return null
@@ -116,7 +129,11 @@ object BsProtocol {
         val height = b.short.toInt() and 0xFFFF
         val fps = b.short.toInt() and 0xFFFF
         val extra = b.short.toInt() and 0xFFFF
-        return HelloAck(accepted, console, codec, width, height, fps, extra)
+        val aCodec = b.get().toInt() and 0xFF
+        val aChannels = b.get().toInt() and 0xFF
+        val aRate = b.short.toInt() and 0xFFFF
+        return HelloAck(accepted, console, codec, width, height, fps, extra,
+                        aRate, aChannels, aCodec)
     }
 
     data class MsgHeader(val type: Int, val payloadSize: Int)

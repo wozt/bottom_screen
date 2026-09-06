@@ -25,6 +25,7 @@ class BsClient(
     interface Listener {
         fun onConnected(ack: BsProtocol.HelloAck)
         fun onFrame(data: ByteArray, offset: Int, length: Int, keyframe: Boolean, timestampUs: Int)
+        fun onAudio(data: ByteArray, offset: Int, length: Int)
         fun onDisconnected(reason: String)
     }
 
@@ -138,6 +139,15 @@ class BsClient(
                                     vh.timestampUs
                                 )
                             }
+                        }
+                    }
+                    BsProtocol.MSG_AUDIO -> {
+                        if (h.payloadSize > BsProtocol.AUDIO_HEADER_SIZE) {
+                            listener.onAudio(
+                                payload,
+                                BsProtocol.AUDIO_HEADER_SIZE,
+                                h.payloadSize - BsProtocol.AUDIO_HEADER_SIZE
+                            )
                         }
                     }
                     BsProtocol.MSG_PING -> outQueue.offer(BsProtocol.emptyMessage(BsProtocol.MSG_PONG))
