@@ -406,14 +406,37 @@ fichiers libres, sans aucune clé de titre.
 | Cadence | 30 fps annoncés, 30,5 mesurés |
 | Débit | 2,7 à 6,1 Mbit/s selon la scène |
 | Latence | 3,0 ms, machine locale |
-| Tactile | **vérifié** — 400,240 envoyés, 400,240 reçus |
+| Tactile | envoyé et reçu par le pont ; lu par le jeu une fois une manette configurée |
+| Sticks | **vérifiés** — déflexion 0,75 reçue par `VPADController` |
 
 Le tactile a été validé avec le **client Linux**, pas avec un téléphone :
 il envoie déjà des événements à la souris, et c'est exactement l'outil
 qu'il fallait. Chemin complet confirmé : client → réseau → serveur →
 `m_pad_touch` → `InputManager` → VPAD.
 
-### Trois pièges à connaître
+### Une manette doit être configurée
+
+Sans profil de manette, Cemu ne construit **aucun** `VPADController`, et
+sa méthode `update()` ne tourne jamais. Le pont a beau écrire dans
+`m_pad_touch` et tenir l'état des boutons et des axes, personne ne le
+lit — et rien ne le signale.
+
+C'est ce qui m'a fait annoncer trop tôt que le tactile était vérifié :
+ma trace était placée dans notre pont, en amont du consommateur. Elle
+prouvait la livraison, pas la réception.
+
+Le minimum suffit, sans aucune correspondance physique puisque les
+entrées viennent du réseau :
+
+```xml
+<!-- ~/.config/Cemu/controllerProfiles/controller0.xml -->
+<?xml version="1.0" encoding="UTF-8"?>
+<emulated_controller>
+	<type>Wii U GamePad</type>
+</emulated_controller>
+```
+
+### Quatre pièges à connaître
 
 **La fenêtre GamePad doit être ouverte.** Sans elle, `copyToBackbuffer`
 n'est jamais appelé avec `isPadView` et rien n'est capturé — aucune

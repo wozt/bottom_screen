@@ -4,6 +4,7 @@ import android.app.AlertDialog
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Bundle
+import android.util.Log
 import android.view.Gravity
 import android.view.SurfaceHolder
 import android.view.View
@@ -270,6 +271,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             }
             /* Keep the shoulders out from under the settings button. */
             topReserve = resources.displayMetrics.density * 74
+            onAxis = { code, value ->
+                Log.i("BsPad", "axis $code = $value")
+                client?.sendInput(BsProtocol.INPUT_AXIS, code, value, 0)
+            }
             onMoved = { code, fx, fy -> savePosition(code, fx, fy, landscape) }
             onLongPress = { showSettings() }
         }
@@ -465,7 +470,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     private fun loadPositions(overlay: PadOverlay, landscape: Boolean) {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val codes = listOf(PadOverlay.DPAD, PadOverlay.FACE) + (1..15)
+        val codes = listOf(PadOverlay.DPAD, PadOverlay.FACE) + (-14..-11) + (1..15)
         for (code in codes) {
             val raw = prefs.getString(posKey(code, landscape), null) ?: continue
             val parts = raw.split(",")
@@ -479,7 +484,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
         val edit = prefs.edit()
         for (land in listOf(true, false))
-            for (code in listOf(PadOverlay.DPAD, PadOverlay.FACE) + (1..15))
+            for (code in listOf(PadOverlay.DPAD, PadOverlay.FACE) + (-14..-11) + (1..15))
                 edit.remove(posKey(code, land))
         edit.apply()
         pad?.clearOverrides()

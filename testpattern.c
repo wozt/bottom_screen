@@ -1,6 +1,7 @@
 #include "bs_source.h"
 #include "bs_net.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -157,7 +158,15 @@ static void tp_button(void *self, BsButton code, int pressed)
 
 static void tp_axis(void *self, BsAxis code, int value)
 {
-    (void)self; (void)code; (void)value;   /* nothing to show yet */
+    (void)self;
+    /* Not drawn, but reported: a stick that appears to do nothing is
+     * indistinguishable from one whose events never left the client. */
+    static int announced = 0;
+    if (!announced && value != 0) {
+        announced = 1;
+        fprintf(stderr, "bottom_screen: first axis from a client: %d = %d\n",
+                (int)code, value);
+    }
 }
 
 static void tp_destroy(void *self)

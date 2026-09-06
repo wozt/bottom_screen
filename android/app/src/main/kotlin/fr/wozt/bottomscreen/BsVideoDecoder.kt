@@ -33,6 +33,8 @@ class BsVideoDecoder(
     var starved = 0
         private set
 
+    private var announcedFirstFrame = false
+
     fun start(): Boolean {
         return try {
             val format = MediaFormat.createVideoFormat(
@@ -99,6 +101,15 @@ class BsVideoDecoder(
                 if (outIndex < 0) break
                 /* true: hand it to the surface, which is the draw. */
                 c.releaseOutputBuffer(outIndex, true)
+
+                // Said once. A black window has three quite different
+                // causes -- nothing arriving, nothing decoding, or
+                // nothing reaching the surface -- and they are
+                // indistinguishable from the outside.
+                if (!announcedFirstFrame) {
+                    announcedFirstFrame = true
+                    Log.i(TAG, "first frame decoded and handed to the surface")
+                }
             }
             return true
         } catch (e: Exception) {

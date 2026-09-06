@@ -31,6 +31,9 @@ class PadOverlay(context: Context) : View(context) {
 
     var onButton: ((code: Int, pressed: Boolean) -> Unit)? = null
 
+    /** Axis value in the protocol's range, -32768..32767. */
+    var onAxis: ((code: Int, value: Int) -> Unit)? = null
+
     /** A control was dragged to a new home. Coordinates are fractions of
      *  the view, so they survive a different screen or a rotation. */
     var onMoved: ((code: Int, fx: Float, fy: Float) -> Unit)? = null
@@ -101,6 +104,26 @@ class PadOverlay(context: Context) : View(context) {
      * A away from B is not a layout anybody wants, and the relationship
      * between the four is the thing a thumb has learned. */
     private val faceCentre = PointF()
+
+    /*
+     * A stick is a base circle and a knob that follows the thumb inside
+     * it. It keeps its own pointer id like every other control, so a
+     * second thumb elsewhere cannot steal or release it.
+     *
+     * Released, the knob snaps back and both axes are sent as zero --
+     * without that a stick left off-centre would keep walking the
+     * character after the thumb has gone.
+     */
+    private class Stick(val spec: PadStick)
+    {
+        val centre = PointF()
+        var radius = 0f
+        val knob = PointF()
+        var pointerId = -1
+        val active: Boolean get() = pointerId >= 0
+    }
+
+    private val sticks = mutableListOf<Stick>()
     private var dpadPointer = -1
     private val dpadHeld = HashSet<Int>()
 
@@ -143,6 +166,9 @@ class PadOverlay(context: Context) : View(context) {
         val h = height.toFloat()
         if (w <= 0f || h <= 0f) return
 
+        sticks.clear()
+        for (sp in profile.sticks) sticks.add(Stick(sp))
+
         if (sideBand > 0f) layoutBeside(w, h) else layoutBelow(w, h)
         applyOverrides(w, h)
         text.textSize = unit() * 0.42f
@@ -165,6 +191,12 @@ class PadOverlay(context: Context) : View(context) {
         dpadRect.set(margin, midY - dpadSize / 2f, margin + dpadSize, midY + dpadSize / 2f)
 
         addFaceDiamond(w - margin - u * 1.3f - u * 0.7f, midY, u)
+
+        // Sticks sit below the thumb that uses them, between the middle
+        // row and the menu row.
+        val stickR = u * 1.15f
+        val stickY = (midY + dpadSize / 2f + (h - margin - menuH)) / 2f
+        placeSticks(w, stickY, margin + stickR, w - margin - stickR, stickR)
 
         val mw = u * 2.0f
         val total = profile.menuButtons.size * mw + (profile.menuButtons.size - 1) * margin
@@ -195,6 +227,10 @@ class PadOverlay(context: Context) : View(context) {
                      dpadCx + dpadSize / 2f, midY + dpadSize / 2f)
 
         addFaceDiamond(w - band / 2f, midY, u)
+
+        val stickR = minOf(u * 1.05f, band / 2f - margin)
+        val stickY = (midY + dpadSize / 2f + (h - margin - menuH)) / 2f
+        placeSticks(w, stickY, band / 2f, w - band / 2f, stickR)
 
         val mw = minOf(u * 2.0f, band - margin * 2f)
         profile.menuButtons.forEachIndexed { i, b ->
@@ -247,14 +283,33 @@ class PadOverlay(context: Context) : View(context) {
         }
     }
 
+    private fun placeSticks(w: Float, y: Float, leftX: Float, rightX: Float, r: Float) {
+        for (st in sticks) {
+            st.radius = r
+            val cx = if (st.spec.left) leftX else rightX
+            st.centre.set(cx, y)
+            st.knob.set(cx, y)
+        }
+    }
+
     private fun applyOverrides(w: Float, h: Float) {
         overrides[DPAD]?.let { recentre(dpadRect, it.x * w, it.y * h) }
         overrides[FACE]?.let { moveFaceTo(it.x * w, it.y * h) }
+        for (st in sticks) {
+            overrides[stickKey(st)]?.let {
+                st.centre.set(it.x * w, it.y * h)
+                if (!st.active) st.knob.set(st.centre)
+            }
+        }
         for (c in controls) {
             if (isFace(c.code)) continue      /* moved as a group, above */
             overrides[c.code]?.let { recentre(c.rect, it.x * w, it.y * h) }
         }
     }
+
+    /* Saved positions are keyed by control id; sticks take negative ids
+     * below the face group so they cannot collide with a button code. */
+    private fun stickKey(st: Stick) = -10 - st.spec.axisX
 
     private fun isFace(code: Int) = code == BsProtocol.BTN_A ||
         code == BsProtocol.BTN_B || code == BsProtocol.BTN_X || code == BsProtocol.BTN_Y
@@ -312,6 +367,16 @@ class PadOverlay(context: Context) : View(context) {
                 c.rect.centerY() - (text.descent() + text.ascent()) / 2f, text)
         }
 
+        for (st in sticks) {
+            fill.color = if (st.active) HELD else idle()
+            stroke.color = edge()
+            canvas.drawCircle(st.centre.x, st.centre.y, st.radius, stroke)
+            canvas.drawCircle(st.knob.x, st.knob.y, st.radius * 0.45f, fill)
+            canvas.drawCircle(st.knob.x, st.knob.y, st.radius * 0.45f, stroke)
+            canvas.drawText(st.spec.label, st.centre.x,
+                st.centre.y - st.radius - text.textSize * 0.35f, text)
+        }
+
         if (!editMode) return
 
         /*
@@ -325,6 +390,9 @@ class PadOverlay(context: Context) : View(context) {
         frame.strokeWidth = maxOf(3f, u * 0.06f)
         drawFrame(canvas, dpadRect, pad)
         faceBounds()?.let { drawFrame(canvas, it, pad) }
+        for (st in sticks)
+            drawFrame(canvas, RectF(st.centre.x - st.radius, st.centre.y - st.radius,
+                                    st.centre.x + st.radius, st.centre.y + st.radius), pad)
         for (c in controls) if (!isFace(c.code)) drawFrame(canvas, c.rect, pad)
     }
 
@@ -351,8 +419,10 @@ class PadOverlay(context: Context) : View(context) {
             }
             MotionEvent.ACTION_MOVE -> {
                 for (i in 0 until event.pointerCount) {
-                    if (event.getPointerId(i) == dpadPointer)
-                        updateDpad(event.getX(i), event.getY(i))
+                    val id = event.getPointerId(i)
+                    if (id == dpadPointer) updateDpad(event.getX(i), event.getY(i))
+                    for (st in sticks)
+                        if (st.pointerId == id) updateStick(st, event.getX(i), event.getY(i))
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
@@ -380,6 +450,14 @@ class PadOverlay(context: Context) : View(context) {
         val y = event.getY(0)
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                val stick = sticks.firstOrNull {
+                    hypot(x - it.centre.x, y - it.centre.y) <= it.radius
+                }
+                if (stick != null) {
+                    dragging = stickKey(stick)
+                    dragDx = x - stick.centre.x
+                    dragDy = y - stick.centre.y
+                } else {
                 val hit = hitTest(x, y)
                 if (hit != null && isFace(hit.code)) {
                     dragging = FACE
@@ -394,25 +472,32 @@ class PadOverlay(context: Context) : View(context) {
                     dragDx = x - dpadRect.centerX()
                     dragDy = y - dpadRect.centerY()
                 }
+                }
             }
             MotionEvent.ACTION_MOVE -> {
                 val code = dragging ?: return true
                 val cx = (x - dragDx).coerceIn(0f, width.toFloat())
                 val cy = (y - dragDy).coerceIn(0f, height.toFloat())
-                when (code) {
+                val st = sticks.firstOrNull { stickKey(it) == code }
+                when {
+                    st != null -> { st.centre.set(cx, cy); st.knob.set(cx, cy) }
+                    else -> when (code) {
                     DPAD -> recentre(dpadRect, cx, cy)
                     FACE -> moveFaceTo(cx, cy)
                     else -> controls.firstOrNull { it.code == code }
                         ?.let { recentre(it.rect, cx, cy) }
+                    }
                 }
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
                 val code = dragging
                 dragging = null
                 if (code != null && width > 0 && height > 0) {
-                    val r = when (code) {
-                        DPAD -> dpadRect
-                        FACE -> RectF(faceCentre.x, faceCentre.y, faceCentre.x, faceCentre.y)
+                    val sk = sticks.firstOrNull { stickKey(it) == code }
+                    val r = when {
+                        sk != null -> RectF(sk.centre.x, sk.centre.y, sk.centre.x, sk.centre.y)
+                        code == DPAD -> dpadRect
+                        code == FACE -> RectF(faceCentre.x, faceCentre.y, faceCentre.x, faceCentre.y)
                         else -> controls.firstOrNull { it.code == code }?.rect
                     }
                     if (r != null) {
@@ -432,6 +517,14 @@ class PadOverlay(context: Context) : View(context) {
         controls.firstOrNull { it.rect.contains(x, y) }
 
     private fun press(pointerId: Int, x: Float, y: Float) {
+        for (st in sticks) {
+            if (st.active) continue
+            if (hypot(x - st.centre.x, y - st.centre.y) <= st.radius) {
+                st.pointerId = pointerId
+                updateStick(st, x, y)
+                return
+            }
+        }
         if (dpadRect.contains(x, y) || nearDpad(x, y)) {
             dpadPointer = pointerId
             updateDpad(x, y)
@@ -472,6 +565,17 @@ class PadOverlay(context: Context) : View(context) {
     }
 
     private fun release(pointerId: Int) {
+        for (st in sticks) {
+            if (st.pointerId == pointerId) {
+                st.pointerId = -1
+                st.knob.set(st.centre)
+                // Zero both axes: a stick left off-centre would keep the
+                // character walking after the thumb has left.
+                onAxis?.invoke(st.spec.axisX, 0)
+                onAxis?.invoke(st.spec.axisY, 0)
+                return
+            }
+        }
         if (pointerId == dpadPointer) {
             for (code in dpadHeld) onButton?.invoke(code, false)
             dpadHeld.clear()
@@ -486,6 +590,29 @@ class PadOverlay(context: Context) : View(context) {
         }
     }
 
+    /*
+     * Clamped to the base circle, then reported as a fraction of full
+     * deflection. Clamping rather than letting the knob follow the thumb
+     * outside keeps the maximum reachable in every direction, which is
+     * what a real stick does at the edge of its gate.
+     */
+    private fun updateStick(st: Stick, x: Float, y: Float) {
+        var dx = x - st.centre.x
+        var dy = y - st.centre.y
+        val dist = hypot(dx, dy)
+        if (dist > st.radius && dist > 0f) {
+            dx = dx / dist * st.radius
+            dy = dy / dist * st.radius
+        }
+        st.knob.set(st.centre.x + dx, st.centre.y + dy)
+
+        val fx = (dx / st.radius).coerceIn(-1f, 1f)
+        val fy = (dy / st.radius).coerceIn(-1f, 1f)
+        onAxis?.invoke(st.spec.axisX, (fx * 32767f).toInt())
+        // Screen y grows downwards, sticks report up as positive.
+        onAxis?.invoke(st.spec.axisY, (-fy * 32767f).toInt())
+    }
+
     private fun releaseEverything() {
         for (c in controls) if (c.pressed) {
             c.pointerId = -1
@@ -495,6 +622,12 @@ class PadOverlay(context: Context) : View(context) {
         dpadHeld.clear()
         dpadPointer = -1
         dragging = null
+        for (st in sticks) if (st.active) {
+            st.pointerId = -1
+            st.knob.set(st.centre)
+            onAxis?.invoke(st.spec.axisX, 0)
+            onAxis?.invoke(st.spec.axisY, 0)
+        }
     }
 
     companion object {
