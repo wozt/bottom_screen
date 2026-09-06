@@ -265,10 +265,46 @@ connexion côté serveur.
 
 ## D. Lanceur GTK
 
-- [ ] Une app GTK qui préconfigure et lance les trois émulateurs
-- [ ] Réglage du rendu interne (x2, x4, xN) avant lancement
-- [ ] Le reste — charger une ROM, les autres options — reste à la charge
+- [x] Une app GTK qui préconfigure et lance les trois émulateurs
+- [x] Réglage du rendu interne (x2, x4, xN) avant lancement
+- [x] Le reste — charger une ROM, les autres options — reste à la charge
       de l'émulateur, on ne réimplémente pas ce qu'il fait déjà
+
+`launcher/bs_launcher.c`, GTK3, `make launcher/bs_launcher`. Les
+émulateurs sont trouvés relativement au lanceur, donc ça marche depuis
+un clone sans rien installer.
+
+L'interrupteur et le port passent par l'environnement (`BOTTOM_SCREEN`,
+`BOTTOM_SCREEN_PORT`), que les trois lisent maintenant — Cemu ne le
+faisait pas, c'est ajouté. Un lancement ne réécrit donc jamais un
+réglage posé à la main, et Cemu jetterait une telle modification en
+sortant de toute façon.
+
+La résolution, elle, ne peut pas passer par là, et chaque émulateur la
+range ailleurs :
+
+- **Azahar** : `resolution_factor` dans `qt-config.ini`, écrit avec son
+  marqueur `\default=false` — sans quoi la valeur est ignorée en
+  silence.
+- **Cemu** : `<pad_size>` dans `settings.xml`, avec `<open_pad>true` et
+  `<api>0` (OpenGL) au passage, les deux réglages sans lesquels rien
+  n'est capturé du tout.
+- **melonDS** : impossible, et c'est dit dans l'interface plutôt que
+  masqué. melonDS ne mise à l'échelle que dans son renderer OpenGL, qui
+  garde les écrans sur le GPU ; le pont lit la RAM, que seul le renderer
+  logiciel remplit. C'est le blocage de B3, pas un oubli.
+
+Les fichiers modifiés sont sauvegardés à côté (`.bs-backup`) : ils
+contiennent des chemins de jeux et des comptes qui ont coûté une soirée
+à quelqu'un.
+
+Le lanceur lit la sortie de l'émulateur et affiche le port **réellement
+ouvert**, pas celui demandé — ils diffèrent dès qu'un port est pris.
+« Send to phone » vise ce port-là via adb.
+
+`--set-resolution <emu> <n>` fait le réglage sans ouvrir de fenêtre :
+utile pour un script, et c'est ainsi que les écritures de configuration
+sont testées.
 
 ---
 

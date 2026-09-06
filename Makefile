@@ -11,11 +11,14 @@ LDFLAGS ?=
 
 SERVER_PKGS := libavcodec libavutil libswscale libswresample
 CLIENT_PKGS := sdl2 libavcodec libavutil
+LAUNCHER_PKGS := gtk+-3.0
 
 SERVER_CFLAGS := $(shell pkg-config --cflags $(SERVER_PKGS))
 SERVER_LIBS   := $(shell pkg-config --libs   $(SERVER_PKGS)) -lpthread
 CLIENT_CFLAGS := $(shell pkg-config --cflags $(CLIENT_PKGS))
 CLIENT_LIBS   := $(shell pkg-config --libs   $(CLIENT_PKGS))
+LAUNCHER_CFLAGS := $(shell pkg-config --cflags $(LAUNCHER_PKGS))
+LAUNCHER_LIBS   := $(shell pkg-config --libs   $(LAUNCHER_PKGS))
 
 SERVER_SRC := bottom_screen_server.c bs_server.c bs_encoder.c bs_audio.c \
               bs_net.c bs_mailbox.c testpattern.c
@@ -24,13 +27,16 @@ SMOKE_SRC  := tests/smoke_client.c bs_decoder.c bs_net.c
 MERGE_SRC  := tests/input_merge.c bs_server.c bs_encoder.c bs_audio.c \
               bs_mailbox.c bs_net.c
 
-BINARIES := bottom_screen_server bottom_screen_client
+BINARIES := bottom_screen_server bottom_screen_client launcher/bs_launcher
 
 all: $(BINARIES)
 
 bottom_screen_server: $(SERVER_SRC) bs_server.h bs_encoder.h bs_net.h \
                       bs_protocol.h bs_source.h bs_mailbox.h
 	$(CC) $(CFLAGS) $(SERVER_CFLAGS) -o $@ $(SERVER_SRC) $(LDFLAGS) $(SERVER_LIBS) -lm
+
+launcher/bs_launcher: launcher/bs_launcher.c bs_protocol.h
+	$(CC) $(CFLAGS) $(LAUNCHER_CFLAGS) -o $@ launcher/bs_launcher.c $(LDFLAGS) $(LAUNCHER_LIBS)
 
 bottom_screen_client: $(CLIENT_SRC) bs_decoder.h bs_net.h bs_protocol.h
 	$(CC) $(CFLAGS) $(CLIENT_CFLAGS) -o $@ $(CLIENT_SRC) $(LDFLAGS) $(CLIENT_LIBS)
