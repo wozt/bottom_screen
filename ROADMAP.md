@@ -12,9 +12,9 @@ vaut les faire avant de multiplier les clients qui devront les parler.
 ## A. Émulateurs
 
 ### A1. Azahar (3DS)
-- [ ] Backend sur le modèle de `FrameDumperOpenGL`
-- [ ] Tactile via `TouchPressed` / `TouchMoved` / `TouchReleased`
-- [ ] Profil de boutons 3DS (ZL/ZR, circle pad, C-stick)
+- [x] Backend : lecture de `screen_infos[2]`, avec rotation
+- [x] Tactile via `TouchPressed` / `TouchMoved` / `TouchReleased`
+- [x] Profil 3DS complet : ZL/ZR, circle pad, C-stick
 
 ### A2. Cemu (Wii U)
 - [x] Backend sur `LatteRenderTarget_copyToBackbuffer(_, true)`
@@ -116,7 +116,7 @@ backends ne seront testables que sur une mire.
 Ces points changent le fil, donc ils passent avant les nouveaux clients.
 
 ### B1. Son — fait pour melonDS et Android
-- [x] Capter le son de l'émulateur (melonDS ; Cemu et Azahar restent)
+- [x] Capter le son des trois émulateurs
 - [x] Encoder en Opus et l'ajouter au protocole
 - [x] Lecture côté Android (le homebrew Switch reste à faire)
 - [x] Barre de volume et bouton muet dans le menu Android
@@ -146,9 +146,9 @@ unique et indépendant du client — c'est la boucle d'envoi qui est liée à
 une connexion. À découpler avant d'ajouter des clients.
 
 ### B3. Résolution
-- [ ] Suivre le rendu interne des émulateurs (x2, x4, xN)
-- [ ] Reconfigurer l'encodeur en direct quand la taille change
-- [ ] Annoncer la nouvelle taille aux clients
+- [x] Suivre le rendu interne des émulateurs (x2, x4, xN)
+- [x] Reconfigurer l'encodeur en direct quand la taille change
+- [x] Annoncer la nouvelle taille aux clients (`STREAM_INFO`)
 - [ ] Choix de la résolution de réception côté client
 
 Dépend du readback GPU : le rendu mis à l'échelle n'existe que sur les
