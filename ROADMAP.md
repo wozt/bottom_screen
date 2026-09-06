@@ -204,12 +204,19 @@ the announced space starting the game.
 - [x] Switch on by default, in all three emulators
 
 ### B5. Host controls
-- [x] Network input is merged with local input rather than replacing it:
-      a pad on the host keeps working
+- [x] Written that way in all three bridges
+- [ ] Actually tried with a pad in someone's hands
 
-Already true on melonDS by construction: network buttons are merged with
-the local `inputMask`, and local touch keeps priority. To be checked
-properly, and reproduced on the other two.
+Merging rather than replacing is there by construction everywhere:
+melonDS ORs into the local `inputMask`, Cemu into
+`is_mapping_down(i) || IsButtonHeld(i)` and into its axes, Azahar into
+`state.X.Assign(... || ...)` and after `circle_pad->GetStatus()`. Local
+touch keeps priority in each.
+
+But none of that has been exercised with a physical pad plugged into the
+host while a client plays, which is the only thing that would prove it.
+The box above was ticked on the strength of reading the code, which is
+not the same claim.
 
 ### B6. Every render backend
 
