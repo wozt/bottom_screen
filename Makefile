@@ -9,7 +9,7 @@ CFLAGS  ?= -O2 -Wall -Wextra
 CFLAGS  += -I.
 LDFLAGS ?=
 
-SERVER_PKGS := libavcodec libavutil libswscale
+SERVER_PKGS := libavcodec libavutil libswscale libswresample
 CLIENT_PKGS := sdl2 libavcodec libavutil
 
 SERVER_CFLAGS := $(shell pkg-config --cflags $(SERVER_PKGS))

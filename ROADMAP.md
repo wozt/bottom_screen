@@ -126,10 +126,15 @@ written`, soit un bloc Opus de 20 ms à 48 kHz écrit sans perte.
 
 Deux choix à connaître. Le son est capté **avant** le volume et la
 sourdine locaux de melonDS : couper le son sur le PC ne doit pas couper
-celui du joueur. Et le rééchantillonnage vers les 48 kHz qu'Opus exige
-se fait au plus proche voisin — inutile sur melonDS qui sort déjà en
-48 kHz, audible ailleurs, et `swresample` est le remplaçant direct si
-ça se voit.
+celui du joueur.
+
+Et le rééchantillonnage passe par `swresample`. Opus n'accepte que 8,
+12, 16, 24 ou 48 kHz, et le DSP de la 3DS sort à 32728 Hz — ni l'une de
+ces valeurs, ni même une fréquence ronde. Envoyer du 32 kHz brut est
+donc impossible, la conversion est obligatoire, et autant qu'elle soit
+correcte. melonDS et Cemu sortent déjà en 48 kHz et ne la traversent
+pas ; ils lient tout de même la bibliothèque, parce que `bs_audio.c`
+est partagé et que le lien se fait à la compilation, pas à l'exécution.
 
 Le son a sa propre horloge et sa propre latence ; le mêler au flux vidéo
 sur un seul chemin ferait dépendre l'un de l'autre. Un type de message

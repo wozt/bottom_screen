@@ -8,6 +8,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/opt.h>
+#include <libswresample/swresample.h>
 
 struct BsAudioEncoder {
     AVCodecContext *ctx;
@@ -16,8 +17,11 @@ struct BsAudioEncoder {
     int             rate;
     int             channels;
     int             frame_size;   /* samples per channel per Opus block */
+    SwrContext     *swr;          /* the emulator's rate -> Opus's 48 kHz */
     int16_t        *acc;          /* accumulates a partial block */
     int             acc_frames;
+    int16_t        *conv;         /* resampler output, one call's worth */
+    int             conv_cap;
     int64_t         pts;
 };
 
@@ -105,6 +109,31 @@ BsAudioEncoder *bs_audio_create(const BsAudioConfig *cfg, char *err, size_t errl
         set_err(err, errlen, "out of memory");
         goto fail;
     }
+
+    /*
+     * Opus accepts 8, 12, 16, 24 or 48 kHz and nothing else, and a 3DS
+     * DSP runs at 32728 -- not merely a different rate but not a round
+     * one. So something has to resample, and swresample does it
+     * properly rather than by repeating samples, which is what the first
+     * version did and what made it audibly rough.
+     */
+    if (cfg->rate != 48000) {
+        enc->swr = swr_alloc();
+        if (!enc->swr) {
+            set_err(err, errlen, "swr_alloc failed");
+            goto fail;
+        }
+        av_opt_set_chlayout(enc->swr, "in_chlayout",  &enc->ctx->ch_layout, 0);
+        av_opt_set_chlayout(enc->swr, "out_chlayout", &enc->ctx->ch_layout, 0);
+        av_opt_set_int(enc->swr, "in_sample_rate",  cfg->rate, 0);
+        av_opt_set_int(enc->swr, "out_sample_rate", 48000, 0);
+        av_opt_set_sample_fmt(enc->swr, "in_sample_fmt",  AV_SAMPLE_FMT_S16, 0);
+        av_opt_set_sample_fmt(enc->swr, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0);
+        if (swr_init(enc->swr) < 0) {
+            set_err(err, errlen, "swr_init failed for %d Hz", cfg->rate);
+            goto fail;
+        }
+    }
     return enc;
 
 fail:
@@ -117,6 +146,8 @@ void bs_audio_destroy(BsAudioEncoder *enc)
     if (!enc)
         return;
     free(enc->acc);
+    free(enc->conv);
+    if (enc->swr) swr_free(&enc->swr);
     if (enc->pkt)   av_packet_free(&enc->pkt);
     if (enc->frame) av_frame_free(&enc->frame);
     if (enc->ctx)   avcodec_free_context(&enc->ctx);
@@ -155,29 +186,41 @@ int bs_audio_encode(BsAudioEncoder *enc, const int16_t *samples, int frames,
     if (!enc || !samples || frames <= 0)
         return -1;
 
-    /*
-     * The emulator's rate is not 48 kHz and Opus insists on it, so the
-     * samples are stretched by nearest-neighbour on the way in.
-     *
-     * This is the cheap option and it is audibly imperfect. It is here
-     * because a proper resampler is a dependency and a latency budget of
-     * its own, and because at 32 kHz to 48 kHz the artefacts are slight.
-     * If it turns out to matter, swscale's audio sibling swresample is
-     * the replacement, and nothing above this function changes.
-     */
-    for (int i = 0; i < frames; i++) {
-        const int64_t out_pos = (int64_t)i * 48000 / enc->rate;
-        const int64_t next    = (int64_t)(i + 1) * 48000 / enc->rate;
-        for (int64_t o = out_pos; o < next; o++) {
-            for (int c = 0; c < enc->channels; c++)
-                enc->acc[(size_t)enc->acc_frames * enc->channels + c] =
-                    samples[(size_t)i * enc->channels + c];
-            enc->acc_frames++;
-            if (enc->acc_frames >= enc->frame_size) {
-                if (emit(enc, cb, user) < 0)
-                    return -1;
-                enc->acc_frames = 0;
-            }
+    const int16_t *in = samples;
+    int in_frames = frames;
+
+    if (enc->swr) {
+        /* Room for the worst case plus what the resampler is still
+         * holding from the previous call. */
+        const int want = (int)av_rescale_rnd(
+            swr_get_delay(enc->swr, enc->rate) + frames,
+            48000, enc->rate, AV_ROUND_UP) + 32;
+        if (want > enc->conv_cap) {
+            int16_t *grown = realloc(enc->conv,
+                                     (size_t)want * enc->channels * sizeof(int16_t));
+            if (!grown)
+                return -1;
+            enc->conv = grown;
+            enc->conv_cap = want;
+        }
+        uint8_t *out_planes[1] = { (uint8_t *)enc->conv };
+        const uint8_t *in_planes[1] = { (const uint8_t *)samples };
+        const int got = swr_convert(enc->swr, out_planes, want, in_planes, frames);
+        if (got < 0)
+            return -1;
+        in = enc->conv;
+        in_frames = got;
+    }
+
+    for (int i = 0; i < in_frames; i++) {
+        for (int c = 0; c < enc->channels; c++)
+            enc->acc[(size_t)enc->acc_frames * enc->channels + c] =
+                in[(size_t)i * enc->channels + c];
+        enc->acc_frames++;
+        if (enc->acc_frames >= enc->frame_size) {
+            if (emit(enc, cb, user) < 0)
+                return -1;
+            enc->acc_frames = 0;
         }
     }
     return 0;
