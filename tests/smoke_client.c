@@ -234,8 +234,12 @@ int main(int argc, char **argv)
                 ev.sequence = (uint32_t)decoded;
                 ev.timestamp_us = bs_now_us();
                 ev.type = (phase == 20) ? BS_INPUT_TOUCH_DOWN : BS_INPUT_TOUCH_UP;
-                ev.x = (int16_t)(exp_w / 2);
-                ev.y = (int16_t)(exp_h / 2);
+                /* The announced size, not the console's own: a stream
+                 * rendered at a higher internal resolution uses that
+                 * space, and aiming with native coordinates lands every
+                 * tap near the top left. */
+                ev.x = (int16_t)(cur_w / 2);
+                ev.y = (int16_t)(cur_h / 2);
                 if (bs_send_msg(conn, BS_MSG_INPUT, &ev, sizeof(ev), NULL, 0) < 0)
                     return fail("could not send input");
             }
