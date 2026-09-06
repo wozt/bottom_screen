@@ -15,7 +15,7 @@ DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 case "$1" in
   melonds) BIN="$DIR/emulators/melonDS/build/melonDS" ;;
   azahar)  BIN="$DIR/emulators/azahar/build/bin/Release/azahar" ;;
-  cemu)    BIN="$DIR/emulators/Cemu/build/bin/Cemu_release" ;;
+  cemu)    BIN="$DIR/emulators/Cemu/bin/Cemu_release" ;;
   *) echo "usage: $0 melonds|azahar|cemu [fichier]" >&2; exit 1 ;;
 esac
 shift

@@ -395,6 +395,55 @@ le serveur en prenne une, la première est perdue. C'est voulu — une file
 - Le tactile local garde la priorité : un client ne pilote l'écran que
   si la souris n'est pas déjà dessus.
 
+## Phase 6 : Cemu — vérifié
+
+Testé le 2026-09-05 sur a commercial Wii U title, un vrai jeu Wii U natif en
+fichiers libres, sans aucune clé de titre.
+
+| | |
+|---|---|
+| Résolution | 854×480, la résolution native du GamePad |
+| Cadence | 30 fps annoncés, 30,5 mesurés |
+| Débit | 2,7 à 6,1 Mbit/s selon la scène |
+| Latence | 3,0 ms, machine locale |
+| Tactile | **vérifié** — 400,240 envoyés, 400,240 reçus |
+
+Le tactile a été validé avec le **client Linux**, pas avec un téléphone :
+il envoie déjà des événements à la souris, et c'est exactement l'outil
+qu'il fallait. Chemin complet confirmé : client → réseau → serveur →
+`m_pad_touch` → `InputManager` → VPAD.
+
+### Trois pièges à connaître
+
+**La fenêtre GamePad doit être ouverte.** Sans elle, `copyToBackbuffer`
+n'est jamais appelé avec `isPadView` et rien n'est capturé — aucune
+erreur, juste un serveur qui ne démarre pas. Le réglage est `open_pad`
+dans `settings.xml`, et **Cemu le réécrit en quittant** : il faut le
+poser avant chaque lancement, ou cocher « Open separate pad screen » dans
+l'assistant. Le raccourci CTRL+TAB existe mais ne réagit pas aux
+événements synthétiques d'xdotool.
+
+**Le renderer doit être OpenGL.** Vulkan est le défaut sur Linux, et le
+readback n'est pas implémenté pour lui. Le pont le dit une fois sur
+stderr en nommant le réglage exact.
+
+**Le port annoncé n'est pas forcément celui demandé.** Si 5090 est pris,
+le serveur monte. J'ai perdu plusieurs minutes à croire à une panne
+alors que Cemu écoutait sur 5091 — d'où le passage de ce message sur
+stderr, où il est visible même quand stdout est redirigé.
+
+### Une correction qui a créé un bug pire
+
+Le premier essai annonçait 60 fps en dur pour un jeu tournant à 30. La
+correction a mesuré la cadence — pendant les premières secondes, où les
+shaders compilent et les caches sont froids : elle a rapporté **12**.
+
+C'était pire que l'hypothèse remplacée. L'encodeur dérive de ce nombre
+son contrôle de débit *et* son intervalle de keyframes : à 12, il
+dépensait tout le budget et émettait trois fois trop de keyframes. La
+mesure ignore maintenant les 90 premières frames et compte sur 90
+suivantes.
+
 ## Plan par phases
 
 ### Phase 0 — préparation
@@ -440,8 +489,8 @@ le serveur en prenne une, la première est perdue. C'est voulu — une file
 - [ ] Page JS avec écran, tactile et boutons virtuels
 
 ### Phase 6 — Cemu (Wii U)
-- [ ] Backend sur `LatteRenderTarget_copyToBackbuffer(_, true)`
-- [ ] Tracer et brancher le chemin tactile VPAD
+- [x] Backend sur `LatteRenderTarget_copyToBackbuffer(_, true)`
+- [x] Tracer et brancher le chemin tactile VPAD
 - [ ] Profil de boutons Wii U
 
 ---
