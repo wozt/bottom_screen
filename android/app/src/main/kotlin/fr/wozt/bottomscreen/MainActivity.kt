@@ -175,6 +175,31 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     // --- BsClient.Listener, all on the network thread ----------------
 
+    /*
+     * The picture changed shape, because someone moved the emulator's
+     * internal resolution. Rebuilding the whole play layout is the
+     * simplest correct answer: the surface, the decoder and the geometry
+     * all depend on the size, and this happens when a slider moves, not
+     * every frame.
+     */
+    override fun onStreamInfo(info: BsProtocol.StreamInfo) {
+        val old = ack ?: return
+        if (info.width <= 0 || info.height <= 0) return
+        if (info.width == old.width && info.height == old.height) return
+
+        val updated = old.copy(width = info.width, height = info.height,
+                               fps = if (info.fps > 0) info.fps else old.fps)
+        ack = updated
+        runOnUiThread {
+            decoder?.release()
+            decoder = null
+            surfaceReady = false
+            play?.let { root.removeView(it) }
+            play = null
+            buildPlayUi(updated)
+        }
+    }
+
     override fun onAudio(data: ByteArray, offset: Int, length: Int) {
         audio?.decode(data, offset, length)
     }

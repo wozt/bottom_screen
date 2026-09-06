@@ -187,7 +187,7 @@ int main(int argc, char **argv)
         }
     }
 
-    const int src_w = ack.width, src_h = ack.height;
+    int src_w = ack.width, src_h = ack.height;
     printf("%s  %dx%d @ %u fps\n", console_name(ack.console), src_w, src_h,
            (unsigned)ack.fps);
 
@@ -278,6 +278,33 @@ int main(int argc, char **argv)
             if (bs_recv_msg(conn, &type, buf, BS_MAX_PAYLOAD, &n) != 0) {
                 printf("server closed the connection\n");
                 break;
+            }
+            if (type == BS_MSG_STREAM_INFO && n >= sizeof(BsStreamInfo)) {
+                /*
+                 * The picture changed shape -- someone moved the
+                 * emulator's internal resolution. Rebuild the texture
+                 * and the decoder for the new size rather than dropping
+                 * the connection, which is the whole point of the
+                 * server having sent this instead of hanging up.
+                 */
+                BsStreamInfo si;
+                memcpy(&si, buf, sizeof(si));
+                if (si.width > 0 && si.height > 0 &&
+                    (si.width != src_w || si.height != src_h)) {
+                    src_w = si.width;
+                    src_h = si.height;
+                    SDL_DestroyTexture(tex);
+                    tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_IYUV,
+                                            SDL_TEXTUREACCESS_STREAMING, src_w, src_h);
+                    bs_decoder_destroy(dec);
+                    dec = bs_decoder_create(err, sizeof(err));
+                    have_picture = 0;
+                    if (!tex || !dec) {
+                        fprintf(stderr, "cannot follow the new size: %s\n", err);
+                        break;
+                    }
+                    printf("stream is now %dx%d\n", src_w, src_h);
+                }
             }
             if (type == BS_MSG_VIDEO && n > sizeof(BsVideoHeader)) {
                 BsVideoHeader vh;

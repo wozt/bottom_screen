@@ -134,6 +134,41 @@ static int mb_take_audio(void *self, int16_t *out, int max_frames)
     return n;
 }
 
+int bs_mailbox_resize(BsSource *src, int width, int height)
+{
+    if (!src || width <= 0 || height <= 0)
+        return 0;
+    Mailbox *mb = src->self;
+
+    pthread_mutex_lock(&mb->lock);
+    if (width == mb->info.width && height == mb->info.height) {
+        pthread_mutex_unlock(&mb->lock);
+        return 0;
+    }
+
+    const int stride = width * (mb->info.pixfmt == BS_PIXFMT_RGB24 ? 3 : 4);
+    uint8_t *a = calloc(1, (size_t)stride * height);
+    uint8_t *b = calloc(1, (size_t)stride * height);
+    if (!a || !b) {
+        free(a); free(b);
+        pthread_mutex_unlock(&mb->lock);
+        return 0;
+    }
+
+    free(mb->buf[0]);
+    free(mb->buf[1]);
+    mb->buf[0] = a;
+    mb->buf[1] = b;
+    mb->stride = stride;
+    mb->info.width = width;
+    mb->info.height = height;
+    /* Whatever was waiting was the old size; keeping it would hand the
+     * encoder one frame of the wrong shape. */
+    mb->pending = 0;
+    pthread_mutex_unlock(&mb->lock);
+    return 1;
+}
+
 void bs_mailbox_input(BsSource *src, BsInputState *out)
 {
     if (!src || !out)

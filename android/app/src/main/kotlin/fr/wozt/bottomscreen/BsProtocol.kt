@@ -35,6 +35,7 @@ object BsProtocol {
     // Message types
     const val MSG_VIDEO = 1
     const val MSG_AUDIO = 2
+    const val MSG_STREAM_INFO = 3
     const val MSG_INPUT = 16
     const val MSG_PING = 17
     const val MSG_PONG = 18
@@ -81,6 +82,7 @@ object BsProtocol {
     const val MSG_HEADER_SIZE = 8
     const val VIDEO_HEADER_SIZE = 16
     const val AUDIO_HEADER_SIZE = 8
+    const val STREAM_INFO_SIZE = 10
     const val INPUT_EVENT_SIZE = 16
 
     fun buffer(size: Int): ByteBuffer =
@@ -214,6 +216,22 @@ object BsProtocol {
         b.putShort(fps.toShort())
         b.putShort(0)
         return b.array()
+    }
+
+    data class StreamInfo(
+        val fromFrameId: Int,
+        val width: Int,
+        val height: Int,
+        val fps: Int
+    )
+
+    fun parseStreamInfo(bytes: ByteArray, offset: Int = 0): StreamInfo {
+        val b = wrap(bytes, offset, STREAM_INFO_SIZE)
+        val from = b.int
+        val w = b.short.toInt() and 0xFFFF
+        val h = b.short.toInt() and 0xFFFF
+        val fps = b.short.toInt() and 0xFFFF
+        return StreamInfo(from, w, h, fps)
     }
 
     fun consoleName(console: Int): String = when (console) {

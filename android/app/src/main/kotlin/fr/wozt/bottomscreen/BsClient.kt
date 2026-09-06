@@ -26,6 +26,7 @@ class BsClient(
         fun onConnected(ack: BsProtocol.HelloAck)
         fun onFrame(data: ByteArray, offset: Int, length: Int, keyframe: Boolean, timestampUs: Int)
         fun onAudio(data: ByteArray, offset: Int, length: Int)
+        fun onStreamInfo(info: BsProtocol.StreamInfo)
         fun onDisconnected(reason: String)
     }
 
@@ -140,6 +141,10 @@ class BsClient(
                                 )
                             }
                         }
+                    }
+                    BsProtocol.MSG_STREAM_INFO -> {
+                        if (h.payloadSize >= BsProtocol.STREAM_INFO_SIZE)
+                            listener.onStreamInfo(BsProtocol.parseStreamInfo(payload))
                     }
                     BsProtocol.MSG_AUDIO -> {
                         if (h.payloadSize > BsProtocol.AUDIO_HEADER_SIZE) {

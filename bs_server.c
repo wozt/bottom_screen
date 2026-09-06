@@ -185,7 +185,37 @@ static void apply_quality(BsServer *srv)
     bs_encoder_request_keyframe(srv->enc);
 
     if (!srv->cfg.quiet)
-        printf("bottom_screen: bitrate now %d bit/s\n", srv->pending_bitrate);
+        fprintf(stderr, "bottom_screen: bitrate now %d bit/s\n", srv->pending_bitrate);
+}
+
+/*
+ * Builds a fresh encoder for the current size and keeps the old one only
+ * if that fails: a size change should cost the picture a keyframe, not
+ * the whole stream.
+ */
+static int rebuild_encoder(BsServer *srv)
+{
+    BsEncoderConfig ecfg = {
+        .width   = srv->info.width,
+        .height  = srv->info.height,
+        .fps     = srv->info.fps,
+        .bitrate = srv->cfg.bitrate,
+        .gop     = srv->cfg.gop,
+        .pixfmt  = srv->info.pixfmt,
+        .encoder = srv->cfg.encoder,
+    };
+    char err[128] = "";
+    BsEncoder *fresh = bs_encoder_create(&ecfg, err, sizeof(err));
+    if (!fresh) {
+        if (!srv->cfg.quiet)
+            fprintf(stderr, "bottom_screen: keeping the old encoder: %s\n", err);
+        return -1;
+    }
+    BsEncoder *old = srv->enc;
+    srv->enc = fresh;
+    bs_encoder_destroy(old);
+    bs_encoder_request_keyframe(srv->enc);
+    return 0;
 }
 
 static void serve_client(BsServer *srv, BsConn *conn)
@@ -251,6 +281,30 @@ static void serve_client(BsServer *srv, BsConn *conn)
         if (srv->quality_dirty) {
             srv->quality_dirty = 0;
             apply_quality(srv);
+        }
+
+        /*
+         * The source may have changed shape -- someone raised the
+         * emulator's internal resolution. Rebuild the encoder and tell
+         * the client, rather than dropping a connection over a setting.
+         */
+        BsSourceInfo now;
+        srv->source->get_info(srv->source->self, &now);
+        if (now.width != srv->info.width || now.height != srv->info.height) {
+            srv->info.width = now.width;
+            srv->info.height = now.height;
+            if (rebuild_encoder(srv) == 0) {
+                BsStreamInfo si;
+                si.from_frame_id = sc.frame_id;
+                si.width  = (uint16_t)srv->info.width;
+                si.height = (uint16_t)srv->info.height;
+                si.fps    = (uint16_t)srv->info.fps;
+                if (bs_send_msg(conn, BS_MSG_STREAM_INFO, &si, sizeof(si), NULL, 0) < 0)
+                    sc.failed = 1;
+                if (!srv->cfg.quiet)
+                    fprintf(stderr, "bottom_screen: now %dx%d\n",
+                            srv->info.width, srv->info.height);
+            }
         }
 
         int stride = 0;

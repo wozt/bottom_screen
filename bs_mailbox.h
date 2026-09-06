@@ -46,6 +46,16 @@ BsSource *bs_mailbox_create(BsConsole console, int width, int height,
  */
 void bs_mailbox_submit_audio(BsSource *src, const int16_t *samples, int frames);
 
+/*
+ * Changes the picture size. Every one of these emulators lets the person
+ * raise its internal resolution, so this is a setting being moved, not
+ * an error -- the server renegotiates with its clients rather than
+ * dropping them.
+ *
+ * Returns 1 if the size actually changed.
+ */
+int bs_mailbox_resize(BsSource *src, int width, int height);
+
 /* Called from the emulator's thread. Never blocks, never fails. */
 void bs_mailbox_submit(BsSource *src, const void *pixels, int stride);
 

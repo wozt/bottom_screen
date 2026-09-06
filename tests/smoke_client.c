@@ -118,6 +118,9 @@ int main(int argc, char **argv)
     int y_min = 255, y_max = 0;
     long long y_sum = 0; long long y_count = 0;
 
+    int cur_w = ack.width, cur_h = ack.height;
+    int resizes = 0;
+
     int audio_packets = 0;
     size_t audio_bytes = 0;
 
@@ -131,6 +134,22 @@ int main(int argc, char **argv)
         size_t n = 0;
         if (bs_recv_msg(conn, &type, buf, BS_MAX_PAYLOAD, &n) != 0)
             return fail("stream ended early");
+        if (type == BS_MSG_STREAM_INFO && n >= sizeof(BsStreamInfo)) {
+            /* The picture changed shape mid-stream, which is what the
+             * server sends instead of hanging up when someone moves the
+             * emulator's internal resolution. Follow it. */
+            BsStreamInfo si;
+            memcpy(&si, buf, sizeof(si));
+            if (si.width > 0 && si.height > 0) {
+                cur_w = si.width;
+                cur_h = si.height;
+                resizes++;
+                bs_decoder_destroy(dec);
+                dec = bs_decoder_create(err, sizeof(err));
+                if (!dec) return fail("cannot rebuild the decoder");
+            }
+            continue;
+        }
         if (type == BS_MSG_AUDIO) {
             if (n > sizeof(BsAudioHeader)) {
                 audio_packets++;
@@ -156,7 +175,7 @@ int main(int argc, char **argv)
             /* Against what the handshake announced, not the console's
              * own size: an emulator may render larger, and the contract
              * is that the picture matches what was promised. */
-            if (f.width != ack.width || f.height != ack.height)
+            if (f.width != cur_w || f.height != cur_h)
                 return fail("decoded picture is not the announced size");
             decoded++;
 
@@ -242,6 +261,9 @@ int main(int argc, char **argv)
                (unsigned)ack.audio_rate, (unsigned)ack.audio_channels);
     else
         printf("audio: aucun annonce par le serveur\n");
+
+    if (resizes > 0)
+        printf("taille renegociee %d fois, desormais %dx%d\n", resizes, cur_w, cur_h);
 
     printf("luma: min %d, max %d, mean %.1f\n",
            y_min, y_max, y_count ? (double)y_sum / (double)y_count : 0.0);

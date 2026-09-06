@@ -103,6 +103,7 @@ typedef struct __attribute__((packed)) {
 typedef enum {
     BS_MSG_VIDEO = 1,  /* BsVideoHeader + one fragment of a frame */
     BS_MSG_AUDIO = 2,  /* BsAudioHeader + one encoded Opus packet */
+    BS_MSG_STREAM_INFO = 3, /* BsStreamInfo; the picture changed shape */
     BS_MSG_INPUT = 16, /* BsInputEvent, client -> server */
     BS_MSG_PING  = 17, /* empty; keeps a silent connection alive */
     BS_MSG_PONG  = 18, /* empty; reply to PING */
@@ -158,6 +159,29 @@ typedef struct __attribute__((packed)) {
     uint8_t  flags;
     uint8_t  reserved[3];
 } BsVideoHeader;
+
+/* --- the stream changing shape -------------------------------------- */
+
+/*
+ * Sent whenever the picture's size changes, which is a normal event
+ * rather than a fault: every one of these emulators lets the person
+ * raise its internal resolution, and the bottom screen grows with it.
+ *
+ * Restarting the server on such a change would drop every connected
+ * client for what is, from their side, someone moving a slider. So the
+ * connection survives and this says what changed.
+ *
+ * from_frame_id is the first frame that carries the new shape. A client
+ * cannot re-initialise its decoder the moment it reads this, because
+ * frames already in flight are still the old size; this says exactly
+ * when to switch.
+ */
+typedef struct __attribute__((packed)) {
+    uint32_t from_frame_id;
+    uint16_t width;
+    uint16_t height;
+    uint16_t fps;
+} BsStreamInfo;
 
 /* --- audio ---------------------------------------------------------- */
 
@@ -227,10 +251,15 @@ typedef enum {
 } BsAxis;
 
 /*
- * Touch coordinates are in the console's own pixel space -- 0..255 by
- * 0..191 on DS -- not in client screen pixels. The client already knows
- * the native size from BsHelloAck, so it does the conversion once and
- * the server stays free of client geometry.
+ * Touch coordinates are in the stream's own pixel space -- whatever
+ * BsHelloAck announced, which is 256x192 for a DS but larger for an
+ * emulator rendering at a higher internal resolution. Not client screen
+ * pixels: the client converts once, and the server stays free of client
+ * geometry.
+ *
+ * A backend that divides by the console's native size instead of the
+ * announced one puts every tap wrong by exactly the resolution scale,
+ * which looks like a calibration problem and is not.
  *
  * sequence lets the server drop a reordered event over UDP without
  * needing a timestamp comparison.
