@@ -213,19 +213,55 @@ properly, and reproduced on the other two.
 
 ### B6. Every render backend
 
-- [ ] melonDS: software, OpenGL, OpenGL compute
-- [ ] Azahar: OpenGL, Vulkan, software
-- [ ] Cemu: OpenGL, Vulkan
-- [ ] Survive a backend changed while a client is watching
+- [x] melonDS: software, OpenGL, OpenGL compute
+- [x] Azahar: OpenGL, Vulkan, software
+- [x] Cemu: OpenGL, Vulkan
+- [x] Survive a backend changed while a client is watching
+- [ ] Cemu under Metal (macOS; no machine to try it on)
 
-The bridge must not care which renderer the emulator is using. Today it
-does: Azahar is hooked in `renderer_opengl` alone, and Cemu reads back
-only on OpenGL — which is the awkward one, since Vulkan is Cemu's
-default on Linux.
+The bridge no longer cares which renderer the emulator uses. Each one
+gets the bottom screen into ordinary 32-bit pixels its own way, and
+everything after that is shared.
 
-Both emulators already move an image off the GPU on every backend, for
-screenshots. That machinery is what these readbacks should be built
-from rather than a second way of doing the same thing.
+**Cemu / Vulkan** was the awkward gap, since Vulkan is the default on
+Linux — the backend most people would actually get was the one that
+streamed nothing. The readback is taken from `HandleScreenshotRequest`,
+which already does this on that backend and is proven here. It keeps the
+alpha channel, leaves the bytes in whatever colour space the buffer
+uses, and runs every frame rather than once. Leaving sRGB alone is
+deliberate: OpenGL hands back the stored bytes untouched, and a picture
+that changed colour because somebody switched graphics API would be a
+strange thing to explain.
+
+**Azahar** was hooked in `renderer_opengl` alone, which also said the
+bridge belonged to that backend when it belongs to none of them; it
+moved to `video_core`. The software renderer already decodes the
+framebuffer into RGBA in RAM and transposes as it goes, so it passes its
+pixels straight through with no rotation. Vulkan blits into an RGBA8
+image of its own first — reading the source directly gave a picture
+repeated twice down the frame in the wrong colours, because the image
+standing in for the screen belongs to the rasterizer and carries
+whatever format the title's framebuffer uses, RGB565 and RGBA4 among
+them. It also needs the image and the region, which `ScreenInfo` did not
+carry: a view cannot be copied out of, and under accelerated display
+that view belongs to a rasterizer surface rather than the texture beside
+it.
+
+**melonDS** needed nothing for its compute renderer — that is the 3D
+renderer inside the same GL compositor, so it arrives by the texture
+path. But melonDS is the one emulator that changes renderer without
+restarting, and the software path submitted 256×192 without ever telling
+the mailbox: switching back from OpenGL at 2x handed a 256×192 buffer to
+a mailbox still sized 512×384, which copies 384 rows of 2048 bytes out
+of a 196 KB framebuffer. Both paths now go through one function that
+resizes first.
+
+Verified per backend with a real game rather than by reading: a commercial Wii U title
+HD on Cemu/Vulkan, a commercial 3DS title on all three Azahar renderers,
+a commercial DS title on melonDS software, OpenGL and compute — the same
+picture, the same way up, the same colours in each. `tests/resize_flip.c`
+covers the size flipping under the sanitizers, with buffers allocated
+exactly so an overrun cannot hide in slack.
 
 ---
 
@@ -311,9 +347,11 @@ somewhere else:
 - **Azahar**: `resolution_factor` in `qt-config.ini`, written with its
   `\default=false` marker — without which the value is ignored in
   silence.
-- **Cemu**: `<pad_size>` in `settings.xml`, with `<open_pad>true` and
-  `<api>0` (OpenGL) alongside, the two settings without which nothing is
-  captured at all.
+- **Cemu**: `<pad_size>` in `settings.xml`, with `<open_pad>true`
+  alongside — the setting without which nothing is captured at all. The
+  graphics API is deliberately left alone now that both backends stream;
+  a launcher that quietly changed somebody's renderer would be taking a
+  decision that is no longer its business.
 - **melonDS**: `ScaleFactor` in `melonDS.toml`, with the OpenGL renderer
   and GL display selected alongside — that is where melonDS scales and
   nowhere else, so a factor without the renderer would do nothing.

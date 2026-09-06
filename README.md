@@ -113,6 +113,11 @@ Internal resolution follows on all three: raising the render scale
 changes the size of the stream, and the server renegotiates with the
 clients already connected instead of dropping them.
 
+The render backend does not matter. melonDS streams under its software,
+OpenGL and compute renderers; Azahar under software, OpenGL and Vulkan;
+Cemu under OpenGL and Vulkan. melonDS can be switched between them while
+somebody is watching, and the stream follows.
+
 ---
 
 ## What does not work yet
@@ -120,9 +125,8 @@ clients already connected instead of dropping them.
 - **The 3DS system menu.** Azahar crashes when the Artic Setup Tool
   connects, so the system files are not installed. Games and homebrew
   run.
-- **Cemu under Vulkan.** Reading the GamePad view back only exists on
-  the OpenGL path. The launcher switches the API for that reason.
 - **The Switch homebrew and the web client** are not written.
+- **Cemu under Metal** (macOS only, with no machine here to try it on).
 
 The detail is in [ROADMAP.md](ROADMAP.md).
 

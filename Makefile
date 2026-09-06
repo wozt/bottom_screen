@@ -26,6 +26,7 @@ CLIENT_SRC := bottom_screen_client.c bs_decoder.c bs_net.c
 SMOKE_SRC  := tests/smoke_client.c bs_decoder.c bs_net.c
 MERGE_SRC  := tests/input_merge.c bs_server.c bs_encoder.c bs_audio.c \
               bs_mailbox.c bs_net.c
+FLIP_SRC   := tests/resize_flip.c bs_mailbox.c bs_net.c
 
 BINARIES := bottom_screen_server bottom_screen_client launcher/bs_launcher
 
@@ -43,6 +44,12 @@ bottom_screen_client: $(CLIENT_SRC) bs_decoder.h bs_net.h bs_protocol.h
 
 # Headless end-to-end check: connects, decodes real frames, sends input
 # back. No display, so it runs over SSH and in a script.
+# Sanitized on purpose: the bug this guards against is an out-of-bounds
+# read that a plain build would happily perform and pass.
+tests/resize_flip: $(FLIP_SRC) bs_mailbox.h bs_source.h
+	$(CC) $(CFLAGS) $(SERVER_CFLAGS) -fsanitize=address,undefined -g \
+	  -o $@ $(FLIP_SRC) $(LDFLAGS) -lpthread -lm
+
 tests/input_merge: $(MERGE_SRC) bs_server.h bs_mailbox.h bs_protocol.h
 	$(CC) $(CFLAGS) $(SERVER_CFLAGS) -o $@ $(MERGE_SRC) $(LDFLAGS) $(SERVER_LIBS) -lm
 
@@ -50,10 +57,10 @@ tests/smoke_client: $(SMOKE_SRC) bs_decoder.h bs_net.h bs_protocol.h
 	$(CC) $(CFLAGS) $(shell pkg-config --cflags libavcodec libavutil) -o $@ \
 	  $(SMOKE_SRC) $(LDFLAGS) $(shell pkg-config --libs libavcodec libavutil)
 
-test: bottom_screen_server tests/smoke_client tests/input_merge
+test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_flip
 	./tests/run_smoke.sh
 
 clean:
-	rm -f $(BINARIES) tests/smoke_client tests/input_merge
+	rm -f $(BINARIES) tests/smoke_client tests/input_merge tests/resize_flip
 
 .PHONY: all clean test

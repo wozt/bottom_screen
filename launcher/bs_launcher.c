@@ -77,7 +77,8 @@ static Emu emus[] = {
         .default_port = BS_DEFAULT_PORT + 2,
         .scale_kind = SCALE_CEMU,
         .scale_note = "The GamePad view is rendered at its window size, "
-                      "so this sets that window.",
+                      "so this sets that window. OpenGL and Vulkan both "
+                      "stream.",
     },
 };
 
@@ -248,9 +249,13 @@ static gboolean melonds_set_scale(int factor, char **why)
 /* --------------------------------------------------------- cemu config */
 
 /*
- * Sets the GamePad window size, and the two settings without which
- * nothing is captured at all: the pad view has to be open, and the
- * renderer has to be OpenGL, because the Vulkan path has no readback.
+ * Sets the GamePad window size, and the setting without which nothing is
+ * captured at all: the pad view has to be open.
+ *
+ * The graphics API is deliberately left alone. It used to be forced to
+ * OpenGL because the Vulkan path had no readback; it has one now, and a
+ * launcher that quietly changed somebody's renderer would be taking a
+ * decision that is no longer its business.
  *
  * Cemu rewrites this file when it exits, so this is only meaningful
  * before a launch -- which is exactly when a launcher runs.
@@ -268,25 +273,15 @@ static gboolean cemu_set_pad(int w, int h, char **why)
 
     char **lines = g_strsplit(text, "\n", -1);
     GString *out = g_string_new(NULL);
-    gboolean in_graphic = FALSE, in_pad_size = FALSE, api_done = FALSE;
+    gboolean in_pad_size = FALSE;
 
     for (int i = 0; lines[i]; i++) {
         const char *l = lines[i];
         const char *t = l;
         while (*t == ' ' || *t == '\t') t++;
 
-        if (g_str_has_prefix(t, "<Graphic>"))   in_graphic = TRUE;
-        if (g_str_has_prefix(t, "</Graphic>"))  in_graphic = FALSE;
         if (g_str_has_prefix(t, "<pad_size>"))  in_pad_size = TRUE;
 
-        /* There are two <api> tags -- graphics and audio -- so the
-         * section is tracked rather than the tag matched on its own. */
-        if (in_graphic && !api_done && g_str_has_prefix(t, "<api>")) {
-            g_string_append(out, "        <api>0</api>");
-            api_done = TRUE;
-            if (lines[i + 1]) g_string_append_c(out, '\n');
-            continue;
-        }
         if (g_str_has_prefix(t, "<open_pad>")) {
             g_string_append(out, "    <open_pad>true</open_pad>");
             if (lines[i + 1]) g_string_append_c(out, '\n');
