@@ -3,6 +3,15 @@
 # Exits non-zero if the pipeline does not carry decodable frames.
 set -e
 
+# Scratch in RAM. /tmp is a tmpfs on most systems but not all, and
+# /dev/shm always is; preferring it means a machine where /tmp sits on a
+# disk does not take a few megabytes of test output for nothing.
+if [ -z "$TMPDIR" ] && [ -d /dev/shm ]; then
+    TMPDIR=/dev/shm
+    export TMPDIR
+fi
+
+
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 PORT=${PORT:-5099}
 CONSOLE=${CONSOLE:-ds}

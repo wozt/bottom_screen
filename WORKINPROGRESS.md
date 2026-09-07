@@ -202,10 +202,16 @@ pattern is largely static, so x264 compresses it very well.
 | `launcher/bs_launcher.c` | the GTK launcher |
 | `tests/smoke_client.c` | end-to-end check with no screen |
 | `tests/input_merge.c` | button merging across several clients |
+| `tests/run_receive_size.sh` | a client asking for a smaller picture, and where its taps land |
+| `tests/run_patches_fresh.sh` | that `patches/` still matches the forks |
+
+Scratch goes to `/dev/shm` when it exists rather than `/tmp`: the latter
+is a tmpfs on most systems but not all, and a few megabytes of test
+output has no business being written to somebody's disk.
 
 ```bash
 make                          # everything
-make test                     # headless checks
+make test                     # every headless check, not one of them
 ./bottom_screen_server --console ds
 ./bottom_screen_client --scale 3
 ```
