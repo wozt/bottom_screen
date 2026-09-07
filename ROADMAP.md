@@ -176,7 +176,7 @@ including the two that fail silently without it).
 - [x] Reconfigure the encoder live when the size changes
 - [x] Announce the new size to clients (`STREAM_INFO`)
 - [x] GPU readback for melonDS (the last of the three)
-- [ ] Choice of receiving resolution on the client side
+- [x] Choice of receiving resolution on the client side
 
 melonDS scales only in its OpenGL renderer, which keeps the screens in a
 GPU texture rather than RAM. `GetFramebuffers` then returns `false` and
@@ -197,6 +197,36 @@ bug.
 Verified with a commercial DS title at x4: 1024×768 announced, the bottom
 screen the right way up in the right colours, and a tap at the centre of
 the announced space starting the game.
+
+**Asking for less.** `BS_MSG_SET_SIZE`, a message type of its own rather
+than a wider `BsQuality`, because adding fields to a struct both ends
+agree on would break every client that had not been rebuilt. Zero means
+"follow the source", which is how a client stops asking.
+
+Shared with everyone watching, like the bitrate and for the same reason:
+one encoder, so a size each would mean an encoder each. The server
+announces what it settled on through `STREAM_INFO`, since a request can
+be rounded to even numbers — YUV420 chroma is half resolution and an odd
+dimension has no whole answer — or clamped.
+
+The scaler was already there for the pixel format, BGRA in and YUV out,
+so a different output size costs only the resampling. It switches from
+point sampling to bilinear when the size actually changes: dropping
+pixels out of a picture being made smaller loses thin lines and text,
+which on a menu screen is most of what is there.
+
+**The half that goes wrong quietly is touch.** Clients aim in the space
+that was announced to them; the backends work in the source's own space.
+The conversion happens in the server, the one place that knows both
+numbers — leaving it to the backends would put every tap wrong by
+exactly the scale, in three different files, and look like a calibration
+problem.
+
+`tests/run_receive_size.sh` measures rather than assumes it: it taps a
+quarter across and a quarter down, because the centre is the one point
+that looks right whether or not the conversion happened, and reads the
+crosshair back out of the decoded picture. With the conversion the tap
+lands at 0.248; without it, at 0.123.
 
 ### B4. Port
 - [x] If the port is taken at startup, increment and retry

@@ -33,6 +33,13 @@ int main(int argc, char **argv)
     uint16_t port = BS_DEFAULT_PORT;
     int want_frames = 120;
     const char *dump_path = NULL;
+    int ask_w = 0, ask_h = 0;
+    int tap_x = 500, tap_y = 500;   /* thousandths of the announced size */
+    /* Presses and keeps pressing, so a dumped frame is certain to show
+     * where the touch landed. The default is a real tap, because a
+     * stylus that never lifts is what made the DS firmware wait
+     * forever -- this is for measuring, not for exercising input. */
+    int hold = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *next = (i + 1 < argc) ? argv[i + 1] : NULL;
@@ -40,6 +47,20 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--port") && next)   { port = (uint16_t)atoi(next); i++; }
         else if (!strcmp(argv[i], "--frames") && next) { want_frames = atoi(next); i++; }
         else if (!strcmp(argv[i], "--dump-yuv") && next) { dump_path = next; i++; }
+        else if (!strcmp(argv[i], "--ask-size") && next) {
+            /* WxH: ask the server to send a smaller picture than the
+             * emulator renders, which is what a phone wants when the
+             * internal resolution is turned up. */
+            if (sscanf(next, "%dx%d", &ask_w, &ask_h) != 2)
+                return fail("--ask-size wants WxH");
+            i++;
+        }
+        else if (!strcmp(argv[i], "--hold")) { hold = 1; }
+        else if (!strcmp(argv[i], "--tap") && next) {
+            if (sscanf(next, "%d,%d", &tap_x, &tap_y) != 2)
+                return fail("--tap wants X,Y as fractions in thousandths");
+            i++;
+        }
     }
 
     /* The server binds, then blocks in accept. Retrying here beats a
@@ -119,6 +140,8 @@ int main(int argc, char **argv)
     long long y_sum = 0; long long y_count = 0;
 
     int cur_w = ack.width, cur_h = ack.height;
+    const int announced_w = ack.width, announced_h = ack.height;
+    int asked = 0;
     int resizes = 0;
 
     int audio_packets = 0;
@@ -227,7 +250,16 @@ int main(int argc, char **argv)
                 (void)kf;
             }
 
-            int phase = decoded % 40;
+            /* Asked for once the stream is running, so the renegotiation
+             * is exercised rather than the opening handshake. */
+            if (ask_w > 0 && !asked && decoded == 10) {
+                asked = 1;
+                BsSize sz = { (uint16_t)ask_w, (uint16_t)ask_h };
+                if (bs_send_msg(conn, BS_MSG_SET_SIZE, &sz, sizeof(sz), NULL, 0) < 0)
+                    return fail("could not ask for a size");
+            }
+
+            int phase = hold ? (decoded == 20 ? 20 : -1) : (decoded % 40);
             if (phase == 20 || phase == 28) {
                 BsInputEvent ev;
                 memset(&ev, 0, sizeof(ev));
@@ -238,8 +270,8 @@ int main(int argc, char **argv)
                  * rendered at a higher internal resolution uses that
                  * space, and aiming with native coordinates lands every
                  * tap near the top left. */
-                ev.x = (int16_t)(cur_w / 2);
-                ev.y = (int16_t)(cur_h / 2);
+                ev.x = (int16_t)((long)cur_w * tap_x / 1000);
+                ev.y = (int16_t)((long)cur_h * tap_y / 1000);
                 if (bs_send_msg(conn, BS_MSG_INPUT, &ev, sizeof(ev), NULL, 0) < 0)
                     return fail("could not send input");
             }
@@ -268,6 +300,12 @@ int main(int argc, char **argv)
 
     if (resizes > 0)
         printf("taille renegociee %d fois, desormais %dx%d\n", resizes, cur_w, cur_h);
+    if (ask_w > 0) {
+        printf("demande %dx%d, annonce au depart %dx%d, recu %dx%d\n",
+               ask_w, ask_h, announced_w, announced_h, cur_w, cur_h);
+        if (cur_w > announced_w || cur_h > announced_h)
+            return fail("the picture did not get smaller");
+    }
 
     printf("luma: min %d, max %d, mean %.1f\n",
            y_min, y_max, y_count ? (double)y_sum / (double)y_count : 0.0);

@@ -16,7 +16,8 @@ struct BsEncoder {
     AVPacket       *pkt;
     struct SwsContext *sws;
     enum AVPixelFormat src_fmt;
-    int   width, height;
+    int   width, height;          /* the source's size */
+    int   out_width, out_height;  /* what is actually encoded */
     int64_t pts;
     int   force_keyframe;
     char  name[64];
@@ -84,6 +85,20 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
     }
     enc->width  = cfg->width;
     enc->height = cfg->height;
+
+    /*
+     * The encoded size, which is the source's unless a client asked for
+     * less. Rounded to even numbers because YUV420 chroma is half
+     * resolution and an odd dimension has no whole answer.
+     */
+    int out_w = cfg->out_width  > 0 ? cfg->out_width  : cfg->width;
+    int out_h = cfg->out_height > 0 ? cfg->out_height : cfg->height;
+    out_w &= ~1;
+    out_h &= ~1;
+    if (out_w < 16) out_w = 16;
+    if (out_h < 16) out_h = 16;
+    enc->out_width  = out_w;
+    enc->out_height = out_h;
     enc->src_fmt = src_fmt;
     snprintf(enc->name, sizeof(enc->name), "%s", codec->name);
 
@@ -93,8 +108,8 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
         goto fail;
     }
 
-    enc->ctx->width     = cfg->width;
-    enc->ctx->height    = cfg->height;
+    enc->ctx->width     = enc->out_width;
+    enc->ctx->height    = enc->out_height;
     enc->ctx->pix_fmt   = AV_PIX_FMT_YUV420P;
     enc->ctx->time_base = (AVRational){1, cfg->fps};
     enc->ctx->framerate = (AVRational){cfg->fps, 1};
@@ -152,9 +167,19 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
         goto fail;
     }
 
+    /*
+     * Point sampling while the size is unchanged, which is the common
+     * case and the cheapest correct answer for a format conversion.
+     * Actually shrinking wants a filter: dropping pixels from a picture
+     * that is being made smaller loses thin lines and text outright,
+     * which on a menu screen is most of what is there.
+     */
+    const int shrinking = (enc->out_width != cfg->width ||
+                           enc->out_height != cfg->height);
     enc->sws = sws_getContext(cfg->width, cfg->height, src_fmt,
-                              cfg->width, cfg->height, AV_PIX_FMT_YUV420P,
-                              SWS_POINT, NULL, NULL, NULL);
+                              enc->out_width, enc->out_height, AV_PIX_FMT_YUV420P,
+                              shrinking ? SWS_BILINEAR : SWS_POINT,
+                              NULL, NULL, NULL);
     if (!enc->sws) {
         set_err(err, errlen, "sws_getContext failed");
         goto fail;
@@ -165,6 +190,17 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
 fail:
     bs_encoder_destroy(enc);
     return NULL;
+}
+
+void bs_encoder_out_size(const BsEncoder *enc, int *width, int *height)
+{
+    if (!enc) {
+        if (width)  *width = 0;
+        if (height) *height = 0;
+        return;
+    }
+    if (width)  *width  = enc->out_width;
+    if (height) *height = enc->out_height;
 }
 
 void bs_encoder_destroy(BsEncoder *enc)

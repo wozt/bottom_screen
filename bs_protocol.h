@@ -121,6 +121,21 @@ typedef enum {
     BS_MSG_REQUEST_KEYFRAME = 19,
 
     /*
+     * BsSize, client -> server: send the picture at this size.
+     *
+     * An emulator rendering at four times its internal resolution puts
+     * 1280x960 on the wire for a screen that is 320x240, and a phone
+     * showing it in a third of its display gains nothing from the extra
+     * pixels but pays for all of them. This asks for less.
+     *
+     * A message type of its own rather than a wider BsQuality: adding
+     * fields to a struct both ends already agree on would break every
+     * client that had not been rebuilt, and an unknown message type is
+     * something old servers already ignore.
+     */
+    BS_MSG_SET_SIZE = 21,
+
+    /*
      * BsQuality, client -> server: re-encode at this bitrate.
      *
      * The person holding the phone is the one who can see whether the
@@ -219,6 +234,30 @@ typedef struct __attribute__((packed)) {
     uint16_t fps;        /* 0 = unchanged */
     uint16_t reserved;
 } BsQuality;
+
+/*
+ * The size to encode at, which is not necessarily the size the emulator
+ * renders at.
+ *
+ * Zero means "whatever the source produces", and going back to zero is
+ * how a client stops asking. The server announces what it settled on
+ * through STREAM_INFO, so a client learns the real answer rather than
+ * assuming it got what it asked for -- it may be refused, and it is
+ * always shared with whoever else is watching.
+ *
+ * Shared, because there is one encoder for every client. That is the
+ * same trade the bitrate makes, and for the same reason: a size each
+ * would mean an encoder each, which is the cost the whole design exists
+ * to avoid. The last client to ask wins.
+ *
+ * Touch keeps arriving in the announced space, so a client that asked
+ * for a smaller picture sends smaller coordinates and the server scales
+ * them back before the emulator ever sees them.
+ */
+typedef struct __attribute__((packed)) {
+    uint16_t width;      /* 0 = follow the source */
+    uint16_t height;
+} BsSize;
 
 /* --- input ---------------------------------------------------------- */
 

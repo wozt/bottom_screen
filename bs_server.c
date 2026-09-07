@@ -114,6 +114,18 @@ struct BsServer {
     volatile int pending_bitrate;
     volatile int quality_dirty;
 
+    /*
+     * The size a client asked to receive, 0 meaning "whatever the source
+     * produces". Shared like the bitrate, and for the same reason: there
+     * is one encoder, so a size each would mean an encoder each.
+     */
+    volatile int want_w, want_h;
+    volatile int size_dirty;
+
+    /* What is actually encoded and announced, which is not the source's
+     * size once somebody has asked for less. */
+    int out_w, out_h;
+
     BsClient *clients;
     int       max_clients;
 
@@ -350,8 +362,10 @@ static int client_handshake(BsClient *cl)
     ack.accepted = 1;
     ack.console  = (uint8_t)srv->info.console;
     ack.codec    = BS_CODEC_H264;
-    ack.width    = (uint16_t)srv->info.width;
-    ack.height   = (uint16_t)srv->info.height;
+    /* What is on the wire, which is what a client has to draw and to
+     * aim its touches in -- not what the emulator happens to render. */
+    ack.width    = (uint16_t)srv->out_w;
+    ack.height   = (uint16_t)srv->out_h;
     ack.fps      = (uint16_t)srv->info.fps;
     ack.extradata_size = (uint16_t)extra_size;
     if (srv->aenc) {
@@ -432,10 +446,27 @@ static void *client_recv_thread(void *arg)
             case BS_INPUT_TOUCH_DOWN:
             case BS_INPUT_TOUCH_MOVE:
             case BS_INPUT_TOUCH_UP:
-                /* One finger, one pointer: the most recent touch wins,
-                 * whoever sent it. */
-                if (srv->source->touch)
-                    srv->source->touch(srv->source->self, ev.type, ev.x, ev.y);
+                /*
+                 * One finger, one pointer: the most recent touch wins,
+                 * whoever sent it.
+                 *
+                 * Clients aim in the space that was announced to them,
+                 * which is the encoded size. The backends work in the
+                 * source's own space, so the conversion happens here --
+                 * the one place that knows both numbers. Leaving it to
+                 * the backends would put every tap wrong by exactly the
+                 * scale, in three different files.
+                 */
+                if (srv->source->touch) {
+                    int tx = ev.x, ty = ev.y;
+                    if (srv->out_w > 0 && srv->out_h > 0 &&
+                        (srv->out_w != srv->info.width ||
+                         srv->out_h != srv->info.height)) {
+                        tx = ev.x * srv->info.width / srv->out_w;
+                        ty = ev.y * srv->info.height / srv->out_h;
+                    }
+                    srv->source->touch(srv->source->self, ev.type, tx, ty);
+                }
                 break;
             case BS_INPUT_BUTTON_DOWN:
             case BS_INPUT_BUTTON_UP:
@@ -455,6 +486,12 @@ static void *client_recv_thread(void *arg)
             client_send(cl, BS_MSG_PONG, 0, NULL, 0, NULL, 0);
         } else if (type == BS_MSG_REQUEST_KEYFRAME) {
             bs_encoder_request_keyframe(srv->enc);
+        } else if (type == BS_MSG_SET_SIZE && n >= sizeof(BsSize)) {
+            BsSize sz;
+            memcpy(&sz, buf, sizeof(sz));
+            srv->want_w = sz.width;
+            srv->want_h = sz.height;
+            srv->size_dirty = 1;
         } else if (type == BS_MSG_SET_QUALITY && n >= sizeof(BsQuality)) {
             BsQuality q;
             memcpy(&q, buf, sizeof(q));
@@ -656,13 +693,15 @@ static int server_adopt(BsServer *srv, BsConn *conn, int is_web)
 static int encoder_rebuild(BsServer *srv, int bitrate)
 {
     BsEncoderConfig ecfg = {
-        .width   = srv->info.width,
-        .height  = srv->info.height,
-        .fps     = srv->info.fps,
-        .bitrate = bitrate,
-        .gop     = srv->cfg.gop,
-        .pixfmt  = srv->info.pixfmt,
-        .encoder = srv->cfg.encoder,
+        .width      = srv->info.width,
+        .height     = srv->info.height,
+        .out_width  = srv->want_w,
+        .out_height = srv->want_h,
+        .fps        = srv->info.fps,
+        .bitrate    = bitrate,
+        .gop        = srv->cfg.gop,
+        .pixfmt     = srv->info.pixfmt,
+        .encoder    = srv->cfg.encoder,
     };
 
     char err[128] = "";
@@ -677,6 +716,7 @@ static int encoder_rebuild(BsServer *srv, int bitrate)
     srv->enc = fresh;
     bs_encoder_destroy(old);
     bs_encoder_request_keyframe(srv->enc);
+    bs_encoder_out_size(srv->enc, &srv->out_w, &srv->out_h);
     return 0;
 }
 
@@ -734,8 +774,8 @@ static void broadcast_stream_info(BsServer *srv, uint32_t from_frame_id)
 {
     BsStreamInfo si;
     si.from_frame_id = from_frame_id;
-    si.width  = (uint16_t)srv->info.width;
-    si.height = (uint16_t)srv->info.height;
+    si.width  = (uint16_t)srv->out_w;
+    si.height = (uint16_t)srv->out_h;
     si.fps    = (uint16_t)srv->info.fps;
 
     for (int i = 0; i < srv->max_clients; i++) {
@@ -798,6 +838,19 @@ static void *pump_thread(void *arg)
             if (encoder_rebuild(srv, srv->pending_bitrate) == 0 && !srv->cfg.quiet)
                 fprintf(stderr, "bottom_screen: bitrate now %d bit/s\n",
                         srv->pending_bitrate);
+        }
+
+        if (srv->size_dirty) {
+            srv->size_dirty = 0;
+            const int was_w = srv->out_w, was_h = srv->out_h;
+            if (encoder_rebuild(srv, srv->cfg.bitrate) == 0 &&
+                (srv->out_w != was_w || srv->out_h != was_h)) {
+                broadcast_stream_info(srv, sc.frame_id);
+                if (!srv->cfg.quiet)
+                    fprintf(stderr, "bottom_screen: sending %dx%d from a %dx%d source\n",
+                            srv->out_w, srv->out_h,
+                            srv->info.width, srv->info.height);
+            }
         }
 
         /*
@@ -928,6 +981,10 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     srv->enc = bs_encoder_create(&ecfg, err, errlen);
     if (!srv->enc)
         goto fail;
+    /* Nobody has asked for a size yet, so this is the source's -- but it
+     * is read from the encoder rather than assumed, because that is
+     * where rounding to even numbers happens. */
+    bs_encoder_out_size(srv->enc, &srv->out_w, &srv->out_h);
 
     if (srv->info.audio_rate > 0 && srv->info.audio_channels > 0) {
         BsAudioConfig acfg = {

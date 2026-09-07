@@ -136,6 +136,8 @@ static void usage(void)
 "  --host NAME       server address (default 127.0.0.1)\n"
 "  --port N          server port (default %d)\n"
 "  --scale N         exact zoom factor; 0 fills the window (default 0)\n"
+"  --size WxH        ask the server to send this size, not whatever the\n"
+"                    emulator renders; shared with other clients\n"
 "  --help\n"
 "\n"
 "Mouse drags the touch screen. Keys: arrows d-pad, X/Z A/B, S/A X/Y,\n"
@@ -148,6 +150,7 @@ int main(int argc, char **argv)
     const char *host = "127.0.0.1";
     uint16_t port = BS_DEFAULT_PORT;
     int scale = 0;
+    int want_w = 0, want_h = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -156,6 +159,16 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--host") && next)  { host = next; i++; }
         else if (!strcmp(a, "--port") && next)  { port = (uint16_t)atoi(next); i++; }
         else if (!strcmp(a, "--scale") && next) { scale = atoi(next); i++; }
+        else if (!strcmp(a, "--size") && next) {
+            /* Ask the server to send this size instead of whatever the
+             * emulator renders. Shared with anyone else watching, since
+             * there is one encoder. */
+            if (sscanf(next, "%dx%d", &want_w, &want_h) != 2) {
+                fprintf(stderr, "--size wants WxH\n");
+                return 1;
+            }
+            i++;
+        }
         else { fprintf(stderr, "unknown argument: %s\n", a); usage(); return 1; }
     }
 
@@ -181,6 +194,15 @@ int main(int argc, char **argv)
         fprintf(stderr, "the server is full\n");
         return 1;
     }
+    if (want_w > 0 && want_h > 0) {
+        BsSize sz = { (uint16_t)want_w, (uint16_t)want_h };
+        /* Sent before the first frame, so nothing is decoded at a size
+         * that is about to change. The server answers with STREAM_INFO
+         * saying what it settled on. */
+        if (bs_send_msg(conn, BS_MSG_SET_SIZE, &sz, sizeof(sz), NULL, 0) < 0)
+            fprintf(stderr, "could not ask for a size\n");
+    }
+
     if (ack.extradata_size) {
         uint8_t skip[4096];
         if (ack.extradata_size > sizeof(skip) ||

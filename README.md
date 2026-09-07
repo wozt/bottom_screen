@@ -120,6 +120,13 @@ without a phone.
 ./bottom_screen_client --host 192.168.1.20 --port 5090
 ```
 
+**Receiving less than is rendered.** An emulator at four times its
+internal resolution puts 1280×960 on the wire for a screen that is
+320×240. Any client can ask for less — `--size WxH` on Linux, the
+selector in the corner of the page — and the server scales before
+encoding. It is shared with anyone else watching, because there is one
+encoder for all of them.
+
 Four clients can watch at once. The picture is encoded once for all of
 them, and their buttons are combined rather than fighting.
 

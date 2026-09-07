@@ -26,8 +26,19 @@ typedef enum {
 } BsPixFmt;
 
 typedef struct {
-    int width;
+    int width;          /* the source's own size */
     int height;
+
+    /*
+     * The size to encode at, when a client has asked for less than the
+     * emulator renders. 0 means the source's size.
+     *
+     * The scaler is already there for the pixel format -- BGRA in, YUV
+     * out -- so giving it a different output size costs nothing beyond
+     * the resampling itself.
+     */
+    int out_width;
+    int out_height;
     int fps;
     int bitrate;        /* bits/s; 0 picks a default from the resolution */
     int gop;            /* keyframe interval in frames; 0 = fps (one per second) */
@@ -50,6 +61,14 @@ int bs_encoder_encode(BsEncoder *enc, const uint8_t *src, int src_stride,
 /* SPS/PPS, or NULL. See the note in bs_encoder.c about why this is
  * usually NULL and why that is deliberate. */
 const uint8_t *bs_encoder_extradata(const BsEncoder *enc, size_t *size);
+
+/*
+ * The size actually being encoded, which is what the clients must be
+ * told: a request can be rounded to even numbers or clamped, and a
+ * client that assumed it got exactly what it asked for would put every
+ * touch in the wrong place.
+ */
+void bs_encoder_out_size(const BsEncoder *enc, int *width, int *height);
 
 /* Makes the next encoded frame a keyframe. A client that connects
  * mid-stream cannot decode anything until one arrives, and waiting out
