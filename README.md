@@ -12,6 +12,10 @@ and the buttons that exist, and the interface builds itself from that.
 
 ## The emulators
 
+No emulator, BIOS, firmware, key or game is distributed here. Bring your
+own emulator and your own copies; this repository adds a bridge to one
+you already have.
+
 This only works with an emulator that has the bridge in it. There are
 two ways to get one, and no emulator is distributed here either way.
 

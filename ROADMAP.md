@@ -515,7 +515,17 @@ script, and it is how the config writers are tested.
 - [x] No BIOS, firmware, keys or games, here or in the patches
 - [x] The changes exist as patches as well as forks
 - [x] The launcher takes a path to an emulator you installed yourself
-- [ ] Revisit all of this before anything is made public
+- [x] Revisit all of this before anything is made public
+
+**All four repositories are public**, decided on 2026-09-07 with the
+trade-offs on the table. Worth recording that it was a decision, not a
+default: the project ran private for its first day, and the earlier note
+here said it would stay that way until this was revisited. This is the
+revisit.
+
+Publishing the forks is what GPL asks for if their binaries are ever
+handed to anybody, and it is also the action the risk assessment
+flagged as the most exposed. Both halves are true at once.
 
 The line that matters is not "is this an emulator" but "does this
 distribute the means to run protected games". It does not, and never
@@ -537,11 +547,10 @@ practical argument, and it holds whatever the legal one turns out to be.
 
 ## E. Publishing
 
-- [x] Published privately on GitHub
+- [x] Published on GitHub, publicly — see E-bis
 - [x] Published on the personal git server too (`192.168.2.101:2222`)
 - [x] A v0.1.0 tag with release notes
 - [ ] Turn that tag into a GitHub Release (needs a valid `gh` token)
 - [x] README pointing at the emulator forks (`wozt/melonDS`,
-      `wozt/azahar`, `wozt/Cemu`), which are private — so usable by you
-      alone, which is deliberate
+      `wozt/azahar`, `wozt/Cemu`), which are public too
 - [x] `goal.md` renamed to `prompt.md` and kept out of the repository

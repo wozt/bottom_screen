@@ -30,11 +30,11 @@ window, a changed layout, and so on.
 hardware H.264 decoder. Encoding costs nothing at these resolutions; it
 is decoding on the client that matters.
 
-**Private mirrors, not forks.** GitHub does not allow a fork of a public
-repository to be private. The three repositories are therefore private
-copies pushed by hand. The consequence is that no pull request upstream
-is possible from them, and resyncing happens manually through the
-`upstream` remote.
+**Mirrors, not forks.** GitHub does not allow a fork of a public
+repository to be private, and the three started out private, so they are
+copies pushed by hand rather than forks. They are public now, but the
+shape stayed: no pull request upstream is possible from a mirror, and
+resyncing happens manually through the `upstream` remote.
 
 **Native resolutions, never stretched.** The server sends the native
 resolution; the client may enlarge it, but the decoded framebuffer stays
