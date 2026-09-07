@@ -615,7 +615,6 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
              * longer lives there, so this is only breathing room. */
             topReserve = resources.displayMetrics.density * 20
             onAxis = { code, value ->
-                Log.i("BsPad", "axis $code = $value")
                 client?.sendInput(BsProtocol.INPUT_AXIS, code, value, 0)
             }
             onMoved = { code, fx, fy -> savePosition(code, fx, fy, landscape) }

@@ -13,8 +13,10 @@ Each patch names the upstream commit it was made against, in its header.
 
 The forks are where the work happens: a branch rebases onto a moving
 upstream and a patch does not, so maintaining these by hand would be
-choosing the harder half of the job. They are generated instead, by
-`scripts/make_patches.sh`, and cannot drift because nobody edits them.
+choosing the harder half of the job. They are generated instead, by `scripts/make_patches.sh`. Nobody edits
+them, so they cannot drift that way -- but they go stale when a fork
+moves and nobody regenerates, which happened. `tests/run_patches_fresh.sh`
+fails when they are behind, and `make test` runs it.
 
 They exist for two reasons the forks do not cover.
 

@@ -13,7 +13,7 @@
 # beside it; see the README.
 #
 diff --git a/src/Cafe/CMakeLists.txt b/src/Cafe/CMakeLists.txt
-index b509e722..25b5d59c 100644
+index b509e722..c916790e 100644
 --- a/src/Cafe/CMakeLists.txt
 +++ b/src/Cafe/CMakeLists.txt
 @@ -119,6 +119,8 @@ add_library(CemuCafe
@@ -25,7 +25,7 @@ index b509e722..25b5d59c 100644
    HW/Latte/Core/LatteRingBuffer.cpp
    HW/Latte/Core/LatteRingBuffer.h
    HW/Latte/Core/LatteShaderAssembly.h
-@@ -682,3 +684,51 @@ endif()
+@@ -682,3 +684,39 @@ endif()
  if(WIN32)
  	target_link_libraries(CemuCafe PRIVATE iphlpapi)
  endif()
@@ -46,32 +46,20 @@ index b509e722..25b5d59c 100644
 +    "Path to the bottom_screen_server sources")
 +
 +if (EXISTS "${BOTTOM_SCREEN_DIR}/bs_server.c")
-+    find_package(PkgConfig REQUIRED)
-+    pkg_check_modules(BOTTOMSCREEN_FFMPEG REQUIRED libavcodec libavutil libswscale libswresample)
++    # The file list lives beside the sources it names, so adding one is
++    # a single edit rather than three that can be forgotten separately.
++    include("${BOTTOM_SCREEN_DIR}/bottom_screen.cmake")
++    bottom_screen_sources(BOTTOM_SCREEN_C)
 +
-+    target_sources(CemuCafe PRIVATE
-+        "${BOTTOM_SCREEN_DIR}/bs_server.c"
-+        "${BOTTOM_SCREEN_DIR}/bs_encoder.c"
-+        "${BOTTOM_SCREEN_DIR}/bs_audio.c"
-+        "${BOTTOM_SCREEN_DIR}/bs_net.c"
-+        "${BOTTOM_SCREEN_DIR}/bs_mailbox.c"
-+    )
++    target_sources(CemuCafe PRIVATE ${BOTTOM_SCREEN_C})
++
 +    # The target uses a C++ precompiled header, and CMake applies it to
 +    # every source in the target. Handing a C++ PCH to the C compiler
 +    # fails on the first C++ include it meets, so the C sources opt out.
-+    set_source_files_properties(
-+        "${BOTTOM_SCREEN_DIR}/bs_server.c"
-+        "${BOTTOM_SCREEN_DIR}/bs_encoder.c"
-+        "${BOTTOM_SCREEN_DIR}/bs_audio.c"
-+        "${BOTTOM_SCREEN_DIR}/bs_net.c"
-+        "${BOTTOM_SCREEN_DIR}/bs_mailbox.c"
++    set_source_files_properties(${BOTTOM_SCREEN_C}
 +        PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 +
-+    target_include_directories(CemuCafe PRIVATE
-+        "${BOTTOM_SCREEN_DIR}" ${BOTTOMSCREEN_FFMPEG_INCLUDE_DIRS})
-+    target_link_libraries(CemuCafe PRIVATE
-+        ${BOTTOMSCREEN_FFMPEG_LIBRARIES} pthread)
-+    target_compile_definitions(CemuCafe PRIVATE BOTTOM_SCREEN_ENABLED)
++    bottom_screen_attach(CemuCafe)
 +
 +    message(STATUS "bottom_screen_server: enabled for Cemu (${BOTTOM_SCREEN_DIR})")
 +else()
@@ -79,7 +67,7 @@ index b509e722..25b5d59c 100644
 +endif()
 diff --git a/src/Cafe/HW/Latte/Core/BottomScreenBridge.cpp b/src/Cafe/HW/Latte/Core/BottomScreenBridge.cpp
 new file mode 100644
-index 00000000..6008b41a
+index 00000000..832e4cf1
 --- /dev/null
 +++ b/src/Cafe/HW/Latte/Core/BottomScreenBridge.cpp
 @@ -0,0 +1,380 @@
@@ -259,7 +247,7 @@ index 00000000..6008b41a
 +            fprintf(stderr,
 +                "bottom_screen: the pad view cannot be read back on this render\n"
 +                "               backend, so nothing will be streamed. OpenGL and\n"
-+                "               Vulkan both work; Metal does not yet.\n");
++                "               Vulkan both work.\n");
 +        }
 +        return;
 +    }

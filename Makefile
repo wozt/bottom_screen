@@ -25,7 +25,7 @@ SERVER_SRC := bottom_screen_server.c bs_server.c bs_encoder.c bs_audio.c \
 CLIENT_SRC := bottom_screen_client.c bs_decoder.c bs_net.c
 SMOKE_SRC  := tests/smoke_client.c bs_decoder.c bs_net.c
 MERGE_SRC  := tests/input_merge.c bs_server.c bs_encoder.c bs_audio.c \
-              bs_mailbox.c bs_net.c
+              bs_mailbox.c bs_net.c bs_ws.c
 FLIP_SRC   := tests/resize_flip.c bs_mailbox.c bs_net.c
 
 BINARIES := bottom_screen_server bottom_screen_client launcher/bs_launcher
@@ -55,15 +55,26 @@ tests/resize_flip: $(FLIP_SRC) bs_mailbox.h bs_source.h
 	$(CC) $(CFLAGS) $(SERVER_CFLAGS) -fsanitize=address,undefined -g \
 	  -o $@ $(FLIP_SRC) $(LDFLAGS) -lpthread -lm
 
-tests/input_merge: $(MERGE_SRC) bs_server.h bs_mailbox.h bs_protocol.h
+tests/input_merge: $(MERGE_SRC) bs_server.h bs_mailbox.h bs_protocol.h web_page.h
 	$(CC) $(CFLAGS) $(SERVER_CFLAGS) -o $@ $(MERGE_SRC) $(LDFLAGS) $(SERVER_LIBS) -lm
 
 tests/smoke_client: $(SMOKE_SRC) bs_decoder.h bs_net.h bs_protocol.h
 	$(CC) $(CFLAGS) $(shell pkg-config --cflags libavcodec libavutil) -o $@ \
 	  $(SMOKE_SRC) $(LDFLAGS) $(shell pkg-config --libs libavcodec libavutil)
 
+# Every test, not one of them.
+#
+# This target used to build the others and run only the smoke test, so
+# it passed while nothing exercised the button merging, the size
+# renegotiation or the multi-client path -- and a stale binary left over
+# from an earlier build could sit there reporting success.
 test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_flip
 	./tests/run_smoke.sh
+	./tests/run_multiclient.sh
+	./tests/run_receive_size.sh
+	./tests/input_merge
+	./tests/resize_flip
+	./tests/run_patches_fresh.sh
 
 clean:
 	rm -f $(BINARIES) tests/smoke_client tests/input_merge tests/resize_flip web_page.h
