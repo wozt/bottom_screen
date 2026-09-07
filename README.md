@@ -117,6 +117,11 @@ It decodes the same H.264 with WebCodecs, so nothing is transcoded. A
 browser without WebCodecs is told so rather than left with a blank
 canvas.
 
+The **Servers** button keeps a list of the other emulators — each serves
+its own page on its own port — and following one of its links carries
+the list along, since a different port is a different origin and would
+otherwise start empty.
+
 **Linux** — `bottom_screen_client`, SDL2, handy for checking a pipeline
 without a phone.
 
@@ -160,8 +165,7 @@ somebody is watching, and the stream follows.
 - **The Switch homebrew** builds and connects but its picture is
   unverified — it needs real hardware, which an emulator cannot stand in
   for.
-- **Saved servers in the browser** — each emulator serves its own page
-  on its own port, and there is no list to jump between them yet.
+- **The Switch homebrew's picture**, which needs real hardware.
 - **Cemu under Metal** (macOS only, with no machine here to try it on).
 
 The detail is in [ROADMAP.md](ROADMAP.md).

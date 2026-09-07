@@ -317,7 +317,7 @@ capture2cloud.
 - [x] A page with the screen, touch and on-screen buttons
 - [x] Served by the emulator itself, on the port it already listens on
 - [x] Sound
-- [ ] Saved servers, like the Android client has
+- [x] Saved servers, like the Android client has
 
 **This did not end up being VP8 over WebRTC**, which is what the plan
 above said, and the change is worth stating plainly.
@@ -380,6 +380,27 @@ a Wii U, with the right button set for each console; and 2015 Opus
 packets with a peak of 0.10, the warning appearing before a tap and
 gone after it. `tests/web_client.py` covers the upgrade, the framing,
 the greeting and the input path without a browser.
+
+**Saved servers** took a detour worth recording. Each emulator serves
+its page on its own port, and a different port is a different origin, so
+the browser gives each one its own `localStorage`: a list saved on the
+DS page was invisible from the Wii U page, which is exactly where it was
+meant to help. Building it and then watching it fail was how that
+surfaced.
+
+So the list rides along in the URL fragment, which the browser never
+sends to the server, and the page it lands on merges it. After one hop
+every page knows all of them. Names already chosen locally win, because
+somebody renamed it for a reason.
+
+The second gap was smaller and just as fatal: "save this one" can only
+ever describe the page you are reading, so a list could never reach two
+entries. The panel takes a bare port as well — three emulators side by
+side are 5090, 5091, 5092, and that is the case every time.
+
+Verified by walking it: save the DS page, add 5980 by port, follow the
+link, and the Wii U page comes up with both entries and the stream
+running.
 
 One thing I cannot check from here: whether it is actually audible.
 There are no speakers behind a virtual display. Every link in the chain
