@@ -67,6 +67,15 @@ class BsClient(
         outQueue.offer(msg)
     }
 
+    fun sendQuality(bitrate: Int) {
+        if (running) outQueue.offer(BsProtocol.qualityMessage(bitrate))
+    }
+
+    /** Zero for both means "whatever the source produces". */
+    fun sendSize(width: Int, height: Int) {
+        if (running) outQueue.offer(BsProtocol.sizeMessage(width, height))
+    }
+
     /**
      * Asks for a keyframe. Worth doing whenever the decoder is new: a
      * fresh decoder has no reference picture and draws nothing until one

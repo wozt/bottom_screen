@@ -122,9 +122,19 @@ struct BsServer {
     volatile int want_w, want_h;
     volatile int size_dirty;
 
-    /* What is actually encoded and announced, which is not the source's
-     * size once somebody has asked for less. */
+    /* What is actually encoded, which is not the source's size once
+     * somebody has asked for less. */
     int out_w, out_h;
+
+    /*
+     * What the clients were last told. Kept apart from out_w because
+     * the two can drift: a quality change and a size change arriving in
+     * the same frame are one rebuild, the first branch applies both, and
+     * the second then sees no difference and announces nothing. The
+     * clients were left drawing and aiming at a size that no longer
+     * existed.
+     */
+    int told_w, told_h;
 
     BsClient *clients;
     int       max_clients;
@@ -842,15 +852,23 @@ static void *pump_thread(void *arg)
 
         if (srv->size_dirty) {
             srv->size_dirty = 0;
-            const int was_w = srv->out_w, was_h = srv->out_h;
-            if (encoder_rebuild(srv, srv->cfg.bitrate) == 0 &&
-                (srv->out_w != was_w || srv->out_h != was_h)) {
-                broadcast_stream_info(srv, sc.frame_id);
-                if (!srv->cfg.quiet)
-                    fprintf(stderr, "bottom_screen: sending %dx%d from a %dx%d source\n",
-                            srv->out_w, srv->out_h,
-                            srv->info.width, srv->info.height);
-            }
+            encoder_rebuild(srv, srv->cfg.bitrate);
+        }
+
+        /*
+         * Announced by comparing with what was last said rather than by
+         * whichever branch happened to rebuild. Either can change the
+         * size -- they share one encoder -- so tying the announcement to
+         * one of them loses it whenever the other got there first.
+         */
+        if (srv->out_w != srv->told_w || srv->out_h != srv->told_h) {
+            srv->told_w = srv->out_w;
+            srv->told_h = srv->out_h;
+            broadcast_stream_info(srv, sc.frame_id);
+            if (!srv->cfg.quiet)
+                fprintf(stderr, "bottom_screen: sending %dx%d from a %dx%d source\n",
+                        srv->out_w, srv->out_h,
+                        srv->info.width, srv->info.height);
         }
 
         /*
@@ -983,8 +1001,11 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
         goto fail;
     /* Nobody has asked for a size yet, so this is the source's -- but it
      * is read from the encoder rather than assumed, because that is
-     * where rounding to even numbers happens. */
+     * where rounding to even numbers happens. The handshake carries it
+     * to every client, so it counts as already told. */
     bs_encoder_out_size(srv->enc, &srv->out_w, &srv->out_h);
+    srv->told_w = srv->out_w;
+    srv->told_h = srv->out_h;
 
     if (srv->info.audio_rate > 0 && srv->info.audio_channels > 0) {
         BsAudioConfig acfg = {

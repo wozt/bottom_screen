@@ -203,6 +203,14 @@ than a wider `BsQuality`, because adding fields to a struct both ends
 agree on would break every client that had not been rebuilt. Zero means
 "follow the source", which is how a client stops asking.
 
+What a client may ask for is not arbitrary: **whole multiples of the
+console's own screen, never below it**, with the Wii U alone allowed to
+halve because 854×480 has the room. The first version offered plain
+fractions, and a quarter of a 3DS screen is 80×60 — which a hardware
+decoder configures without complaint and then produces no frames from at
+all, leaving a black screen with nothing in any log to explain it. A
+size the console itself could have produced is always decodable.
+
 Shared with everyone watching, like the bitrate and for the same reason:
 one encoder, so a size each would mean an encoder each. The server
 announces what it settled on through `STREAM_INFO`, since a request can
@@ -221,6 +229,15 @@ The conversion happens in the server, the one place that knows both
 numbers — leaving it to the backends would put every tap wrong by
 exactly the scale, in three different files, and look like a calibration
 problem.
+
+A bug that hid behind all this for three attempts: the announcement was
+tied to whichever branch of the pump rebuilt the encoder. A quality
+change and a size change arriving in the same frame are one rebuild, the
+quality branch applied both, and the size branch then saw no difference
+and announced nothing — leaving clients drawing and aiming at a size
+that no longer existed. It is now announced by comparing against what
+was last said, which no branch can get wrong. I had dismissed the
+missing log line twice as a testing artefact; it was the symptom.
 
 `tests/run_receive_size.sh` measures rather than assumes it: it taps a
 quarter across and a quarter down, because the centre is the one point
@@ -409,9 +426,10 @@ is running — but the last inch is yours.
 
 ### C3. Menu design
 - [x] capture2cloud's menu design in the web client
+- [x] The same in the Android client
 - [x] Keep only what makes sense here: no dongle, no capture card, this
       project uses neither
-- [ ] The same in the Android and Switch clients
+- [ ] The same in the Switch client
 
 Eleven-pixel monospace on near-black, `#222` on `#444` with `#ddd` text,
 a bar that fades out of the way, and menus as a `summary` that reads
@@ -424,6 +442,19 @@ them and a warning gets its own place rather than replacing them.
 Dropped from capture2cloud, as the brief asks: capture format and
 resolution of a capture card, the login, the cloud. None of it exists
 here.
+
+**On Android** it is the same design in that client's own idiom: the
+dark blue ground, the cyan heading for whatever is open, readouts in a
+muted blue-grey, a green monospace line for the stream, and categories
+either in columns or opened one at a time. It replaced an AlertDialog
+whose real fault was worse than looking different — in landscape it was
+shorter than its own contents, so everything from the volume down was
+unreachable with nothing on screen to suggest it was there.
+
+The settings button was a large tile in the top-right corner, which in
+portrait is squarely over the screen you are playing on. It is small and
+dim now, and placed in the black beside or below the picture depending
+on which way the phone is held.
 
 Two things came out of doing it rather than reading about it.
 

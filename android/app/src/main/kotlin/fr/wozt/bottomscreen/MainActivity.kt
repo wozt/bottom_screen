@@ -55,7 +55,18 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private var muted = false
     private var surfaceReady = false
     private var profile = ConsoleProfile.DS
-    private var settingsDialog: AlertDialog? = null
+    private var panel: View? = null
+    private var settingsGear: TextView? = null
+
+    /* The size the emulator actually renders, remembered before anybody
+     * asks for less: the fractions below are fractions of that, not of
+     * each other. */
+    private var fullWidth = 0
+    private var fullHeight = 0
+    /* 0 = whatever the emulator renders, N = N times the console's own
+     * screen, -2 = half of it (the Wii U only). */
+    private var receiveScale = 0
+    private var fps = 0
 
     /* Set while leaving a server on purpose, so the closing socket does
      * not report itself as a failure on the way out. */
@@ -98,6 +109,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         buttonScale = prefs0.getFloat("pad_scale", 1f)
         fullscreen = prefs0.getBoolean("fullscreen", false)
         padVisibility = PadVisibility.byName(prefs0.getString("pad_visibility", null))
+        receiveScale = prefs0.getInt("receive_scale", 0)
         gamepadPresent = Gamepad.anyConnected()
         applyFullscreen()
         buildForm()
@@ -435,6 +447,11 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                                fps = if (info.fps > 0) info.fps else old.fps)
         ack = updated
         runOnUiThread {
+            /* The panel's own heading is built once, so a size that
+             * changes while it is open would keep reading the old one --
+             * which is exactly when somebody is looking at it. */
+            (panel as? android.widget.ScrollView)
+                ?.getChildAt(0)?.let { (it as? SettingsPanel)?.rebuild() }
             decoder?.release()
             decoder = null
             surfaceReady = false
@@ -494,11 +511,12 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         frames++
         val now = System.currentTimeMillis()
         if (now - lastReport >= 1000) {
-            val fps = frames
+            val measured = frames
             frames = 0
             lastReport = now
+            fps = measured
             runOnUiThread {
-                title = "${profile.label}  $fps fps"
+                title = "${profile.label}  $measured fps"
             }
         }
     }
@@ -557,6 +575,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     private fun buildPlayUi(ack: BsProtocol.HelloAck) {
         profile = ConsoleProfile.forConsole(ack.console)
+        if (fullWidth == 0) { fullWidth = ack.width; fullHeight = ack.height }
         form.visibility = View.GONE
 
         val landscape =
@@ -592,8 +611,9 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                     code, 0, 0
                 )
             }
-            /* Keep the shoulders out from under the settings button. */
-            topReserve = resources.displayMetrics.density * 74
+            /* A little clearance at the top; the settings button no
+             * longer lives there, so this is only breathing room. */
+            topReserve = resources.displayMetrics.density * 20
             onAxis = { code, value ->
                 Log.i("BsPad", "axis $code = $value")
                 client?.sendInput(BsProtocol.INPUT_AXIS, code, value, 0)
@@ -691,16 +711,25 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
          * in landscape, underneath the navigation bar -- so it could be
          * seen and not pressed.
          */
-        val touch = (resources.displayMetrics.density * 64).toInt()
-        val inset = (resources.displayMetrics.density * 10).toInt()
+        /*
+         * Small, dim, and never on top of the picture.
+         *
+         * It used to be a large tile in the top-right corner, which in
+         * portrait is squarely over the screen you are playing on --
+         * chrome sitting on the one thing it exists to get out of the
+         * way of. sizeVideo puts it in the black beside or below the
+         * picture instead, wherever that happens to be.
+         */
+        val touch = (resources.displayMetrics.density * 40).toInt()
+        val inset = (resources.displayMetrics.density * 8).toInt()
         val gear = TextView(this).apply {
             text = "\u2699"
-            textSize = 26f
-            setTextColor(0xCCFFFFFF.toInt())
-            setBackgroundColor(0x40FFFFFF)
+            textSize = 15f
+            setTextColor(0x77FFFFFF)
             gravity = Gravity.CENTER
             setOnClickListener { showSettings() }
         }
+        settingsGear = gear
         play = FrameLayout(this).apply {
             setBackgroundColor(Color.BLACK)
             layoutParams = FrameLayout.LayoutParams(
@@ -712,8 +741,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 FrameLayout.LayoutParams.MATCH_PARENT
             ))
             addView(gear, FrameLayout.LayoutParams(
-                touch, touch, Gravity.TOP or Gravity.END
-            ).apply { setMargins(0, inset, inset, 0) })
+                touch, touch, Gravity.TOP or Gravity.START
+            ).apply { setMargins(inset, inset, inset, inset) })
             /* Keep it clear of the status and navigation bars, which in
              * landscape sit exactly where a top-right corner is. */
             setOnApplyWindowInsetsListener { v, insets ->
@@ -781,7 +810,34 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             it.gravity = Gravity.CENTER
         }
         view.requestLayout()
+        placeGear(w, h, videoW, videoH, landscape)
         title = "${profile.label}  ${ack.width}x${ack.height} \u2192 ${videoW}x${videoH}"
+    }
+
+    /*
+     * Puts the settings button in the black, which is a different corner
+     * depending on which way the phone is held: in landscape the picture
+     * is centred with a band down each side, and in portrait it sits
+     * across the top with everything below it empty until the shoulders.
+     */
+    private fun placeGear(w: Int, h: Int, videoW: Int, videoH: Int,
+                          landscape: Boolean) {
+        val gear = settingsGear ?: return
+        val inset = (resources.displayMetrics.density * 8).toInt()
+        val p = gear.layoutParams as? FrameLayout.LayoutParams ?: return
+
+        if (landscape) {
+            /* The left band, at the top: the shoulders sit lower down. */
+            p.gravity = Gravity.TOP or Gravity.START
+            p.setMargins(inset, inset, 0, 0)
+        } else {
+            /* Just under the picture, on the right, where nothing else
+             * is until the shoulder row. */
+            p.gravity = Gravity.TOP or Gravity.END
+            p.setMargins(0, videoH + inset, inset, 0)
+        }
+        gear.layoutParams = p
+        gear.requestLayout()
     }
 
     /* Saved per console and per orientation: a layout that works with
@@ -847,202 +903,146 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
      * changing those means a new connection, so the dialog says so
      * rather than appearing to do nothing.
      */
+    /*
+     * The settings, as a panel over the picture rather than a dialog.
+     *
+     * The dialog looked different from capture2cloud, but its real fault
+     * was worse: in landscape it was shorter than its own contents, so
+     * everything from the volume down was unreachable with nothing on
+     * screen to suggest it was there.
+     */
     private fun showSettings() {
+        if (panel != null) return
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
-        val gap = (resources.displayMetrics.density * 16).toInt()
 
-        val hostEdit = EditText(this).apply {
-            hint = "server address"
-            setText(prefs.getString("host", ""))
-        }
-        val portEdit = EditText(this).apply {
-            hint = "port"
-            setText(prefs.getInt("port", BsProtocol.DEFAULT_PORT).toString())
-        }
-        val qualitySpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                Quality.entries.map { it.label }
-            )
-            setSelection(Quality.entries.indexOf(quality))
+        val state = object : SettingsPanel.PanelState {
+            override var host: String
+                get() = prefs.getString("host", "") ?: ""
+                set(v) { prefs.edit().putString("host", v).apply() }
+            override var port: Int
+                get() = prefs.getInt("port", BsProtocol.DEFAULT_PORT)
+                set(v) { prefs.edit().putInt("port", v).apply() }
+            override var quality: Quality
+                get() = this@MainActivity.quality
+                set(v) { this@MainActivity.quality = v }
+            override var volume: Float
+                get() = this@MainActivity.volume
+                set(v) { this@MainActivity.volume = v }
+            override var muted: Boolean
+                get() = this@MainActivity.muted
+                set(v) { this@MainActivity.muted = v }
+            override var buttonScale: Float
+                get() = this@MainActivity.buttonScale
+                set(v) { this@MainActivity.buttonScale = v }
+            override var padVisibility: PadVisibility
+                get() = this@MainActivity.padVisibility
+                set(v) { this@MainActivity.padVisibility = v }
+            override var fullscreen: Boolean
+                get() = this@MainActivity.fullscreen
+                set(v) { this@MainActivity.fullscreen = v }
+            override var editMode: Boolean
+                get() = pad?.editMode == true
+                set(v) { pad?.editMode = v }
+            override var receiveScale: Int
+                get() = this@MainActivity.receiveScale
+                set(v) { this@MainActivity.receiveScale = v }
+            override var menuColumns: Boolean
+                get() = prefs.getBoolean("menu_columns", false)
+                set(v) { prefs.edit().putBoolean("menu_columns", v).apply() }
+            override val hasAudio: Boolean get() = ack?.hasAudio == true
+            override val streamLine: String get() = statusLine()
+            override val savedServers: List<Profile> get() = Profiles.load(prefs)
+            override val nativeWidth: Int get() = profile.width
+            override val nativeHeight: Int get() = profile.height
+            override val sourceWidth: Int get() = fullWidth
+            override val sourceHeight: Int get() = fullHeight
         }
 
-        val sizeLabel = TextView(this).apply {
-            text = "Button size  ${(buttonScale * 100).toInt()}%"
-            setPadding(0, gap, 0, 0)
-        }
-        /* 50 to 150 percent in one-percent steps, offset because a
-         * SeekBar starts at zero. */
-        val sizeBar = SeekBar(this).apply {
-            max = 100
-            progress = ((buttonScale - 0.5f) * 100).toInt().coerceIn(0, 100)
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                    val scale = 0.5f + value / 100f
-                    sizeLabel.text = "Button size  ${(scale * 100).toInt()}%"
-                    /* Live, so the size can be judged against a thumb
-                     * rather than guessed from a number. */
-                    pad?.buttonScale = scale
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-
-        /* Only drawn when the server actually sends sound. A slider that
-         * does nothing is worse than no slider: it makes the silence
-         * look like a fault. */
-        val hasAudio = ack?.hasAudio == true
-        val volLabel = TextView(this).apply {
-            text = "Volume  ${(volume * 100).toInt()}%"
-            setPadding(0, gap, 0, 0)
-        }
-        val volBar = SeekBar(this).apply {
-            max = 100
-            progress = (volume * 100).toInt().coerceIn(0, 100)
-            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
-                override fun onProgressChanged(sb: SeekBar?, value: Int, fromUser: Boolean) {
-                    volLabel.text = "Volume  $value%"
-                    // Live, so it can be judged by ear rather than by number.
-                    if (!muted) audio?.volume = value / 100f
-                }
-                override fun onStartTrackingTouch(sb: SeekBar?) {}
-                override fun onStopTrackingTouch(sb: SeekBar?) {}
-            })
-        }
-        val muteBox = CheckBox(this).apply {
-            text = "Mute"
-            isChecked = muted
-            setOnCheckedChangeListener { _, checked ->
-                audio?.volume = if (checked) 0f else volBar.progress / 100f
+        val actions = object : SettingsPanel.Actions {
+            override fun onClose() = hideSettings()
+            override fun onApply() = applySettings()
+            override fun onReconnect(host: String, port: Int) {
+                hideSettings()
+                hostField.setText(host)
+                portField.setText(port.toString())
+                connect()
             }
-        }
-
-        val padLabel = TextView(this).apply {
-            text = "On-screen buttons"
-            setPadding(0, gap, 0, 0)
-        }
-        val padSpinner = Spinner(this).apply {
-            adapter = ArrayAdapter(
-                this@MainActivity,
-                android.R.layout.simple_spinner_dropdown_item,
-                PadVisibility.entries.map { it.label }
-            )
-            setSelection(PadVisibility.entries.indexOf(padVisibility))
-        }
-
-        val moveBox = CheckBox(this).apply {
-            text = "Move buttons  (drag them where your thumbs are)"
-            isChecked = pad?.editMode == true
-        }
-        val fullBox = CheckBox(this).apply {
-            text = "Fullscreen"
-            isChecked = fullscreen
-        }
-
-        val body = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(gap, gap, gap, 0)
-            addView(TextView(this@MainActivity).apply { text = "Server" })
-            addView(hostEdit)
-            addView(portEdit)
-            addView(Button(this@MainActivity).apply {
-                text = "Save this server"
-                setOnClickListener { promptSaveProfile() }
-            })
-            addView(Button(this@MainActivity).apply {
-                text = "Change server"
-                setOnClickListener {
-                    settingsDialog?.dismiss()
-                    disconnectToForm()
-                }
-            })
-            addView(TextView(this@MainActivity).apply {
-                text = "Stream quality"
-                setPadding(0, gap, 0, 0)
-            })
-            addView(qualitySpinner)
-            if (hasAudio) {
-                addView(volLabel)
-                addView(volBar)
-                addView(muteBox)
+            override fun onSaveServer() = promptSaveProfile()
+            override fun onForgetServer(profile: Profile) {
+                Profiles.remove(prefs, profile)
             }
-            addView(padLabel)
-            addView(padSpinner)
-            addView(sizeLabel)
-            addView(sizeBar)
-            addView(moveBox)
-            addView(fullBox)
+            override fun onResetLayout() = clearPositions()
         }
 
+        val view = SettingsPanel(this, state, actions)
+        val scroller = ScrollView(this).apply {
+            addView(view)
+            setBackgroundColor(0xF00B1A26.toInt())
+        }
+        panel = scroller
         /*
-         * Scrollable, because in landscape the dialog is shorter than
-         * its contents: everything from the volume down was simply
-         * unreachable, with nothing to suggest it was there.
+         * addContentView, not root.addView: root is a vertical
+         * LinearLayout, so a child added there lands underneath the
+         * picture rather than over it -- which is to say off the bottom
+         * of the screen, where the first attempt put the whole panel.
          */
-        val scroller = ScrollView(this).apply { addView(body) }
-
-        settingsDialog = AlertDialog.Builder(this)
-            .setTitle("Settings")
-            .setView(scroller)
-            .setPositiveButton("Apply") { _, _ ->
-                if (hasAudio) {
-                    volume = volBar.progress / 100f
-                    muted = muteBox.isChecked
-                    prefs.edit().putFloat("volume", volume)
-                        .putBoolean("muted", muted).apply()
-                    audio?.volume = if (muted) 0f else volume
-                }
-
-                val chosen = PadVisibility.entries[padSpinner.selectedItemPosition]
-                if (chosen != padVisibility) {
-                    padVisibility = chosen
-                    prefs.edit().putString("pad_visibility", chosen.name).apply()
-                    applyPadVisibility()
-                }
-
-                buttonScale = 0.5f + sizeBar.progress / 100f
-                prefs.edit().putFloat("pad_scale", buttonScale).apply()
-                pad?.buttonScale = buttonScale
-                pad?.editMode = moveBox.isChecked
-
-                if (fullBox.isChecked != fullscreen) {
-                    fullscreen = fullBox.isChecked
-                    prefs.edit().putBoolean("fullscreen", fullscreen).apply()
-                    applyFullscreen()
-                }
-
-                val newQuality = Quality.entries[qualitySpinner.selectedItemPosition]
-                val newHost = hostEdit.text.toString().trim()
-                val newPort = portEdit.text.toString().trim().toIntOrNull()
-                    ?: BsProtocol.DEFAULT_PORT
-
-                if (newQuality != quality) {
-                    quality = newQuality
-                    prefs.edit().putString("quality", newQuality.name).apply()
-                    client?.setQuality(newQuality.bitrate)
-                }
-
-                val hostChanged = newHost != prefs.getString("host", "")
-                val portChanged = newPort != prefs.getInt("port", BsProtocol.DEFAULT_PORT)
-                if (newHost.isNotEmpty() && (hostChanged || portChanged)) {
-                    prefs.edit().putString("host", newHost).putInt("port", newPort).apply()
-                    hostField.setText(newHost)
-                    portField.setText(newPort.toString())
-                    /* A new address is a new connection: drop this one
-                     * and let the usual disconnect path rebuild. */
-                    client?.stop()
-                }
-            }
-            .setNegativeButton("Cancel") { _, _ ->
-                /* Undo the live previews. */
-                pad?.buttonScale = buttonScale
-                audio?.volume = if (muted) 0f else volume
-            }
-            .setNeutralButton("Reset layout") { _, _ -> clearPositions() }
-            .show()
+        addContentView(scroller, ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT))
     }
+
+    private fun hideSettings() {
+        panel?.let { (it.parent as? ViewGroup)?.removeView(it) }
+        panel = null
+    }
+
+    /** One line, the way capture2cloud reports a stream. */
+    private fun statusLine(): String {
+        val a = ack ?: return "not connected"
+        return "${profile.label}  ${a.width}x${a.height}  ${fps} fps" +
+               (if (a.hasAudio) "  sound" else "  no sound")
+    }
+
+    /*
+     * Everything the panel can change, applied at once. It is a handful
+     * of assignments, and doing them together means no path through the
+     * panel can leave one of them behind.
+     */
+    private fun applySettings() {
+        val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        prefs.edit()
+            .putFloat("volume", volume)
+            .putBoolean("muted", muted)
+            .putFloat("pad_scale", buttonScale)
+            .putBoolean("fullscreen", fullscreen)
+            .putString("pad_visibility", padVisibility.name)
+            .putString("quality", quality.name)
+            .putInt("receive_scale", receiveScale)
+            .apply()
+
+        audio?.volume = if (muted) 0f else volume
+        pad?.buttonScale = buttonScale
+        applyFullscreen()
+        applyPadVisibility()
+
+        client?.sendQuality(quality.bitrate)
+        /*
+         * Zero means "follow the source", which is how a client stops
+         * asking rather than guessing at the original numbers. Every
+         * other value is a whole multiple of the console's own screen,
+         * or -- for the Wii U alone -- half of it.
+         */
+        if (ack != null) {
+            when {
+                receiveScale == 0 -> client?.sendSize(0, 0)
+                receiveScale == -2 -> client?.sendSize(profile.width / 2,
+                                                       profile.height / 2)
+                else -> client?.sendSize(profile.width * receiveScale,
+                                         profile.height * receiveScale)
+            }
+        }
+    }
+
 
     // --- surface lifecycle -------------------------------------------
 

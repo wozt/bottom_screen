@@ -41,6 +41,7 @@ object BsProtocol {
     const val MSG_PONG = 18
     const val MSG_REQUEST_KEYFRAME = 19
     const val MSG_SET_QUALITY = 20
+    const val MSG_SET_SIZE = 21
 
     // Video flags
     const val VFLAG_KEYFRAME = 0x01
@@ -215,6 +216,24 @@ object BsProtocol {
         b.putInt(bitrate)
         b.putShort(fps.toShort())
         b.putShort(0)
+        return b.array()
+    }
+
+    /**
+     * Asks the server to send the picture at this size rather than
+     * whatever the emulator renders. Zero for both means "follow the
+     * source", which is how a client stops asking.
+     *
+     * Shared with everyone else watching, because there is one encoder:
+     * a size each would mean an encoder each.
+     */
+    fun sizeMessage(width: Int, height: Int): ByteArray {
+        val b = buffer(MSG_HEADER_SIZE + 4)
+        b.put(MSG_SET_SIZE.toByte())
+        b.put(0); b.put(0); b.put(0)
+        b.putInt(4)
+        b.putShort(width.toShort())
+        b.putShort(height.toShort())
         return b.array()
     }
 
