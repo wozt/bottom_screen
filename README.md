@@ -130,13 +130,10 @@ make
 
 ### 2. Put the bridge in an emulator
 
-Either apply the patch to your own checkout —
+Two ways, and the difference matters.
 
-```sh
-git -C melonDS apply patches/melonDS.patch
-```
-
-— or use the fork, which is the same change with a repository around it:
+**Clone the fork.** The same change with a repository around it, already
+applied and known to build:
 
 | Console | Fork | Branch |
 |---|---|---|
@@ -144,7 +141,28 @@ git -C melonDS apply patches/melonDS.patch
 | Nintendo 3DS | [wozt/azahar](https://github.com/wozt/azahar) | `bottom-screen` |
 | Wii U | [wozt/Cemu](https://github.com/wozt/Cemu) | `bottom-screen` |
 
-Each patch names the upstream commit it was made against.
+**Or apply the patch** to a checkout of your own:
+
+```sh
+git -C melonDS apply patches/melonDS.patch
+```
+
+> **The patch will not last.** Each one names, in its header, the exact
+> upstream commit it was made against — and it hooks into specific
+> places in specific files. When an emulator moves on, a hunk that no
+> longer matches is refused, and `git apply` says so. That is the good
+> case. The worse one is a hunk that still applies to code which has
+> changed meaning around it.
+>
+> So the patches are a snapshot, not a supported upgrade path. If an
+> emulator has moved and the patch will not go on, take the fork
+> instead, or rebase its `bottom-screen` branch onto the new upstream —
+> a branch is the thing that survives an upstream that keeps moving,
+> which is exactly why both exist.
+>
+> The patches here are regenerated from the forks, never edited, and a
+> test fails if they fall behind. That keeps them honest about the forks
+> — it says nothing about upstream.
 
 ### 3. Put them side by side
 

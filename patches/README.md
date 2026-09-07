@@ -9,6 +9,15 @@ git -C melonDS apply patches/melonDS.patch
 
 Each patch names the upstream commit it was made against, in its header.
 
+**They are a snapshot, not an upgrade path.** These hook into specific
+places in specific files, so when an emulator moves on a hunk that no
+longer matches is refused — which is the good case; the worse one is a
+hunk that still applies to code whose meaning has changed around it. If
+a patch will not go on, take the fork instead, or rebase its
+`bottom-screen` branch onto the new upstream. A branch survives an
+upstream that keeps moving; a patch does not, and that is why both
+exist.
+
 ## Why these exist alongside the forks
 
 The forks are where the work happens: a branch rebases onto a moving
