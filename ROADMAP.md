@@ -271,7 +271,6 @@ not the same claim.
 - [x] Azahar: OpenGL, Vulkan, software
 - [x] Cemu: OpenGL, Vulkan
 - [x] Survive a backend changed while a client is watching
-- [ ] Cemu under Metal (macOS; no machine to try it on)
 
 The bridge no longer cares which renderer the emulator uses. Each one
 gets the bottom screen into ordinary 32-bit pixels its own way, and

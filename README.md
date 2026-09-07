@@ -166,7 +166,6 @@ somebody is watching, and the stream follows.
   unverified — it needs real hardware, which an emulator cannot stand in
   for.
 - **The Switch homebrew's picture**, which needs real hardware.
-- **Cemu under Metal** (macOS only, with no machine here to try it on).
 
 The detail is in [ROADMAP.md](ROADMAP.md).
 

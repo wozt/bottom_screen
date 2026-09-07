@@ -473,8 +473,18 @@ place.
 
 **Shared library or duplicated code?** A `libbottomscreen.so` linked
 into all three emulators is appealing, but the three have different
-build systems and licence constraints. So far the C sources are compiled
-into each, which has cost nothing.
+build systems and licence constraints. The C sources are compiled into
+each instead — which did cost something, twice.
+
+The file list was written out in all three build systems, so adding a
+file meant remembering three places. libswresample went into one and was
+missed in the others; later `bs_ws.c` broke all three at once and nobody
+noticed, because the standalone Makefile still built and nothing rebuilt
+an emulator for days. It surfaced by accident.
+
+The list now lives in `bottom_screen.cmake`, beside the sources it
+names, and each emulator includes it. Adding a file is one edit. Noticing
+that an emulator has stopped building still requires building one.
 
 **Identical frame detection.** Sending nothing when the bottom screen
 has not changed (menus, static games) could save a lot. Worth measuring
