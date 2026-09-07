@@ -26,7 +26,20 @@ set_err(char *err, size_t errlen, const char *fmt, ...)
 
 BsDecoder *bs_decoder_create(char *err, size_t errlen)
 {
-    const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    const AVCodec *codec = NULL;
+
+    /*
+     * The Switch decodes H.264 in hardware, and its ffmpeg port exposes
+     * that block as a decoder named h264_nvtegra. Asking for it by name
+     * is the whole of using it: everything below this line is the same
+     * code the desktop client runs.
+     *
+     * Falling back rather than failing, because a build without it is a
+     * working client with a warmer console, not a broken one.
+     */
+    codec = avcodec_find_decoder_by_name("h264_nvtegra");
+    if (!codec)
+        codec = avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!codec) {
         set_err(err, errlen, "no H.264 decoder in this ffmpeg build");
         return NULL;
@@ -78,6 +91,13 @@ void bs_decoder_destroy(BsDecoder *dec)
     if (dec->frame) av_frame_free(&dec->frame);
     if (dec->ctx)   avcodec_free_context(&dec->ctx);
     free(dec);
+}
+
+const char *bs_decoder_name(const BsDecoder *dec)
+{
+    if (!dec || !dec->ctx || !dec->ctx->codec)
+        return "none";
+    return dec->ctx->codec->name;
 }
 
 int bs_decoder_decode(BsDecoder *dec, const uint8_t *data, size_t size,

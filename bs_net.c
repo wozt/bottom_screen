@@ -11,7 +11,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#ifndef __SWITCH__
+/* The Switch has struct iovec and sendmsg, but declares them in
+ * sys/socket.h rather than in a sys/uio.h it does not ship. */
 #include <sys/uio.h>
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -116,6 +120,43 @@ BsConn *bs_accept(int listen_fd, char *err, size_t errlen)
 
 BsConn *bs_connect(const char *host, uint16_t port, char *err, size_t errlen)
 {
+    /*
+     * An address typed as four numbers is already an address, so it goes
+     * straight to connect rather than through a resolver.
+     *
+     * On a PC that only saves a lookup. On the Switch it is the
+     * difference between working and not: getaddrinfo fails there, and
+     * an IP address is what somebody types on a console anyway.
+     */
+    struct in_addr numeric;
+    if (inet_pton(AF_INET, host, &numeric) == 1) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) {
+            set_err(err, errlen, "socket: %s", strerror(errno));
+            return NULL;
+        }
+        struct sockaddr_in sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sin_family = AF_INET;
+        sa.sin_port = htons(port);
+        sa.sin_addr = numeric;
+        if (connect(fd, (struct sockaddr *)&sa, sizeof(sa)) != 0) {
+            set_err(err, errlen, "connect %s:%u: %s",
+                    host, (unsigned)port, strerror(errno));
+            close(fd);
+            return NULL;
+        }
+        char numeric_label[64];
+        snprintf(numeric_label, sizeof(numeric_label), "%s:%u",
+                 host, (unsigned)port);
+        BsConn *nc = conn_new(fd, numeric_label);
+        if (!nc) {
+            set_err(err, errlen, "out of memory");
+            close(fd);
+        }
+        return nc;
+    }
+
     char portstr[16];
     snprintf(portstr, sizeof(portstr), "%u", (unsigned)port);
 
