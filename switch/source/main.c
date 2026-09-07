@@ -38,8 +38,42 @@ static SDL_AudioDeviceID g_audio;
 
 static char     g_host[64] = "192.168.1.20";
 static uint16_t g_port = BS_DEFAULT_PORT;
-static char     g_message[192] = "Press A to connect";
+static char     g_message[192] = "";
 static int      g_have_saved_server;
+
+/*
+ * The same palette as capture2cloud's own Switch client: a blue accent
+ * for whatever is selected, dim grey for values, green for a stream
+ * that is running. Two programs that live on the same console should
+ * not need two sets of manners.
+ */
+static const SDL_Color COL_TEXT     = {235, 235, 240, 255};
+static const SDL_Color COL_DIM      = {150, 150, 160, 255};
+static const SDL_Color COL_ACCENT   = {120, 190, 255, 255};
+static const SDL_Color COL_GOOD     = { 90, 210, 130, 255};
+static const SDL_Color COL_BAD      = {235, 110, 110, 255};
+static const SDL_Color COL_SELECTED = { 45,  85, 140, 255};
+static const SDL_Color COL_ROW      = { 38,  40,  48, 170};
+
+/* Rows, because a console is driven with a pad: up and down to choose,
+ * A to act. A pointer would be the wrong shape entirely. */
+typedef enum { ROW_ACTION, ROW_VALUE, ROW_INFO } RowKind;
+
+typedef struct {
+    RowKind kind;
+    const char *label;
+    char value[64];
+} MenuRow;
+
+static MenuRow g_rows[12];
+static int     g_row_count;
+static int     g_selected;
+
+/* Settings while playing, reached with Minus, drawn the same way. */
+static int g_menu_open;
+static int g_receive_scale;      /* 0 = as rendered, N = N x native */
+static int g_volume = 100;
+static int g_muted;
 
 /* ------------------------------------------------------------ settings */
 
@@ -47,6 +81,8 @@ static int      g_have_saved_server;
  * One line, host and port. A phone can be typed on; a Switch cannot, so
  * the address is worth keeping even more here than there.
  */
+/* A breadcrumb on the SD card, readable from the host. The console has
+ * nowhere else to say where it got to. */
 static void load_server(void)
 {
     FILE *f = fopen(CONFIG_PATH, "r");
@@ -238,6 +274,15 @@ static void audio_callback(void *user, Uint8 *out, int len)
     (void)user;
     const int frames = len / (int)(sizeof(int16_t) * 2);
     const int got = stream_take_audio((int16_t *)out, frames);
+    /* Applied here rather than in the mixer: there is one place sound
+     * leaves this program, and one number is easier to be sure of than
+     * a gain scattered through the path. */
+    if (g_volume != 100 || g_muted) {
+        int16_t *pcm = (int16_t *)out;
+        const int scale = g_muted ? 0 : g_volume;
+        for (int i = 0; i < got * 2; i++)
+            pcm[i] = (int16_t)((int)pcm[i] * scale / 100);
+    }
     /* Silence rather than the previous buffer again: a repeat is a click,
      * and a gap in a stream that is behind is the honest sound. */
     if (got < frames)
@@ -286,31 +331,208 @@ static void try_connect(void)
     }
 }
 
+static void fill(int x, int y, int w, int h, SDL_Color c)
+{
+    SDL_SetRenderDrawBlendMode(g_renderer, SDL_BLENDMODE_BLEND);
+    SDL_SetRenderDrawColor(g_renderer, c.r, c.g, c.b, c.a);
+    SDL_Rect rect = { x, y, w, h };
+    SDL_RenderFillRect(g_renderer, &rect);
+}
+
+/*
+ * One row: a translucent band, brighter when it is the one selected,
+ * with its label on the left and whatever it is set to on the right.
+ */
+static void draw_row(int index, int y)
+{
+    const MenuRow *row = &g_rows[index];
+    const int selected = (index == g_selected);
+    const int x = 90, w = SCREEN_W - 180, h = 56;
+
+    fill(x, y, w, h, selected ? COL_SELECTED : COL_ROW);
+    draw_text(g_small, row->label, x + 24, y + 14,
+              row->kind == ROW_INFO ? COL_DIM : COL_TEXT);
+
+    if (row->value[0]) {
+        int tw = 0, th = 0;
+        TTF_SizeUTF8(g_small, row->value, &tw, &th);
+        draw_text(g_small, row->value, x + w - 24 - tw, y + 14,
+                  selected ? COL_TEXT : COL_DIM);
+    }
+}
+
+static void draw_rows(int top)
+{
+    for (int i = 0; i < g_row_count; i++)
+        draw_row(i, top + i * 66);
+}
+
+/* The console's own screen, which every offered size is a multiple of. */
+static void native_size(int console, int *w, int *h)
+{
+    switch (console) {
+    case BS_CONSOLE_3DS:  *w = BS_3DS_WIDTH;  *h = BS_3DS_HEIGHT;  break;
+    case BS_CONSOLE_WIIU: *w = BS_WIIU_WIDTH; *h = BS_WIIU_HEIGHT; break;
+    default:              *w = BS_DS_WIDTH;   *h = BS_DS_HEIGHT;   break;
+    }
+}
+
+static void build_connect_rows(void)
+{
+    g_row_count = 0;
+    MenuRow *r;
+
+    r = &g_rows[g_row_count++];
+    r->kind = ROW_VALUE; r->label = "address";
+    snprintf(r->value, sizeof(r->value), "%s", g_host);
+
+    r = &g_rows[g_row_count++];
+    r->kind = ROW_VALUE; r->label = "port";
+    snprintf(r->value, sizeof(r->value), "%u", (unsigned)g_port);
+
+    r = &g_rows[g_row_count++];
+    r->kind = ROW_ACTION; r->label = "connect"; r->value[0] = '\0';
+
+    if (g_selected >= g_row_count)
+        g_selected = g_row_count - 1;
+}
+
+/*
+ * What may be asked for is whole multiples of the console's own screen,
+ * never below it -- the Wii U alone may halve, because 854x480 has the
+ * room. An arbitrary fraction of a DS screen is smaller than a decoder
+ * will produce frames from at all.
+ */
+static void size_label(const StreamInfo *info, char *out, size_t outlen)
+{
+    int nw = 0, nh = 0;
+    native_size(info->console, &nw, &nh);
+    if (g_receive_scale == 0)
+        snprintf(out, outlen, "as rendered  %dx%d", info->width, info->height);
+    else if (g_receive_scale == -2)
+        snprintf(out, outlen, "half native  %dx%d", nw / 2, nh / 2);
+    else
+        snprintf(out, outlen, "%dx native  %dx%d", g_receive_scale,
+                 nw * g_receive_scale, nh * g_receive_scale);
+}
+
+static void build_play_rows(const StreamInfo *info)
+{
+    g_row_count = 0;
+    MenuRow *r;
+
+    r = &g_rows[g_row_count++];
+    r->kind = ROW_VALUE; r->label = "size received";
+    size_label(info, r->value, sizeof(r->value));
+
+    r = &g_rows[g_row_count++];
+    r->kind = ROW_VALUE; r->label = "volume";
+    snprintf(r->value, sizeof(r->value), "%d%%%s", g_volume,
+             g_muted ? "   muted" : "");
+
+    r = &g_rows[g_row_count++];
+    r->kind = ROW_ACTION; r->label = "disconnect"; r->value[0] = '\0';
+
+    r = &g_rows[g_row_count++];
+    r->kind = ROW_INFO; r->label = "decoder";
+    snprintf(r->value, sizeof(r->value), "%s", stream_decoder_name());
+
+    if (g_selected >= g_row_count)
+        g_selected = g_row_count - 1;
+}
+
+/*
+ * Left and right on the selected row. Sizes step through the multiples
+ * the console allows; volume moves in tens because a stick-less menu
+ * should not need forty presses to be heard.
+ */
+static void adjust_row(const StreamInfo *info, int delta)
+{
+    int nw = 0, nh = 0;
+    native_size(info->console, &nw, &nh);
+
+    if (g_selected == 0) {
+        /* The order is: half (Wii U only), native, 2x, 3x..., then
+         * whatever is rendered. */
+        int steps[8], n = 0;
+        if (nw >= 640) steps[n++] = -2;
+        for (int f = 1; nw * f <= info->width; f++) steps[n++] = f;
+        steps[n++] = 0;
+
+        int at = 0;
+        for (int i = 0; i < n; i++) if (steps[i] == g_receive_scale) at = i;
+        at += delta;
+        if (at < 0) at = 0;
+        if (at >= n) at = n - 1;
+        g_receive_scale = steps[at];
+
+        if (g_receive_scale == 0)      stream_send_size(0, 0);
+        else if (g_receive_scale == -2) stream_send_size(nw / 2, nh / 2);
+        else stream_send_size(nw * g_receive_scale, nh * g_receive_scale);
+    } else if (g_selected == 1) {
+        g_volume += delta * 10;
+        if (g_volume < 0) g_volume = 0;
+        if (g_volume > 100) g_volume = 100;
+        g_muted = (g_volume == 0);
+    }
+}
+
 static void draw_menu(void)
 {
-    const SDL_Color white = { 235, 235, 235, 255 };
-    const SDL_Color grey  = { 150, 150, 150, 255 };
-
-    SDL_SetRenderDrawColor(g_renderer, 16, 16, 20, 255);
+    SDL_SetRenderDrawColor(g_renderer, 16, 17, 22, 255);
     SDL_RenderClear(g_renderer);
 
-    draw_text(g_font, "Bottom Screen", 80, 90, white);
+    draw_text(g_font, "Bottom Screen", 90, 60, COL_TEXT);
+    draw_rows(150);
 
-    char line[128];
-    snprintf(line, sizeof(line), "%s : %u", g_host, (unsigned)g_port);
-    draw_text(g_font, line, 80, 190, white);
-
-    draw_text(g_small, "A  connect        X  address        Y  port", 80, 300, grey);
-    draw_text(g_small, "+  quit", 80, 340, grey);
-    draw_text(g_small, g_message, 80, 430, grey);
+    draw_text(g_small, "\u2191\u2193  choose      A  use      +  quit",
+              90, 150 + g_row_count * 66 + 24, COL_DIM);
+    if (g_message[0])
+        draw_text(g_small, g_message, 90, 150 + g_row_count * 66 + 70,
+                  COL_BAD);
 
     SDL_RenderPresent(g_renderer);
+}
+
+/*
+ * The settings, over the picture, in the same rows as the menu. Opened
+ * with Minus and closed with B, because a console's own menus work that
+ * way and nothing here should have to be learned twice.
+ */
+static void draw_play_menu(const StreamInfo *info)
+{
+    fill(0, 0, SCREEN_W, SCREEN_H, (SDL_Color){ 8, 10, 16, 200 });
+
+    char head[128];
+    snprintf(head, sizeof(head), "%dx%d  %d fps  %s",
+             info->width, info->height, info->fps,
+             info->audio_rate > 0 ? "sound" : "no sound");
+    draw_text(g_font, "settings", 90, 60, COL_ACCENT);
+    draw_text(g_small, head, 90, 118, COL_GOOD);
+
+    build_play_rows(info);
+    draw_rows(180);
+
+    draw_text(g_small,
+              "\u2191\u2193  choose      \u2190\u2192  change      A  use      B  back",
+              90, 180 + g_row_count * 66 + 24, COL_DIM);
 }
 
 static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
 {
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
     SDL_RenderClear(g_renderer);
+
+    /* Drawn before the picture, so a failure to build or copy the YUV
+     * texture leaves the counters on screen rather than a blank one. */
+    {
+        char probe[112];
+        snprintf(probe, sizeof(probe),
+                 "%s   %ux%u   %u frames   \u2013   Minus for settings",
+                 stream_decoder_name(), (unsigned)info->width,
+                 (unsigned)info->height, (unsigned)stream_frames());
+        draw_text(g_small, probe, 16, 12, COL_DIM);
+    }
 
     if (info->width > 0 && info->height > 0) {
         ensure_texture(info->width, info->height);
@@ -332,21 +554,19 @@ static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
         }
     }
 
-    /*
-     * The decoder's name and its output, in the corner.
-     *
-     * A stream that is connected and a stream that is arriving look
-     * identical when both are black, and the difference between the
-     * console's video block and a software fallback is the difference
-     * between a cool machine and a hot one. Neither is visible any other
-     * way.
-     */
-    char hud[96];
-    snprintf(hud, sizeof(hud), "%s  %ux%u  %u frames",
-             stream_decoder_name(), (unsigned)info->width,
-             (unsigned)info->height, (unsigned)stream_frames());
-    const SDL_Color faint = { 120, 200, 120, 255 };
-    draw_text(g_small, hud, 16, 12, faint);
+    if (g_menu_open) {
+        draw_play_menu(info);
+    } else {
+        /*
+         * The decoder's name and its output, small and in a corner.
+         *
+         * A stream that is connected and one that is arriving look
+         * identical when both are black, and the difference between the
+         * console's own video block and a software fallback is the
+         * difference between a cool machine and a hot one.
+         */
+        /* Already drawn above. */
+    }
 
     SDL_RenderPresent(g_renderer);
 }
@@ -368,7 +588,17 @@ int main(int argc, char **argv)
         goto done;
 
     g_window = SDL_CreateWindow("Bottom Screen", 0, 0, SCREEN_W, SCREEN_H, 0);
-    g_renderer = SDL_CreateRenderer(g_window, -1, SDL_RENDERER_ACCELERATED);
+    /*
+     * With vsync, because without it appletMainLoop spins as fast as the
+     * hardware allows: thousands of iterations a second, each one asking
+     * the pad and the touchscreen and sending whatever changed. On a
+     * handheld that is battery burnt for nothing, and under an emulator
+     * it starves the thing of the time it needs to present anything at
+     * all.
+     */
+    g_renderer = SDL_CreateRenderer(g_window, -1,
+                                    SDL_RENDERER_ACCELERATED |
+                                    SDL_RENDERER_PRESENTVSYNC);
     if (!g_window || !g_renderer)
         goto done;
 
@@ -392,6 +622,7 @@ int main(int argc, char **argv)
     if (g_have_saved_server)
         try_connect();
 
+
     while (appletMainLoop()) {
         padUpdate(&pad);
         const u64 down = padGetButtonsDown(&pad);
@@ -401,24 +632,33 @@ int main(int argc, char **argv)
             break;
 
         if (!stream_connected()) {
-            char typed[64];
-            if (down & HidNpadButton_X) {
-                if (ask_text("Server address", g_host, typed, sizeof(typed))) {
-                    snprintf(g_host, sizeof(g_host), "%s", typed);
-                    save_server();
-                }
-            } else if (down & HidNpadButton_Y) {
-                char current[16];
-                snprintf(current, sizeof(current), "%u", (unsigned)g_port);
-                if (ask_text("Port", current, typed, sizeof(typed))) {
-                    int p = atoi(typed);
-                    if (p > 0 && p < 65536) {
-                        g_port = (uint16_t)p;
+            build_connect_rows();
+
+            if (down & HidNpadButton_Down)
+                g_selected = (g_selected + 1) % g_row_count;
+            if (down & HidNpadButton_Up)
+                g_selected = (g_selected + g_row_count - 1) % g_row_count;
+
+            if (down & HidNpadButton_A) {
+                char typed[64];
+                if (g_selected == 0) {
+                    if (ask_text("Server address", g_host, typed, sizeof(typed))) {
+                        snprintf(g_host, sizeof(g_host), "%s", typed);
                         save_server();
                     }
+                } else if (g_selected == 1) {
+                    char current[16];
+                    snprintf(current, sizeof(current), "%u", (unsigned)g_port);
+                    if (ask_text("Port", current, typed, sizeof(typed))) {
+                        int p = atoi(typed);
+                        if (p > 0 && p < 65536) {
+                            g_port = (uint16_t)p;
+                            save_server();
+                        }
+                    }
+                } else {
+                    try_connect();
                 }
-            } else if (down & HidNpadButton_A) {
-                try_connect();
             }
             draw_menu();
             continue;
@@ -426,6 +666,35 @@ int main(int argc, char **argv)
 
         StreamInfo info;
         stream_info(&info);
+
+        /*
+         * While the settings are open the pad drives them rather than
+         * the console: a menu that also presses A on the game underneath
+         * it is worse than no menu.
+         */
+        if (down & HidNpadButton_Minus) {
+            g_menu_open = !g_menu_open;
+            g_selected = 0;
+        }
+
+        if (g_menu_open) {
+            if (down & HidNpadButton_B) g_menu_open = 0;
+            if (down & HidNpadButton_Down)
+                g_selected = (g_selected + 1) % g_row_count;
+            if (down & HidNpadButton_Up)
+                g_selected = (g_selected + g_row_count - 1) % g_row_count;
+            if (down & (HidNpadButton_Left | HidNpadButton_Right))
+                adjust_row(&info, (down & HidNpadButton_Right) ? 1 : -1);
+            if (down & HidNpadButton_A) {
+                if (g_selected == 2) {          /* disconnect */
+                    stream_disconnect();
+                    g_menu_open = 0;
+                    snprintf(g_message, sizeof(g_message), "%s", "");
+                }
+            }
+            draw_playing(&info, &picture_rect);
+            continue;
+        }
 
         send_pad(down, up);
         HidAnalogStickState left = padGetStickPos(&pad, 0);

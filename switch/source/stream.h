@@ -53,6 +53,13 @@ void stream_send_button(int code, int pressed);
 void stream_send_axis(int code, int value);
 void stream_request_keyframe(void);
 
+/*
+ * Asks for a picture of this size rather than whatever the emulator
+ * renders. Zero for both means "follow the source". Shared with anyone
+ * else watching, because the server has one encoder.
+ */
+void stream_send_size(int width, int height);
+
 /* Counters for the corner of the screen: a stream that is running and a
  * stream that is merely connected look identical otherwise. */
 uint32_t stream_frames(void);

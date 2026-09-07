@@ -11,6 +11,11 @@ struct BsDecoder {
     AVCodecContext *ctx;
     AVFrame        *frame;
     AVPacket       *pkt;
+
+    /* Whether the console's own video block is in use, and how many
+     * packets it has swallowed without giving a picture back. */
+    int hardware;
+    int silent;
 };
 
 static void __attribute__((format(printf, 3, 4)))
@@ -24,51 +29,69 @@ set_err(char *err, size_t errlen, const char *fmt, ...)
     va_end(ap);
 }
 
-BsDecoder *bs_decoder_create(char *err, size_t errlen)
+/*
+ * Opens a decoder into an existing BsDecoder, replacing whatever was
+ * there. Named to ask for the console's video block; NULL for whatever
+ * ffmpeg would pick, which is the software one.
+ */
+static int open_decoder(BsDecoder *dec, const char *name, char *err, size_t errlen)
 {
-    const AVCodec *codec = NULL;
-
-    /*
-     * The Switch decodes H.264 in hardware, and its ffmpeg port exposes
-     * that block as a decoder named h264_nvtegra. Asking for it by name
-     * is the whole of using it: everything below this line is the same
-     * code the desktop client runs.
-     *
-     * Falling back rather than failing, because a build without it is a
-     * working client with a warmer console, not a broken one.
-     */
-    codec = avcodec_find_decoder_by_name("h264_nvtegra");
-    if (!codec)
-        codec = avcodec_find_decoder(AV_CODEC_ID_H264);
+    const AVCodec *codec = name ? avcodec_find_decoder_by_name(name)
+                                : avcodec_find_decoder(AV_CODEC_ID_H264);
     if (!codec) {
         set_err(err, errlen, "no H.264 decoder in this ffmpeg build");
-        return NULL;
+        return -1;
     }
 
-    BsDecoder *dec = calloc(1, sizeof(*dec));
-    if (!dec) {
-        set_err(err, errlen, "out of memory");
-        return NULL;
-    }
-
-    dec->ctx = avcodec_alloc_context3(codec);
-    if (!dec->ctx) {
+    AVCodecContext *ctx = avcodec_alloc_context3(codec);
+    if (!ctx) {
         set_err(err, errlen, "avcodec_alloc_context3 failed");
-        goto fail;
+        return -1;
     }
 
     /* The stream is produced with tune=zerolatency and no B-frames, so
      * one packet in yields one picture out. Saying so lets the decoder
      * skip its own reordering delay instead of holding pictures back for
      * a reordering that never happens. */
-    dec->ctx->flags  |= AV_CODEC_FLAG_LOW_DELAY;
-    dec->ctx->flags2 |= AV_CODEC_FLAG2_FAST;
-    dec->ctx->thread_count = 1;
+    ctx->flags  |= AV_CODEC_FLAG_LOW_DELAY;
+    ctx->flags2 |= AV_CODEC_FLAG2_FAST;
+    ctx->thread_count = 1;
 
-    if (avcodec_open2(dec->ctx, codec, NULL) < 0) {
+    if (avcodec_open2(ctx, codec, NULL) < 0) {
         set_err(err, errlen, "avcodec_open2 failed");
-        goto fail;
+        avcodec_free_context(&ctx);
+        return -1;
     }
+
+    if (dec->ctx)
+        avcodec_free_context(&dec->ctx);
+    dec->ctx = ctx;
+    return 0;
+}
+
+BsDecoder *bs_decoder_create(char *err, size_t errlen)
+{
+    BsDecoder *dec = calloc(1, sizeof(*dec));
+    if (!dec) {
+        set_err(err, errlen, "out of memory");
+        return NULL;
+    }
+
+    /*
+     * The Switch decodes H.264 in hardware, and its ffmpeg port exposes
+     * that block as a decoder named h264_nvtegra. Asking for it by name
+     * is the whole of using it: everything after this is the same code
+     * the desktop client runs.
+     *
+     * Falling back rather than failing, because a build without it is a
+     * working client with a warmer console, not a broken one -- and
+     * bs_decoder_decode falls back again later if the block turns out to
+     * accept packets without ever returning a picture.
+     */
+    if (open_decoder(dec, "h264_nvtegra", NULL, 0) == 0)
+        dec->hardware = 1;
+    else if (open_decoder(dec, NULL, err, errlen) != 0)
+        goto fail;
 
     dec->frame = av_frame_alloc();
     dec->pkt   = av_packet_alloc();
@@ -114,10 +137,28 @@ int bs_decoder_decode(BsDecoder *dec, const uint8_t *data, size_t size,
         return -1;
 
     ret = avcodec_receive_frame(dec->ctx, dec->frame);
-    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+    if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+        /*
+         * A hardware decoder that accepts everything and returns nothing.
+         *
+         * The console's video block opens and takes packets happily
+         * under an emulator that has no such block, and then produces no
+         * picture at all -- a black screen with nothing in any log. A
+         * few frames of silence is normal while it fills; thirty is not,
+         * and a working picture in software beats a warm one that never
+         * arrives.
+         */
+        if (dec->hardware && ++dec->silent > 30) {
+            char why[128] = "";
+            if (open_decoder(dec, NULL, why, sizeof(why)) == 0)
+                dec->hardware = 0;
+            dec->silent = 0;
+        }
         return 0;
+    }
     if (ret < 0)
         return -1;
+    dec->silent = 0;
 
     if (dec->frame->format != AV_PIX_FMT_YUV420P)
         return -1;

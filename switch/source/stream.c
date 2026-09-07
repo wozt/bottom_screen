@@ -351,6 +351,14 @@ void stream_send_axis(int code, int value)
     send_event(BS_INPUT_AXIS, (uint8_t)code, (int16_t)value, 0);
 }
 
+void stream_send_size(int width, int height)
+{
+    if (!g_conn || !g_connected)
+        return;
+    BsSize sz = { (uint16_t)width, (uint16_t)height };
+    bs_send_msg(g_conn, BS_MSG_SET_SIZE, &sz, sizeof(sz), NULL, 0);
+}
+
 void stream_request_keyframe(void)
 {
     if (g_conn && g_connected)

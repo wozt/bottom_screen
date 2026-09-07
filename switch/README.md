@@ -17,18 +17,35 @@ menu.
 
 ## Status
 
-Verified: it builds, runs, reads its configuration off the SD card,
-connects to a server and receives a stream — checked with Citron on the
-development machine, where the server counted a connected client and
-1500 frames sent.
+**The menu works and looks right**, checked in Citron: rows in
+capture2cloud's own palette, a blue accent on whatever is selected,
+driven with the pad. It builds, reads its configuration off the SD card,
+and connects to a server, which then counts a client and sends frames.
 
-**Not verified: the picture.** Citron shows black. The client asks
-libavcodec for `h264_nvtegra`, which is the console's own video block,
-and an emulator has no such block to offer — so this is the expected
-place for it to fail and says nothing either way about real hardware. It
-needs a real Switch, which is where it is going next.
+**The playing screen draws nothing under Citron**, and I did not find
+out why. What is established:
 
-Also untested for the same reason: touch, the Joy-Cons and sound.
+- rendering works — the menu draws, and Citron reports a steady 60 fps;
+- the connection works — the server sees a client and streams to it;
+- the drawing loop is never reached once connected. A marker painted as
+  the very first thing in that function never appears, so it is not the
+  YUV texture or the decoder failing quietly further down.
+
+Ruled out along the way: the hardware decoder (forcing the software one
+changes nothing), opening the audio device, and the picture's own
+format. What is left is somewhere between the connection returning and
+the loop body, which is a short stretch I could not narrow further from
+outside.
+
+Citron is a poor instrument for this in any case. It refuses to load the
+NRO about half the time with "Could not determine title ID", and it
+silently discards writes to the SD card — which cost an afternoon,
+because the obvious way to trace a console with no console is to leave
+breadcrumbs on its card.
+
+So: the menu is verified, the stream reaches the console, and the
+picture needs real hardware. Touch, the Joy-Cons and sound are untested
+for the same reason.
 
 ## What is shared
 
