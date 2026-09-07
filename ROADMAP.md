@@ -548,7 +548,18 @@ practical argument, and it holds whatever the legal one turns out to be.
 ## E. Publishing
 
 - [x] Published on GitHub, publicly — see E-bis
-- [x] Published on the personal git server too (`192.168.2.101:2222`)
+- [~] The mirror on the personal git server (`192.168.2.101:2222`) is
+      frozen at 2026-09-07 and behind. GitHub is the only destination
+      until it can be realigned
+
+The history was rewritten that day to purge a tooling config and some
+over-talkative ignore comments. GitHub took the force-push; GitLab's
+`main` is a protected branch and refused it, so the two have diverged
+with no common ancestor and ordinary pushes are rejected as well.
+
+Realigning it takes unprotecting `main` there, one force-push of the
+branch and the tags, and putting the protection back. Deliberately left
+until somebody is at that machine.
 - [x] A v0.1.0 tag with release notes
 - [ ] Turn that tag into a GitHub Release (needs a valid `gh` token)
 - [x] README pointing at the emulator forks (`wozt/melonDS`,
