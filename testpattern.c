@@ -185,6 +185,15 @@ static void tp_button(void *self, BsButton code, int pressed)
     uint32_t bit = 1u << (code - 1);
     if (pressed) tp->buttons |= bit;
     else         tp->buttons &= ~bit;
+
+    /*
+     * Drawn as a lamp, and named here as well. A button held long enough
+     * to see is easy to check on screen; one sent by a script is a tap
+     * lasting a frame, and the lamp is gone before anybody looks. This
+     * is what tells a physical pad's mapping apart from silence.
+     */
+    if (pressed)
+        fprintf(stderr, "bottom_screen: button %d down\n", (int)code);
 }
 
 static void tp_axis(void *self, BsAxis code, int value)

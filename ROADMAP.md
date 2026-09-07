@@ -297,12 +297,42 @@ The VP8 versus H.264 reasoning is in WORKINPROGRESS.
       project uses neither
 
 ### C4. On-screen buttons
-- [ ] Showable and hideable
-- [ ] Reflect a connected pad when there is one
-- [ ] Explicit move mode: a yellow frame around the buttons while
+- [x] Showable and hideable
+- [x] Reflect a connected pad when there is one
+- [x] Explicit move mode: a yellow frame around the buttons while
       arranging them, like capture2cloud
-- [ ] The face buttons (A/B/X/Y) stay grouped when moved — the diamond
+- [x] The face buttons (A/B/X/Y) stay grouped when moved — the diamond
       moves, not each button
+- [ ] The same on the js and nro clients, once they exist
+
+Three states rather than a checkbox, because the useful default is
+neither on nor off: somebody who plugs a controller in wants the buttons
+out of the way without being asked, and somebody who unplugs it wants
+them back. Hiding them also gives the side band back to the picture in
+landscape — 1686 pixels wide instead of 1456 for a GamePad stream, which
+is the point of hiding them at all.
+
+A physical pad maps onto the same button codes the on-screen ones send,
+so the server cannot tell which sent a press, and the host's own pad
+keeps working because the emulators merge rather than replace.
+
+The mapping is positional, not by name. Android labels its buttons the
+way an Xbox pad is labelled, where A is the bottom of the diamond; every
+console here labels the right one A. So the bottom button sends B and
+the right one sends A — verified with injected gamepad events, which
+came out as B, A, Y, X, L, R, START, SELECT in that order.
+
+A pad unplugged mid-press releases what it was holding, for the same
+reason the server does it for a client that disconnects.
+
+Two things testing turned up:
+
+- the settings dialog was not scrollable, so in landscape everything
+  from the volume down was unreachable with nothing to suggest it was
+  there. It scrolls now.
+- the test pattern drew held buttons as lamps but never named them. A
+  button held long enough to see is easy to check on screen; one sent by
+  a script lasts a frame, and the lamp is gone before anybody looks.
 
 ### C5. Profiles
 - [x] Several profiles in the client menu (Android)

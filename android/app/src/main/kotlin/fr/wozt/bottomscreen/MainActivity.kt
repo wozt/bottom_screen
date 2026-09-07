@@ -3,10 +3,13 @@ package fr.wozt.bottomscreen
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.res.Configuration
+import android.hardware.input.InputManager
 import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
 import android.view.Gravity
+import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.SurfaceHolder
 import android.view.View
 import android.view.ViewGroup
@@ -16,6 +19,7 @@ import android.widget.EditText
 import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.CheckBox
+import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.ArrayAdapter
@@ -56,6 +60,20 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     /* Set while leaving a server on purpose, so the closing socket does
      * not report itself as a failure on the way out. */
     private var leavingOnPurpose = false
+
+    /*
+     * When to draw the on-screen buttons. Automatic means "unless a pad
+     * is connected", which is what somebody who has just plugged one in
+     * wants without being asked.
+     */
+    private var padVisibility = PadVisibility.AUTOMATIC
+    private var gamepadPresent = false
+
+    /* What the pad is holding, so a disconnection mid-press does not
+     * leave a button down for good -- the same reason the server tracks
+     * it per client. */
+    private val padHeld = HashSet<Int>()
+    private var padHat = emptySet<Int>()
     private var ack: BsProtocol.HelloAck? = null
     private var quality = Quality.AUTO
     private var buttonScale = 1f
@@ -79,6 +97,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         muted = prefs0.getBoolean("muted", false)
         buttonScale = prefs0.getFloat("pad_scale", 1f)
         fullscreen = prefs0.getBoolean("fullscreen", false)
+        padVisibility = PadVisibility.byName(prefs0.getString("pad_visibility", null))
+        gamepadPresent = Gamepad.anyConnected()
         applyFullscreen()
         buildForm()
         setContentView(root)
@@ -128,6 +148,125 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         hostField.setText(host)
         portField.setText(port.toString())
         root.post { connect() }
+    }
+
+    /*
+     * A physical controller, mapped onto the same button codes the
+     * on-screen buttons send. The protocol is already abstract, so the
+     * server cannot tell which of the two a press came from -- and the
+     * host's own pad keeps working either way, because the emulator
+     * merges rather than replaces.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (client == null || !Gamepad.isFromGamepad(event) || event.repeatCount > 0)
+            return super.dispatchKeyEvent(event)
+
+        val code = Gamepad.buttonFor(event.keyCode)
+        if (code == 0) return super.dispatchKeyEvent(event)
+
+        when (event.action) {
+            KeyEvent.ACTION_DOWN -> sendPadButton(code, true)
+            KeyEvent.ACTION_UP -> sendPadButton(code, false)
+            else -> return super.dispatchKeyEvent(event)
+        }
+        return true
+    }
+
+    override fun onGenericMotionEvent(event: MotionEvent): Boolean {
+        if (client == null || !Gamepad.isFromJoystick(event) ||
+            event.action != MotionEvent.ACTION_MOVE) {
+            return super.onGenericMotionEvent(event)
+        }
+
+        client?.sendInput(BsProtocol.INPUT_AXIS, BsProtocol.AXIS_LEFT_X,
+            Gamepad.axis(event, MotionEvent.AXIS_X), 0)
+        /* Screen coordinates run down, sticks run up: the sign is
+         * flipped here so a push forward is a push forward. */
+        client?.sendInput(BsProtocol.INPUT_AXIS, BsProtocol.AXIS_LEFT_Y,
+            -Gamepad.axis(event, MotionEvent.AXIS_Y), 0)
+        client?.sendInput(BsProtocol.INPUT_AXIS, BsProtocol.AXIS_RIGHT_X,
+            Gamepad.axis(event, MotionEvent.AXIS_Z), 0)
+        client?.sendInput(BsProtocol.INPUT_AXIS, BsProtocol.AXIS_RIGHT_Y,
+            -Gamepad.axis(event, MotionEvent.AXIS_RZ), 0)
+
+        /* Most pads report their d-pad as a hat rather than as keys. */
+        val hat = Gamepad.hatButtons(event)
+        for (code in padHat - hat) sendPadButton(code, false)
+        for (code in hat - padHat) sendPadButton(code, true)
+        padHat = hat
+        return true
+    }
+
+    private fun sendPadButton(code: Int, pressed: Boolean) {
+        if (pressed) padHeld.add(code) else padHeld.remove(code)
+        client?.sendInput(
+            if (pressed) BsProtocol.INPUT_BUTTON_DOWN else BsProtocol.INPUT_BUTTON_UP,
+            code, 0, 0)
+    }
+
+    /* Somebody unplugged a pad. Whatever it was holding has to come up,
+     * or the console keeps seeing a button that nothing is pressing. */
+    private fun releasePadButtons() {
+        for (code in padHeld.toList())
+            client?.sendInput(BsProtocol.INPUT_BUTTON_UP, code, 0, 0)
+        padHeld.clear()
+        padHat = emptySet()
+    }
+
+    private fun showPadOverlay(): Boolean = when (padVisibility) {
+        PadVisibility.ALWAYS -> true
+        PadVisibility.NEVER -> false
+        PadVisibility.AUTOMATIC -> !gamepadPresent
+    }
+
+    private fun applyPadVisibility() {
+        val overlay = pad ?: return
+        overlay.visibility = if (showPadOverlay()) View.VISIBLE else View.GONE
+        /* In landscape the buttons hold a band down each side. Giving it
+         * back to the picture is the point of hiding them, so the
+         * geometry is recomputed rather than left with an empty margin. */
+        val view = screen
+        val a = ack
+        val container = play
+        if (view != null && a != null && container != null) {
+            val landscape =
+                resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+            container.post { sizeVideo(container, view, overlay, a, landscape) }
+        }
+    }
+
+    private val deviceListener = object : InputManager.InputDeviceListener {
+        override fun onInputDeviceAdded(deviceId: Int) = padsChanged()
+        override fun onInputDeviceRemoved(deviceId: Int) {
+            releasePadButtons()
+            padsChanged()
+        }
+        override fun onInputDeviceChanged(deviceId: Int) = padsChanged()
+    }
+
+    private fun padsChanged() {
+        val present = Gamepad.anyConnected()
+        if (present == gamepadPresent) return
+        gamepadPresent = present
+        applyPadVisibility()
+        if (padVisibility == PadVisibility.AUTOMATIC) {
+            val name = if (present) Gamepad.nameOfFirst() else null
+            status.text = if (name != null) "$name connected — on-screen buttons hidden"
+                          else "No pad — on-screen buttons back"
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        (getSystemService(INPUT_SERVICE) as InputManager)
+            .registerInputDeviceListener(deviceListener, null)
+        padsChanged()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        (getSystemService(INPUT_SERVICE) as InputManager)
+            .unregisterInputDeviceListener(deviceListener)
     }
 
     private fun buildForm() {
@@ -465,6 +604,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         loadPositions(overlay, landscape)
         if (startInEdit) overlay.editMode = true
         pad = overlay
+        applyPadVisibility()
 
         /*
          * The picture keeps its aspect ratio exactly -- a DS screen is
@@ -477,8 +617,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         if (landscape) {
             /* Picture in the middle, controls down each side, the way
              * they sit on the console. The bands get a floor so the
-             * buttons cannot be squeezed into nothing by a wide screen. */
-            val minBand = (availW * 0.17f).toInt()
+             * buttons cannot be squeezed into nothing by a wide screen --
+             * and none at all when there are no buttons to keep room
+             * for, which is the whole point of hiding them. */
+            val minBand = if (showPadOverlay()) (availW * 0.17f).toInt() else 0
             var videoH = availH
             var videoW = availH * ack.width / ack.height
             if (availW - videoW < minBand * 2) {
@@ -610,7 +752,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         var videoW: Int
         var videoH: Int
         if (landscape) {
-            val minBand = (w * 0.17f).toInt()
+            val minBand = if (showPadOverlay()) (w * 0.17f).toInt() else 0
             videoH = h
             videoW = h * ack.width / ack.height
             if (w - videoW < minBand * 2) {
@@ -777,6 +919,19 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             }
         }
 
+        val padLabel = TextView(this).apply {
+            text = "On-screen buttons"
+            setPadding(0, gap, 0, 0)
+        }
+        val padSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                PadVisibility.entries.map { it.label }
+            )
+            setSelection(PadVisibility.entries.indexOf(padVisibility))
+        }
+
         val moveBox = CheckBox(this).apply {
             text = "Move buttons  (drag them where your thumbs are)"
             isChecked = pad?.editMode == true
@@ -813,15 +968,24 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 addView(volBar)
                 addView(muteBox)
             }
+            addView(padLabel)
+            addView(padSpinner)
             addView(sizeLabel)
             addView(sizeBar)
             addView(moveBox)
             addView(fullBox)
         }
 
+        /*
+         * Scrollable, because in landscape the dialog is shorter than
+         * its contents: everything from the volume down was simply
+         * unreachable, with nothing to suggest it was there.
+         */
+        val scroller = ScrollView(this).apply { addView(body) }
+
         settingsDialog = AlertDialog.Builder(this)
             .setTitle("Settings")
-            .setView(body)
+            .setView(scroller)
             .setPositiveButton("Apply") { _, _ ->
                 if (hasAudio) {
                     volume = volBar.progress / 100f
@@ -829,6 +993,13 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                     prefs.edit().putFloat("volume", volume)
                         .putBoolean("muted", muted).apply()
                     audio?.volume = if (muted) 0f else volume
+                }
+
+                val chosen = PadVisibility.entries[padSpinner.selectedItemPosition]
+                if (chosen != padVisibility) {
+                    padVisibility = chosen
+                    prefs.edit().putString("pad_visibility", chosen.name).apply()
+                    applyPadVisibility()
                 }
 
                 buttonScale = 0.5f + sizeBar.progress / 100f
