@@ -316,7 +316,7 @@ capture2cloud.
 ### C2. Web app in JS
 - [x] A page with the screen, touch and on-screen buttons
 - [x] Served by the emulator itself, on the port it already listens on
-- [ ] Sound (the Opus is arriving; it is not being played yet)
+- [x] Sound
 - [ ] Saved servers, like the Android client has
 
 **This did not end up being VP8 over WebRTC**, which is what the plan
@@ -359,10 +359,32 @@ header are exactly profile, constraints and level, so the page reads
 them out of the first keyframe instead. Verified: `avc1.42c014` for a DS
 and `avc1.42c01f` for a Wii U, matching what x264 reports.
 
+**Sound** is Opus through `AudioDecoder`, with no description, because
+the server sends bare packets rather than the Ogg encapsulation. Each
+packet is scheduled after the last on a running start time; the server
+sends one per video frame and they arrive in order, so that is enough
+and needs no worklet. Falling behind resets the schedule rather than
+piling up, since a queue that only grows turns a hiccup into a permanent
+delay.
+
+The status shows the loudest sample seen, for the same reason the video
+shows a frame count: a decoder can produce a perfectly well-formed
+stream of silence, and "2015 packets" says nothing about whether any of
+them carried a sound. It also says **(tap to allow sound)** while the
+browser is holding the context suspended, which it does until the page
+has been touched — decoded and audible are not the same thing, and
+leaving somebody to wonder which they had would be unkind.
+
 Verified in Chromium: 779 of 780 frames decoded for a DS, 840 of 841 for
-a Wii U, with the right button set for each console.
-`tests/web_client.py` covers the upgrade, the framing, the greeting and
-the input path without a browser.
+a Wii U, with the right button set for each console; and 2015 Opus
+packets with a peak of 0.10, the warning appearing before a tap and
+gone after it. `tests/web_client.py` covers the upgrade, the framing,
+the greeting and the input path without a browser.
+
+One thing I cannot check from here: whether it is actually audible.
+There are no speakers behind a virtual display. Every link in the chain
+is confirmed — the packets decode, they are not silence, and the context
+is running — but the last inch is yours.
 
 ### C3. Menu design
 - [ ] Carry capture2cloud's menu design into all three clients (js / nro

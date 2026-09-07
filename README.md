@@ -156,7 +156,8 @@ somebody is watching, and the stream follows.
 - **The Switch homebrew** builds and connects but its picture is
   unverified — it needs real hardware, which an emulator cannot stand in
   for.
-- **Sound in the browser** — the Opus arrives, it is not played yet.
+- **Saved servers in the browser** — each emulator serves its own page
+  on its own port, and there is no list to jump between them yet.
 - **Cemu under Metal** (macOS only, with no machine here to try it on).
 
 The detail is in [ROADMAP.md](ROADMAP.md).
