@@ -442,7 +442,15 @@ game paths and accounts that took someone an evening to set up.
 
 The launcher reads the emulator's output and shows the port **actually
 bound**, not the one asked for — they differ as soon as a port is taken.
-"Send to phone" aims at that port over adb.
+That, and this machine's address at the top of the window, are what you
+type into a client.
+
+It once had a "Send to phone" button that ran `adb shell am start`. That
+was never asked for: it was written to drive the Android emulator during
+testing, aimed at 10.0.2.2 — the host as seen from an AVD — and a real
+phone connects over wifi, where adb is not involved at all. A testing
+affordance that leaked into the interface and did nothing useful there.
+Removed.
 
 `--set-resolution <emu> <n>` does the same with no window: useful in a
 script, and it is how the config writers are tested.

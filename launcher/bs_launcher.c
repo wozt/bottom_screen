@@ -553,43 +553,6 @@ static void on_launch(GtkButton *button, gpointer user)
     g_child_watch_add(e->pid, on_child_gone, e);
 }
 
-/*
- * Points a phone already plugged in over adb at whichever emulator is
- * actually streaming, so nobody types an address on a phone keyboard.
- */
-static void on_send_to_phone(GtkButton *button, gpointer user)
-{
-    Emu *e = user;
-    (void)button;
-
-    if (!e->announced_port) {
-        set_status(e, "<small>launch it first</small>");
-        return;
-    }
-
-    char port[16];
-    g_snprintf(port, sizeof(port), "%d", e->announced_port);
-    char *argv[] = {
-        "adb", "shell", "am", "start", "-n",
-        "fr.wozt.bottomscreen/.MainActivity",
-        "--es", "host", "10.0.2.2", "--ei", "port", port, NULL
-    };
-    /* 10.0.2.2 is the host as seen from the Android emulator; a real
-     * phone on the network needs this machine's address instead. */
-    const char *host = g_object_get_data(G_OBJECT(g_host_label), "host");
-    if (host) argv[8] = (char *)host;
-
-    GError *error = NULL;
-    if (!g_spawn_async(NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
-                       NULL, NULL, NULL, &error)) {
-        char *msg = g_markup_printf_escaped(
-            "<small>%s</small>", error ? error->message : "adb failed");
-        set_status(e, msg);
-        g_free(msg);
-        if (error) g_error_free(error);
-    }
-}
-
 /* ------------------------------------------------------------------ ui */
 
 static GtkWidget *build_emu_panel(Emu *e)
@@ -645,10 +608,6 @@ static GtkWidget *build_emu_panel(Emu *e)
     g_signal_connect(e->launch, "clicked", G_CALLBACK(on_launch), e);
     gtk_box_pack_start(GTK_BOX(brow), e->launch, FALSE, FALSE, 0);
 
-    GtkWidget *phone = gtk_button_new_with_label("Send to phone");
-    g_signal_connect(phone, "clicked", G_CALLBACK(on_send_to_phone), e);
-    gtk_box_pack_start(GTK_BOX(brow), phone, FALSE, FALSE, 0);
-
     GtkWidget *browse = gtk_button_new_with_label("Path\u2026");
     g_signal_connect(browse, "clicked", G_CALLBACK(on_browse), e);
     gtk_box_pack_start(GTK_BOX(brow), browse, FALSE, FALSE, 0);
@@ -701,7 +660,7 @@ static void activate(GtkApplication *app, gpointer user)
         "Clients connect to <b>%s</b>", lan);
     gtk_label_set_markup(GTK_LABEL(g_host_label), hm);
     g_free(hm);
-    g_object_set_data_full(G_OBJECT(g_host_label), "host", lan, g_free);
+    g_free(lan);
     gtk_box_pack_start(GTK_BOX(outer), g_host_label, FALSE, FALSE, 0);
 
     for (int i = 0; i < EMU_COUNT; i++)
