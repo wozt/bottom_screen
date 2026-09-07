@@ -73,17 +73,15 @@ cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-### On a Switch
-
-![The Switch homebrew's menu](docs/screenshots/switch.png)
+### On a Switch — not finished
 
 Built with devkitA64 and libnx. The console's own video block decodes the
 stream, its touchscreen is the stylus, and the Joy-Cons are the buttons.
 
-**The menu works; the playing screen does not draw yet.** It builds,
-connects and receives, but nothing appears once a stream starts, and the
-emulator used for testing is a poor instrument for finding out why. See
-[switch/README.md](switch/README.md) — this one needs real hardware.
+**This one is not done yet.** It builds, shows its menu, connects and
+receives a stream — and then draws nothing once the picture starts. It
+needs testing on real hardware, which is where it is going next; see
+[switch/README.md](switch/README.md).
 
 ### On Linux
 
@@ -175,7 +173,8 @@ pattern: a commercial DS title, a commercial 3DS title, a commercial Wii U title
 
 Still open:
 
-- **The Switch homebrew's picture**, which needs real hardware.
+- **The Switch homebrew**, which is unfinished: it connects but does not
+  yet draw the picture.
 - **The 3DS system menu** — Azahar crashes when the Artic Setup Tool
   connects, so the system files are not installed. Games and homebrew
   run.
