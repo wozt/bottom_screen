@@ -29,3 +29,8 @@ switch/*.nacp
 prompt.md
 system_files/
 games/
+
+# Editor and tooling configuration, which is the machine's, not the
+# project's.
+.mcp.json
+.claude/
