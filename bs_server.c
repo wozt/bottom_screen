@@ -3,6 +3,7 @@
 #include "bs_encoder.h"
 #include "bs_net.h"
 #include "bs_protocol.h"
+#include "bs_ws.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -54,6 +55,7 @@ typedef struct {
     int       recv_started, send_started;
 
     volatile int in_use;   /* the slot is taken */
+    int       is_web;      /* a browser, framed in WebSocket rather than raw */
     volatile int ready;    /* the handshake is done; packets may flow */
     volatile int gone;     /* the client left, or we gave up on it */
 
@@ -230,9 +232,13 @@ static void *client_send_thread(void *arg)
         if (!p)
             continue;
 
-        int rc = bs_send_msg(cl->conn, p->type,
+        int rc = cl->is_web
+            ? bs_ws_send_msg(cl->conn, p->type,
                              p->head_len ? p->head : NULL, p->head_len,
-                             p->len ? p->data : NULL, p->len);
+                             p->len ? p->data : NULL, p->len)
+            : bs_send_msg(cl->conn, p->type,
+                          p->head_len ? p->head : NULL, p->head_len,
+                          p->len ? p->data : NULL, p->len);
         if (p->type == BS_MSG_VIDEO)
             cl->frames_sent++;
         free(p);
@@ -317,13 +323,21 @@ static int client_handshake(BsClient *cl)
     BsServer *srv = cl->srv;
     BsConn   *conn = cl->conn;
 
-    BsHello hello;
-    if (bs_read_exact(conn, &hello, sizeof(hello)) != 0 ||
-        hello.magic != BS_MAGIC || hello.version != BS_VERSION) {
-        if (!srv->cfg.quiet)
-            fprintf(stderr, "bottom_screen: bad handshake from %s\n",
-                    bs_conn_peer(conn));
-        return -1;
+    /*
+     * A browser has already said who it is: the HTTP upgrade was the
+     * hello, and asking it to send another one over the socket it just
+     * opened would be ceremony for its own sake. Everything after this
+     * point is identical for both.
+     */
+    if (!cl->is_web) {
+        BsHello hello;
+        if (bs_read_exact(conn, &hello, sizeof(hello)) != 0 ||
+            hello.magic != BS_MAGIC || hello.version != BS_VERSION) {
+            if (!srv->cfg.quiet)
+                fprintf(stderr, "bottom_screen: bad handshake from %s\n",
+                        bs_conn_peer(conn));
+            return -1;
+        }
     }
 
     size_t extra_size = 0;
@@ -344,6 +358,21 @@ static int client_handshake(BsClient *cl)
         ack.audio_codec    = BS_ACODEC_OPUS;
         ack.audio_channels = (uint8_t)srv->info.audio_channels;
         ack.audio_rate     = (uint16_t)48000;   /* what Opus actually carries */
+    }
+
+    if (cl->is_web) {
+        /* One frame carrying the ack and the parameter sets together,
+         * because a WebSocket delivers whole messages and splitting them
+         * would make the page reassemble something it never had to. */
+        uint8_t greeting[sizeof(ack) + 4096];
+        if (extra_size > sizeof(greeting) - sizeof(ack))
+            return -1;
+        memcpy(greeting, &ack, sizeof(ack));
+        if (extra_size)
+            memcpy(greeting + sizeof(ack), extra, extra_size);
+        if (bs_ws_send_raw(conn, greeting, sizeof(ack) + extra_size) != 0)
+            return -1;
+        return 0;
     }
 
     if (bs_write_all(conn, &ack, sizeof(ack)) != 0)
@@ -390,7 +419,10 @@ static void *client_recv_thread(void *arg)
     while (!srv->stop && !cl->gone) {
         uint8_t type = 0;
         size_t n = 0;
-        if (bs_recv_msg(cl->conn, &type, buf, sizeof(buf), &n) != 0)
+        const int rc = cl->is_web
+            ? bs_ws_recv_msg(cl->conn, &type, buf, sizeof(buf), &n)
+            : bs_recv_msg(cl->conn, &type, buf, sizeof(buf), &n);
+        if (rc != 0)
             break;
 
         if (type == BS_MSG_INPUT && n >= sizeof(BsInputEvent)) {
@@ -523,7 +555,55 @@ static void client_refuse(BsConn *conn)
     bs_write_all(conn, &ack, sizeof(ack));
 }
 
-static int server_adopt(BsServer *srv, BsConn *conn)
+/*
+ * Which protocol just knocked.
+ *
+ * A native client opens with BsHello, whose first four bytes spell the
+ * magic; a browser opens with "GET ". They cannot be confused, so one
+ * port serves both and there is no second port to explain or forward.
+ *
+ * A plain page request is answered here rather than in a client slot: a
+ * browser fetches the page, then opens the socket, and the fetch has no
+ * business occupying one of the four places.
+ *
+ * Returns 0 for a native client, 1 for a WebSocket, and -1 when the
+ * connection is finished with.
+ */
+static int classify(BsServer *srv, BsConn *conn)
+{
+    /* A client that connects and says nothing must not hold the door
+     * shut for the people behind it. */
+    struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
+    setsockopt(bs_conn_fd(conn), SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    setsockopt(bs_conn_fd(conn), SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    uint8_t first[4];
+    ssize_t n = recv(bs_conn_fd(conn), first, sizeof(first), MSG_PEEK);
+    if (n < (ssize_t)sizeof(first))
+        return -1;
+
+    if (!bs_ws_looks_like_http(first, sizeof(first))) {
+        /* Back to blocking for the stream itself. */
+        struct timeval none = { 0, 0 };
+        setsockopt(bs_conn_fd(conn), SOL_SOCKET, SO_RCVTIMEO, &none, sizeof(none));
+        setsockopt(bs_conn_fd(conn), SOL_SOCKET, SO_SNDTIMEO, &none, sizeof(none));
+        return 0;
+    }
+
+    char err[128] = "";
+    int rc = bs_ws_serve(conn, err, sizeof(err));
+    if (rc == 1) {
+        struct timeval none = { 0, 0 };
+        setsockopt(bs_conn_fd(conn), SOL_SOCKET, SO_RCVTIMEO, &none, sizeof(none));
+        setsockopt(bs_conn_fd(conn), SOL_SOCKET, SO_SNDTIMEO, &none, sizeof(none));
+        return 1;
+    }
+    if (rc < 0 && !srv->cfg.quiet)
+        fprintf(stderr, "bottom_screen: %s from %s\n", err, bs_conn_peer(conn));
+    return -1;
+}
+
+static int server_adopt(BsServer *srv, BsConn *conn, int is_web)
 {
     server_reap(srv);
 
@@ -543,6 +623,7 @@ static int server_adopt(BsServer *srv, BsConn *conn)
     cl->conn = conn;
     cl->gone = 0;
     cl->ready = 0;
+    cl->is_web = is_web;
     pthread_mutex_init(&cl->lock, NULL);
     pthread_cond_init(&cl->cond, NULL);
 
@@ -787,10 +868,17 @@ static void *accept_thread(void *arg)
                 break;
             continue;
         }
-        if (!srv->cfg.quiet)
-            fprintf(stderr, "bottom_screen: client %s connected\n", bs_conn_peer(conn));
+        const int kind = classify(srv, conn);
+        if (kind < 0) {
+            bs_conn_close(conn);
+            continue;
+        }
 
-        if (server_adopt(srv, conn) != 0)
+        if (!srv->cfg.quiet)
+            fprintf(stderr, "bottom_screen: %s client %s connected\n",
+                    kind == 1 ? "web" : "native", bs_conn_peer(conn));
+
+        if (server_adopt(srv, conn, kind == 1) != 0)
             bs_conn_close(conn);
     }
     return NULL;

@@ -284,11 +284,55 @@ Starting point: `switch_homebrew/` and `switch_stream.c` from
 capture2cloud.
 
 ### C2. Web app in JS
-- [ ] VP8 encoding alongside H.264
-- [ ] WebRTC transport
-- [ ] A page with the screen, touch and on-screen buttons
+- [x] A page with the screen, touch and on-screen buttons
+- [x] Served by the emulator itself, on the port it already listens on
+- [ ] Sound (the Opus is arriving; it is not being played yet)
+- [ ] Saved servers, like the Android client has
 
-The VP8 versus H.264 reasoning is in WORKINPROGRESS.
+**This did not end up being VP8 over WebRTC**, which is what the plan
+above said, and the change is worth stating plainly.
+
+The reasoning on record was that a browser goes through WebRTC, where
+VP8 is the guaranteed baseline and H.264 depends on the browser, the
+platform and sometimes patents. That is true of WebRTC. It is not true
+of **WebCodecs**, which decodes H.264 directly — in hardware where the
+machine has it — from exactly the bytes the server already produces.
+
+| | VP8 / WebRTC | WebSocket / WebCodecs |
+|---|---|---|
+| Encoding | a second time, in software, on the machine already emulating | none, the same bytes |
+| Code | signalling, ICE, a GStreamer pipeline — 2083 lines in capture2cloud | a WebSocket layer, about 250 |
+| Latency | WebRTC's jitter buffer | direct |
+
+The cost is a browser without WebCodecs, which the page says plainly
+rather than showing a blank canvas.
+
+**One port, two protocols.** A native client opens with `BsHello`, whose
+first four bytes spell the magic `BSC1`; a browser opens with `GET `.
+They cannot be confused, so the same listening socket serves both and
+there is no second port to explain, forward or get wrong. A plain page
+request is answered on the accept thread rather than in a client slot: a
+browser fetches the page and then opens the socket, and the fetch has no
+business occupying one of the four places.
+
+SHA-1 and base64 are written out rather than linked from libcrypto.
+`bs_server.c` is compiled into three emulators, so every library it
+touches has to be added to three build systems — which is what adding
+libswresample cost.
+
+**The bug that testing found.** The codec string handed to WebCodecs
+carries the profile and level, and it means them. A hardcoded
+`avc1.42E01E` pins level 3.0: it decoded a DS screen and decoded
+*nothing at all*, in silence, for a GamePad at 854×480 — or for anything
+at a raised internal resolution. The three bytes after the SPS NAL
+header are exactly profile, constraints and level, so the page reads
+them out of the first keyframe instead. Verified: `avc1.42c014` for a DS
+and `avc1.42c01f` for a Wii U, matching what x264 reports.
+
+Verified in Chromium: 779 of 780 frames decoded for a DS, 840 of 841 for
+a Wii U, with the right button set for each console.
+`tests/web_client.py` covers the upgrade, the framing, the greeting and
+the input path without a browser.
 
 ### C3. Menu design
 - [ ] Carry capture2cloud's menu design into all three clients (js / nro

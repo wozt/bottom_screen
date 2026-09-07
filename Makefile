@@ -21,7 +21,7 @@ LAUNCHER_CFLAGS := $(shell pkg-config --cflags $(LAUNCHER_PKGS))
 LAUNCHER_LIBS   := $(shell pkg-config --libs   $(LAUNCHER_PKGS))
 
 SERVER_SRC := bottom_screen_server.c bs_server.c bs_encoder.c bs_audio.c \
-              bs_net.c bs_mailbox.c testpattern.c
+              bs_net.c bs_mailbox.c bs_ws.c testpattern.c
 CLIENT_SRC := bottom_screen_client.c bs_decoder.c bs_net.c
 SMOKE_SRC  := tests/smoke_client.c bs_decoder.c bs_net.c
 MERGE_SRC  := tests/input_merge.c bs_server.c bs_encoder.c bs_audio.c \
@@ -32,8 +32,13 @@ BINARIES := bottom_screen_server bottom_screen_client launcher/bs_launcher
 
 all: $(BINARIES)
 
+# The page is compiled in, so there is no file to install and no path
+# to get wrong relative to wherever an emulator was launched from.
+web_page.h: web/index.html scripts/embed_page.py
+	python3 scripts/embed_page.py web/index.html web_page.h
+
 bottom_screen_server: $(SERVER_SRC) bs_server.h bs_encoder.h bs_net.h \
-                      bs_protocol.h bs_source.h bs_mailbox.h
+                      bs_protocol.h bs_source.h bs_mailbox.h bs_ws.h web_page.h
 	$(CC) $(CFLAGS) $(SERVER_CFLAGS) -o $@ $(SERVER_SRC) $(LDFLAGS) $(SERVER_LIBS) -lm
 
 launcher/bs_launcher: launcher/bs_launcher.c bs_protocol.h
@@ -61,6 +66,6 @@ test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_fli
 	./tests/run_smoke.sh
 
 clean:
-	rm -f $(BINARIES) tests/smoke_client tests/input_merge tests/resize_flip
+	rm -f $(BINARIES) tests/smoke_client tests/input_merge tests/resize_flip web_page.h
 
 .PHONY: all clean test

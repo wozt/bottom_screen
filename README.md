@@ -92,6 +92,17 @@ cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
+**Browser** — open the port the emulator is listening on. The page is
+served by the server itself and needs nothing installed:
+
+```
+http://192.168.1.20:5090/
+```
+
+It decodes the same H.264 with WebCodecs, so nothing is transcoded. A
+browser without WebCodecs is told so rather than left with a blank
+canvas.
+
 **Linux** — `bottom_screen_client`, SDL2, handy for checking a pipeline
 without a phone.
 
@@ -125,7 +136,10 @@ somebody is watching, and the stream follows.
 - **The 3DS system menu.** Azahar crashes when the Artic Setup Tool
   connects, so the system files are not installed. Games and homebrew
   run.
-- **The Switch homebrew and the web client** are not written.
+- **The Switch homebrew** builds and connects but its picture is
+  unverified — it needs real hardware, which an emulator cannot stand in
+  for.
+- **Sound in the browser** — the Opus arrives, it is not played yet.
 - **Cemu under Metal** (macOS only, with no machine here to try it on).
 
 The detail is in [ROADMAP.md](ROADMAP.md).

@@ -1,0 +1,404 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Bottom Screen</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+               font: 14px system-ui, sans-serif; color: #ddd; }
+  /* A column, so the buttons sit beside the picture rather than on top
+     of it: a control covering the screen you are playing on is worse
+     than one that is slightly smaller. */
+  body { display: flex; flex-direction: column; }
+  #stage { flex: 1 1 auto; display: grid; place-items: center; min-height: 0; }
+  canvas { image-rendering: auto; touch-action: none; display: block; }
+  #status { position: fixed; left: 12px; top: 10px; color: #7c7;
+            font-size: 13px; pointer-events: none; white-space: pre; }
+  #pad { flex: 0 0 auto; display: none; align-items: flex-end;
+         justify-content: space-between; padding: 10px 14px 18px; gap: 14px; }
+  .cluster { display: grid; gap: 10px; justify-items: center; }
+  button.b { width: 58px; height: 58px; border-radius: 50%; border: 1px solid #666;
+             background: #ffffff28; color: #eee; font-size: 15px;
+             touch-action: none; user-select: none; }
+  button.b:active { background: #ffffff66; }
+  .row { display: flex; gap: 8px; }
+  #dpad { display: grid; grid-template-columns: repeat(3, 50px);
+          grid-template-rows: repeat(3, 50px); gap: 2px; }
+  #dpad button.b { width: 50px; height: 50px; border-radius: 8px; }
+  /* The face buttons as the diamond they are on the console, so the
+     button under your thumb is where your thumb expects it. */
+  .diamond { display: grid; grid-template-columns: repeat(3, 58px);
+             grid-template-rows: repeat(3, 58px); gap: 2px; }
+  .diamond .top    { grid-area: 1 / 2; }
+  .diamond .left   { grid-area: 2 / 1; }
+  .diamond .right  { grid-area: 2 / 3; }
+  .diamond .bottom { grid-area: 3 / 2; }
+</style>
+
+<div id="stage"><canvas id="screen" width="256" height="192"></canvas></div>
+<div id="status">connecting…</div>
+<div id="pad"></div>
+
+<script>
+"use strict";
+
+/*
+ * The same stream the phone and the Switch get, decoded by the browser.
+ *
+ * No transcoding and no WebRTC: the server already produces H.264, and
+ * WebCodecs decodes exactly those bytes -- in hardware where the machine
+ * has it. Re-encoding to VP8 for a browser would mean encoding the
+ * picture a second time, in software, on the machine that is already
+ * running an emulator.
+ */
+
+const MSG = { VIDEO: 1, AUDIO: 2, STREAM_INFO: 3,
+              INPUT: 16, PING: 17, PONG: 18, REQUEST_KEYFRAME: 19 };
+const INPUT = { TOUCH_DOWN: 1, TOUCH_MOVE: 2, TOUCH_UP: 3,
+                BUTTON_DOWN: 4, BUTTON_UP: 5, AXIS: 6 };
+const BTN = { A:1, B:2, X:3, Y:4, L:5, R:6, ZL:7, ZR:8,
+              START:9, SELECT:10, UP:11, DOWN:12, LEFT:13, RIGHT:14, HOME:15 };
+
+/* The button set each console actually has. Drawing a ZL for a DS would
+ * be offering a control that goes nowhere. */
+const CONSOLES = {
+  1: { name: "Nintendo DS",  shoulders: ["L","R"] },
+  2: { name: "Nintendo 3DS", shoulders: ["L","R"] },
+  3: { name: "Wii U",        shoulders: ["L","ZL","ZR","R"] },
+};
+
+const canvas = document.getElementById("screen");
+const ctx = canvas.getContext("2d", { alpha: false });
+const statusEl = document.getElementById("status");
+const padEl = document.getElementById("pad");
+
+let socket = null, decoder = null;
+let width = 256, height = 192, console_id = 1;
+let frames = 0, decoded = 0, lastReport = 0, chosenCodec = "";
+let sequence = 0;
+
+let stuck = "";
+function say(text) { if (!stuck) statusEl.textContent = text; }
+/* Something went wrong and stays wrong: it holds the line, because a
+ * frame counter ticking over an error message hides the only thing
+ * worth reading. */
+function problem(text) { stuck = text; statusEl.textContent = text; }
+function consoleName() { return (CONSOLES[console_id] || CONSOLES[1]).name; }
+
+/* ------------------------------------------------------------- sending */
+
+function send(type, payload) {
+  if (!socket || socket.readyState !== 1) return;
+  const body = payload || new Uint8Array(0);
+  const buf = new Uint8Array(8 + body.length);
+  const view = new DataView(buf.buffer);
+  buf[0] = type;
+  view.setUint32(4, body.length, true);
+  buf.set(body, 8);
+  socket.send(buf);
+}
+
+function sendInput(type, code, x, y) {
+  const b = new Uint8Array(16);
+  const v = new DataView(b.buffer);
+  v.setUint32(0, sequence++, true);
+  v.setUint32(4, (performance.now() * 1000) & 0xffffffff, true);
+  b[8] = type;
+  b[9] = code;
+  v.setInt16(10, x, true);
+  v.setInt16(12, y, true);
+  send(MSG.INPUT, b);
+}
+
+/* --------------------------------------------------------------- video */
+
+/*
+ * The codec string, read out of the stream rather than assumed.
+ *
+ * WebCodecs takes the profile and level as part of the codec name, and
+ * it means them: a hardcoded avc1.42E01E pins level 3.0, which covers a
+ * DS screen and silently decodes nothing at all for a GamePad at
+ * 854x480 -- or for anything rendered at a raised internal resolution.
+ * The three bytes after the SPS NAL header are exactly profile,
+ * constraints and level, so they are taken from there.
+ */
+function codecFromSps(data) {
+  for (let i = 0; i + 4 < data.length; i++) {
+    const isStart3 = data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 1;
+    const isStart4 = data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 &&
+                     data[i + 3] === 1;
+    if (!isStart3 && !isStart4) continue;
+    const nal = i + (isStart4 ? 4 : 3);
+    if (nal + 3 >= data.length) break;
+    if ((data[nal] & 0x1f) !== 7) continue;      /* 7 is the SPS */
+    const hex = (b) => b.toString(16).padStart(2, "0");
+    return "avc1." + hex(data[nal + 1]) + hex(data[nal + 2]) + hex(data[nal + 3]);
+  }
+  return null;
+}
+
+function startDecoder(codec) {
+  if (decoder) { try { decoder.close(); } catch (e) {} }
+  decoder = new VideoDecoder({
+    output: (frame) => {
+      decoded++;
+      ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+      frame.close();
+    },
+    error: (e) => problem("decoder: " + e.message),
+  });
+  /*
+   * No description, which is what tells WebCodecs the stream is Annex B
+   * -- and it is, deliberately: the server does not set
+   * AV_CODEC_FLAG_GLOBAL_HEADER, so the parameter sets are repeated in
+   * front of every keyframe and a client can start at any of them.
+   */
+  decoder.configure({ codec, optimizeForLatency: true });
+}
+
+function onVideo(payload) {
+  const v = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+  const flags = v.getUint16(12, true);
+  const keyframe = (flags & 0x01) !== 0;
+  const data = payload.subarray(16);
+
+  /*
+   * Nothing until a keyframe: it carries the parameter sets the decoder
+   * has to be configured from, and a correction to a picture that was
+   * never there produces noise rather than an image.
+   */
+  if (!decoder) {
+    if (!keyframe) return;
+    const codec = codecFromSps(data);
+    if (!codec) { problem("no parameter sets in the keyframe"); return; }
+    try {
+      startDecoder(codec);
+    } catch (e) {
+      problem("configure " + codec + ": " + e.message);
+      decoder = null;
+      return;
+    }
+    chosenCodec = codec;
+  }
+  if (decoder.state !== "configured") return;
+  if (!keyframe && frames === 0) return;
+
+  frames++;
+  try {
+    decoder.decode(new EncodedVideoChunk({
+      type: keyframe ? "key" : "delta",
+      timestamp: frames * 1000,
+      data,
+    }));
+  } catch (e) {
+    problem("decode: " + e.message);
+  }
+}
+
+/* ---------------------------------------------------------------- size */
+
+function resize(w, h) {
+  width = w; height = h;
+  canvas.width = w; canvas.height = h;
+  fit();
+}
+
+/*
+ * The picture keeps its shape and fills what is available.
+ *
+ * What is never done is stretching the axes apart; a fractional zoom is
+ * fine, and insisting on whole multiples of 256 would throw away a third
+ * of a phone screen to keep pixels square that nobody is inspecting.
+ */
+function fit() {
+  const stage = document.getElementById("stage");
+  const availW = stage.clientWidth || window.innerWidth;
+  const availH = stage.clientHeight || window.innerHeight;
+  const scale = Math.min(availW / width, availH / height);
+  canvas.style.width = Math.floor(width * scale) + "px";
+  canvas.style.height = Math.floor(height * scale) + "px";
+}
+window.addEventListener("resize", fit);
+
+/* --------------------------------------------------------------- touch */
+
+/*
+ * Coordinates go in the space the server announced, not the console's
+ * native size: the stream is larger whenever the emulator renders at a
+ * higher internal resolution, and dividing by the native size instead
+ * puts every tap wrong by exactly that scale.
+ */
+function pointTo(ev) {
+  const r = canvas.getBoundingClientRect();
+  const x = Math.round((ev.clientX - r.left) / r.width * width);
+  const y = Math.round((ev.clientY - r.top) / r.height * height);
+  return [Math.max(0, Math.min(width - 1, x)),
+          Math.max(0, Math.min(height - 1, y))];
+}
+
+let touching = false;
+canvas.addEventListener("pointerdown", (e) => {
+  canvas.setPointerCapture(e.pointerId);
+  touching = true;
+  const [x, y] = pointTo(e);
+  sendInput(INPUT.TOUCH_DOWN, 0, x, y);
+  e.preventDefault();
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!touching) return;
+  const [x, y] = pointTo(e);
+  sendInput(INPUT.TOUCH_MOVE, 0, x, y);
+});
+function liftTouch(e) {
+  if (!touching) return;
+  touching = false;
+  sendInput(INPUT.TOUCH_UP, 0, 0, 0);
+}
+canvas.addEventListener("pointerup", liftTouch);
+canvas.addEventListener("pointercancel", liftTouch);
+
+/* ------------------------------------------------------------- buttons */
+
+function addButton(parent, label, code) {
+  const b = document.createElement("button");
+  b.className = "b";
+  b.textContent = label;
+  const down = (e) => { e.preventDefault(); sendInput(INPUT.BUTTON_DOWN, code, 0, 0); };
+  const up   = (e) => { e.preventDefault(); sendInput(INPUT.BUTTON_UP, code, 0, 0); };
+  b.addEventListener("pointerdown", down);
+  b.addEventListener("pointerup", up);
+  b.addEventListener("pointerleave", up);
+  b.addEventListener("pointercancel", up);
+  parent.appendChild(b);
+  return b;
+}
+
+function buildPad(id) {
+  padEl.innerHTML = "";
+  const profile = CONSOLES[id] || CONSOLES[1];
+
+  const left = document.createElement("div");
+  left.className = "cluster";
+  const dpad = document.createElement("div");
+  dpad.id = "dpad";
+  const cells = [null, BTN.UP, null, BTN.LEFT, null, BTN.RIGHT, null, BTN.DOWN, null];
+  const names = ["", "▲", "", "◀", "", "▶", "", "▼", ""];
+  cells.forEach((code, i) => {
+    if (code === null) { dpad.appendChild(document.createElement("div")); return; }
+    addButton(dpad, names[i], code);
+  });
+  left.appendChild(dpad);
+
+  const right = document.createElement("div");
+  right.className = "cluster";
+  const shoulders = document.createElement("div");
+  shoulders.className = "row";
+  profile.shoulders.forEach((n) => addButton(shoulders, n, BTN[n]));
+
+  /* X on top, Y left, A right, B bottom -- the layout every console
+     here uses, rather than the order they happen to be listed in. */
+  const face = document.createElement("div");
+  face.className = "diamond";
+  addButton(face, "X", BTN.X).classList.add("top");
+  addButton(face, "Y", BTN.Y).classList.add("left");
+  addButton(face, "A", BTN.A).classList.add("right");
+  addButton(face, "B", BTN.B).classList.add("bottom");
+
+  const menu = document.createElement("div");
+  menu.className = "row";
+  addButton(menu, "SEL", BTN.SELECT);
+  addButton(menu, "STA", BTN.START);
+  right.append(shoulders, face, menu);
+
+  padEl.append(left, right);
+  padEl.style.display = "flex";
+  /* The stage only knows its height once the pad has taken its own, so
+   * the picture is sized after the layout has settled. */
+  requestAnimationFrame(fit);
+}
+
+/* A physical pad, if one is paired: the same codes the on-screen
+ * buttons send, so the server cannot tell them apart. */
+const GAMEPAD_MAP = [BTN.B, BTN.A, BTN.Y, BTN.X, BTN.L, BTN.R, BTN.ZL, BTN.ZR,
+                     BTN.SELECT, BTN.START, 0, 0,
+                     BTN.UP, BTN.DOWN, BTN.LEFT, BTN.RIGHT];
+let padState = [];
+function pollGamepad() {
+  const gp = navigator.getGamepads && navigator.getGamepads()[0];
+  if (gp) {
+    for (let i = 0; i < GAMEPAD_MAP.length && i < gp.buttons.length; i++) {
+      const code = GAMEPAD_MAP[i];
+      if (!code) continue;
+      const now = gp.buttons[i].pressed;
+      if (now !== padState[i]) {
+        padState[i] = now;
+        sendInput(now ? INPUT.BUTTON_DOWN : INPUT.BUTTON_UP, code, 0, 0);
+      }
+    }
+  }
+  requestAnimationFrame(pollGamepad);
+}
+requestAnimationFrame(pollGamepad);
+
+/* ---------------------------------------------------------- connection */
+
+function connect() {
+  if (!("VideoDecoder" in window)) {
+    say("this browser has no WebCodecs, so it cannot decode the stream");
+    return;
+  }
+
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") +
+              location.host + "/ws";
+  socket = new WebSocket(url);
+  socket.binaryType = "arraybuffer";
+
+  socket.onopen = () => say("connected, waiting for the stream…");
+  socket.onclose = () => say("disconnected");
+  socket.onerror = () => say("connection failed");
+
+  let greeted = false;
+  socket.onmessage = (ev) => {
+    const bytes = new Uint8Array(ev.data);
+
+    if (!greeted) {
+      /* The upgrade was the hello, so the first frame is the answer:
+       * the ack, then the parameter sets the decoder wants up front. */
+      greeted = true;
+      const v = new DataView(bytes.buffer);
+      console_id = bytes[6];
+      resize(v.getUint16(8, true), v.getUint16(10, true));
+      buildPad(console_id);
+      say(consoleName() + "  " + width + "×" + height + ", waiting for a keyframe");
+      send(MSG.REQUEST_KEYFRAME);
+      return;
+    }
+
+    const type = bytes[0];
+    const payload = bytes.subarray(8);
+    if (type === MSG.VIDEO) {
+      onVideo(payload);
+      const now = performance.now();
+      if (now - lastReport > 1000) {
+        say(consoleName() + "  " + width + "×" + height + "  " +
+            chosenCodec + "  " + decoded + "/" + frames + " frames");
+        lastReport = now;
+      }
+    } else if (type === MSG.STREAM_INFO) {
+      const v = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
+      resize(v.getUint16(4, true), v.getUint16(6, true));
+      /* The size changed under the decoder, so its reference picture is
+       * worthless whatever it was -- and so is its level, which is why
+       * the next keyframe reconfigures rather than this line. */
+      if (decoder) { try { decoder.close(); } catch (e) {} }
+      decoder = null;
+      frames = 0;
+      send(MSG.REQUEST_KEYFRAME);
+    } else if (type === MSG.PING) {
+      send(MSG.PONG);
+    }
+  };
+}
+
+connect();
+</script>
