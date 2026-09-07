@@ -3,73 +3,152 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no,viewport-fit=cover">
 <title>Bottom Screen</title>
 <style>
-  :root { color-scheme: dark; }
-  html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
-               font: 14px system-ui, sans-serif; color: #ddd; }
-  /* A column, so the buttons sit beside the picture rather than on top
-     of it: a control covering the screen you are playing on is worse
-     than one that is slightly smaller. */
-  body { display: flex; flex-direction: column; }
-  #stage { flex: 1 1 auto; display: grid; place-items: center; min-height: 0; }
-  canvas { image-rendering: auto; touch-action: none; display: block; }
-  /* Above the picture and on its own ground: green text over a bright
-     test pattern is unreadable exactly when it matters. */
-  #status { position: fixed; left: 12px; top: 10px; color: #7c7;
-            font-size: 13px; pointer-events: none; white-space: pre;
-            z-index: 10; background: #000000b0; padding: 3px 7px;
-            border-radius: 5px; }
-  #size { z-index: 10; }
-  #servers { position: fixed; right: 12px; top: 44px; z-index: 11;
-             background: #14141aee; border: 1px solid #555; border-radius: 8px;
-             padding: 8px; display: none; min-width: 210px; }
-  #servers.open { display: block; }
-  #servers .row2 { display: flex; gap: 6px; align-items: center;
-                   margin-bottom: 6px; }
-  #servers a { flex: 1; color: #cde; text-decoration: none; font-size: 13px;
-               padding: 5px 7px; border-radius: 5px; background: #ffffff12; }
-  #servers a:hover { background: #ffffff22; }
-  #servers button { background: #ffffff18; color: #ddd; border: 1px solid #555;
-                    border-radius: 5px; font-size: 12px; padding: 4px 7px; }
-  #servers .hint { color: #888; font-size: 12px; margin: 2px 0 6px; }
-  #servers input { width: 100%; box-sizing: border-box; background: #ffffff10;
-                   color: #ddd; border: 1px solid #555; border-radius: 5px;
-                   padding: 5px 7px; font-size: 13px; margin: 6px 0; }
-  #openServers { position: fixed; right: 112px; top: 8px; z-index: 10;
-                 background: #ffffff18; color: #ddd; border: 1px solid #555;
-                 border-radius: 6px; padding: 4px 8px; font-size: 13px; }
-  #size { position: fixed; right: 12px; top: 8px; background: #ffffff18;
-          color: #ddd; border: 1px solid #555; border-radius: 6px;
-          padding: 4px 6px; font-size: 13px; }
-  #pad { flex: 0 0 auto; display: none; align-items: flex-end;
-         justify-content: space-between; padding: 10px 14px 18px; gap: 14px; }
-  .cluster { display: grid; gap: 10px; justify-items: center; }
-  button.b { width: 58px; height: 58px; border-radius: 50%; border: 1px solid #666;
-             background: #ffffff28; color: #eee; font-size: 15px;
-             touch-action: none; user-select: none; }
-  button.b:active { background: #ffffff66; }
-  .row { display: flex; gap: 8px; }
-  #dpad { display: grid; grid-template-columns: repeat(3, 50px);
-          grid-template-rows: repeat(3, 50px); gap: 2px; }
-  #dpad button.b { width: 50px; height: 50px; border-radius: 8px; }
-  /* The face buttons as the diamond they are on the console, so the
-     button under your thumb is where your thumb expects it. */
-  .diamond { display: grid; grid-template-columns: repeat(3, 58px);
-             grid-template-rows: repeat(3, 58px); gap: 2px; }
-  .diamond .top    { grid-area: 1 / 2; }
-  .diamond .left   { grid-area: 2 / 1; }
-  .diamond .right  { grid-area: 2 / 3; }
-  .diamond .bottom { grid-area: 3 / 2; }
+/*
+ * The same look as capture2cloud, deliberately: these are two halves of
+ * the same habit, and a person moving between them should not have to
+ * learn a second set of manners. Eleven-pixel monospace on near-black,
+ * a bar that fades out of the way, and menus that open OVER the picture
+ * rather than growing the bar downwards -- the bar sits on top of the
+ * thing you are watching, so it must not push into it.
+ */
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+             color: #ddd; font: 11px monospace; }
+body { display: flex; flex-direction: column; }
+
+#stage { flex: 1 1 auto; display: flex; align-items: center;
+         justify-content: center; min-height: 0; }
+/*
+ * Sized by the browser, not by script.
+ *
+ * Measuring the box in order to resize the thing inside it is a loop:
+ * the canvas grew, the stage shrank around it, and the next measurement
+ * disagreed with the last. A replaced element with an intrinsic ratio
+ * and two maximums needs none of that -- it fills what it is given and
+ * keeps its shape, which is the whole requirement.
+ */
+/* capture2cloud's own rule. The element fills the stage and the drawing
+   is letterboxed inside it, which keeps the shape without any script
+   measuring anything. */
+canvas { image-rendering: auto; touch-action: none; display: block;
+         width: 100%; height: 100%; object-fit: contain; background: #000; }
+
+#bar { position: fixed; top: 0; left: 0; right: 0; padding: 5px 10px;
+       background: rgba(0,0,0,.65); display: flex; flex-direction: column;
+       gap: 3px; opacity: 0; transition: opacity .2s; pointer-events: none;
+       z-index: 5; }
+#bar.visible { opacity: 1; pointer-events: auto; }
+#statsRow, #controlsRow { display: flex; gap: 10px; align-items: center;
+                          flex-wrap: wrap; }
+#info { color: #8f8; white-space: nowrap; }
+/* Its own space, so a warning never lands on top of the counters. */
+#warn { color: #fc6; white-space: nowrap; margin-left: 6px; }
+#warn:not(:empty)::before { content: "\2014  "; color: #666; }
+
+/* A group is a summary that reads like a button and a panel that opens
+   over the picture. */
+.menu-group { position: relative; }
+.menu-group > summary { list-style: none; cursor: pointer; background: #222;
+     color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 3px 8px;
+     white-space: nowrap; font: 11px monospace; }
+.menu-group > summary::-webkit-details-marker { display: none; }
+.menu-group > summary::after { content: ' \25be'; color: #888; }
+.menu-group[open] > summary { background: #333; border-color: #666; }
+.menu-group[open] > summary::after { content: ' \25b4'; }
+.menu-items { position: absolute; top: calc(100% + 4px); left: 0; z-index: 6;
+     background: rgba(10,10,10,.96); border: 1px solid #444; border-radius: 5px;
+     padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
+     min-width: 210px; max-height: 70vh; overflow-y: auto; }
+
+button { background: #222; color: #ddd; border: 1px solid #444;
+         border-radius: 4px; padding: 3px 8px; cursor: pointer;
+         font: 11px monospace; }
+select { background: #222; color: #ddd; border: 1px solid #444;
+         border-radius: 4px; padding: 2px 4px; font: 11px monospace; }
+input[type=range] { width: 84px; }
+input[type=text] { background: #222; color: #ddd; border: 1px solid #444;
+                   border-radius: 4px; padding: 3px 6px; font: 11px monospace;
+                   width: 100%; box-sizing: border-box; }
+label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.menu-items label { justify-content: space-between; gap: 10px; }
+.menu-items label:has(input[type=checkbox]) { justify-content: flex-start; }
+.hint { color: #888; white-space: normal; max-width: 210px; }
+
+/* The servers list, inside its panel. */
+.srv { display: flex; gap: 6px; align-items: center; }
+.srv a { flex: 1; color: #cde; text-decoration: none; padding: 4px 6px;
+         border-radius: 4px; background: #ffffff12; }
+.srv a:hover { background: #ffffff22; }
+
+/* The on-screen buttons, in capture2cloud's own values. */
+#pad { flex: 0 0 auto; display: none; align-items: flex-end;
+       justify-content: space-between; padding: 10px 14px 18px; gap: 14px;
+       --btn-bg: rgba(255,255,255,.14); --btn-border: rgba(255,255,255,.4);
+       --btn-pressed: rgba(255,255,255,.45); }
+.cluster { display: grid; gap: 10px; justify-items: center; }
+button.b { width: 58px; height: 58px; border-radius: 50%;
+           border: 2px solid var(--btn-border); background: var(--btn-bg);
+           color: #fff; font: bold 13px sans-serif; touch-action: none;
+           user-select: none; box-shadow: 0 0 4px rgba(0,0,0,.5); }
+button.b:active { background: var(--btn-pressed); }
+.row { display: flex; gap: 8px; }
+#dpad { display: grid; grid-template-columns: repeat(3, 50px);
+        grid-template-rows: repeat(3, 50px); gap: 2px; }
+#dpad button.b { width: 50px; height: 50px; border-radius: 8px; }
+.diamond { display: grid; grid-template-columns: repeat(3, 58px);
+           grid-template-rows: repeat(3, 58px); gap: 2px; }
+.diamond .top    { grid-area: 1 / 2; }
+.diamond .left   { grid-area: 2 / 1; }
+.diamond .right  { grid-area: 2 / 3; }
+.diamond .bottom { grid-area: 3 / 2; }
 </style>
 
+<div id="bar">
+  <div id="statsRow">
+    <span id="info">connecting\u2026</span>
+    <span id="warn"></span>
+  </div>
+  <div id="controlsRow">
+    <details class="menu-group" id="group-stream"><summary>stream</summary>
+      <div class="menu-items">
+        <label title="How much of the picture to receive. An emulator at a raised internal resolution puts far more on the wire than a phone can show. Shared with everyone watching -- there is one encoder.">size
+          <select id="size">
+            <option value="1">full</option>
+            <option value="2">half</option>
+            <option value="4">quarter</option>
+          </select></label>
+        <label title="Applied between two frames, with a keyframe straight after. Shared, for the same reason as the size.">quality
+          <select id="quality">
+            <option value="0">automatic</option>
+            <option value="8000000">high</option>
+            <option value="3000000">medium</option>
+            <option value="1000000">low</option>
+          </select></label>
+      </div>
+    </details>
+
+    <details class="menu-group" id="group-sound"><summary>sound</summary>
+      <div class="menu-items" id="soundItems">
+        <label>volume <input id="volume" type="range" min="0" max="100" value="100"><span id="volume-v">100%</span></label>
+        <label><input id="mute" type="checkbox"> mute</label>
+      </div>
+    </details>
+
+    <details class="menu-group" id="group-buttons"><summary>buttons</summary>
+      <div class="menu-items">
+        <label><input id="show-pad" type="checkbox" checked> on-screen buttons</label>
+        <div class="hint">A pad plugged into this machine works either way; its presses are merged with these, not swapped for them.</div>
+      </div>
+    </details>
+
+    <details class="menu-group" id="group-servers"><summary>servers</summary>
+      <div class="menu-items" id="servers"></div>
+    </details>
+
+    <button id="fullscreen-toggle">fullscreen</button>
+  </div>
+</div>
+
 <div id="stage"><canvas id="screen" width="256" height="192"></canvas></div>
-<div id="status">connecting…</div>
-<button id="openServers" title="Other emulators you have opened">Servers</button>
-<div id="servers"></div>
-<select id="size" title="How much of the picture to receive">
-  <option value="1">Full size</option>
-  <option value="2">Half</option>
-  <option value="4">Quarter</option>
-</select>
 <div id="pad"></div>
 
 <script>
@@ -103,25 +182,29 @@ const CONSOLES = {
 
 const canvas = document.getElementById("screen");
 const ctx = canvas.getContext("2d", { alpha: false });
-const statusEl = document.getElementById("status");
+const statusEl = document.getElementById("info");
+const warnEl = document.getElementById("warn");
 const padEl = document.getElementById("pad");
+const barEl = document.getElementById("bar");
 
 let socket = null, decoder = null;
 let width = 256, height = 192, console_id = 1;
 let frames = 0, decoded = 0, lastReport = 0, chosenCodec = "";
 let audioRate = 0, audioChannels = 0, audioDecoder = null, audioCtx = null;
-let audioFrames = 0, nextAudioAt = 0, audioPeak = 0;
+let audioFrames = 0, nextAudioAt = 0, audioPeak = 0, gain = null;
 /* The size before anybody asked for less, so the fractions below mean
  * fractions of what the emulator renders rather than of each other. */
 let fullW = 0, fullH = 0;
 let sequence = 0;
 
-let stuck = "";
-function say(text) { if (!stuck) statusEl.textContent = text; }
-/* Something went wrong and stays wrong: it holds the line, because a
- * frame counter ticking over an error message hides the only thing
- * worth reading. */
-function problem(text) { stuck = text; statusEl.textContent = text; }
+function say(text) { statusEl.textContent = text; }
+/*
+ * Something went wrong and stays wrong. It gets its own place beside the
+ * counters rather than replacing them: a frame counter ticking over an
+ * error message hides the only thing worth reading, and an error that
+ * erases the counters hides how far it got.
+ */
+function problem(text) { warnEl.textContent = text; }
 function consoleName() { return (CONSOLES[console_id] || CONSOLES[1]).name; }
 
 /* ------------------------------------------------------------- sending */
@@ -190,6 +273,11 @@ function startAudio() {
 
   audioCtx = new (window.AudioContext || window.webkitAudioContext)(
     { sampleRate: 48000, latencyHint: "interactive" });
+  /* Everything goes through one gain, so volume and mute are a single
+   * number rather than a decision taken per packet. */
+  gain = audioCtx.createGain();
+  gain.connect(audioCtx.destination);
+  applyVolume();
   nextAudioAt = 0;
 
   audioDecoder = new AudioDecoder({
@@ -218,7 +306,7 @@ function startAudio() {
 
       const src = audioCtx.createBufferSource();
       src.buffer = buffer;
-      src.connect(audioCtx.destination);
+      src.connect(gain);
       /*
        * A little ahead of now, so a packet that arrives fractionally
        * late still has somewhere to go. Falling behind resets the
@@ -360,21 +448,11 @@ function resize(w, h) {
 }
 
 /*
- * The picture keeps its shape and fills what is available.
- *
- * What is never done is stretching the axes apart; a fractional zoom is
- * fine, and insisting on whole multiples of 256 would throw away a third
- * of a phone screen to keep pixels square that nobody is inspecting.
+ * Nothing to do: the canvas carries its own aspect ratio and the two
+ * maximums in the stylesheet do the fitting. What is never allowed is
+ * stretching the axes apart, and a rule that only ever caps both cannot.
  */
-function fit() {
-  const stage = document.getElementById("stage");
-  const availW = stage.clientWidth || window.innerWidth;
-  const availH = stage.clientHeight || window.innerHeight;
-  const scale = Math.min(availW / width, availH / height);
-  canvas.style.width = Math.floor(width * scale) + "px";
-  canvas.style.height = Math.floor(height * scale) + "px";
-}
-window.addEventListener("resize", fit);
+function fit() {}
 
 /* --------------------------------------------------------------- touch */
 
@@ -385,9 +463,21 @@ window.addEventListener("resize", fit);
  * puts every tap wrong by exactly that scale.
  */
 function pointTo(ev) {
+  /*
+   * The element fills the stage but the picture does not fill the
+   * element: object-fit leaves a band on two sides. Measuring against
+   * the element's box instead of the drawing would put every touch
+   * short by however wide those bands are -- which on a 4:3 screen in a
+   * wide window is most of the width.
+   */
   const r = canvas.getBoundingClientRect();
-  const x = Math.round((ev.clientX - r.left) / r.width * width);
-  const y = Math.round((ev.clientY - r.top) / r.height * height);
+  const scale = Math.min(r.width / width, r.height / height);
+  const drawW = width * scale, drawH = height * scale;
+  const left = r.left + (r.width - drawW) / 2;
+  const top = r.top + (r.height - drawH) / 2;
+
+  const x = Math.round((ev.clientX - left) / scale);
+  const y = Math.round((ev.clientY - top) / scale);
   return [Math.max(0, Math.min(width - 1, x)),
           Math.max(0, Math.min(height - 1, y))];
 }
@@ -467,7 +557,7 @@ function buildPad(id) {
   right.append(shoulders, face, menu);
 
   padEl.append(left, right);
-  padEl.style.display = "flex";
+  padEl.style.display = showPadEl.checked ? "flex" : "none";
   /* The stage only knows its height once the pad has taken its own, so
    * the picture is sized after the layout has settled. */
   requestAnimationFrame(fit);
@@ -496,6 +586,62 @@ function pollGamepad() {
 }
 requestAnimationFrame(pollGamepad);
 
+/*
+ * The bar shows itself when you move and gets out of the way when you
+ * stop -- it sits on top of what you are watching. An open menu holds
+ * it, because having a panel vanish mid-decision would be maddening.
+ */
+let barTimer = 0;
+function showBar() {
+  barEl.classList.add("visible");
+  clearTimeout(barTimer);
+  barTimer = setTimeout(() => {
+    if (!barEl.querySelector("details[open]")) barEl.classList.remove("visible");
+  }, 2500);
+}
+["pointermove", "pointerdown", "keydown"].forEach(
+  (e) => window.addEventListener(e, showBar));
+showBar();
+
+/* One menu at a time: two panels open at once overlap each other. */
+barEl.addEventListener("toggle", (e) => {
+  if (!(e.target instanceof HTMLDetailsElement) || !e.target.open) return;
+  for (const d of barEl.querySelectorAll("details[open]"))
+    if (d !== e.target) d.open = false;
+}, true);
+
+/* ---------------------------------------------------------- controls */
+
+const qualityEl = document.getElementById("quality");
+qualityEl.addEventListener("change", () => {
+  const b = new Uint8Array(8);
+  new DataView(b.buffer).setUint32(0, parseInt(qualityEl.value, 10) || 0, true);
+  /* Zero lets the server derive one from the size, which is what it
+   * does when nobody has asked. */
+  send(MSG.SET_QUALITY, b);
+});
+
+const volumeEl = document.getElementById("volume");
+const volumeVal = document.getElementById("volume-v");
+const muteEl = document.getElementById("mute");
+function applyVolume() {
+  volumeVal.textContent = volumeEl.value + "%";
+  if (gain) gain.gain.value = muteEl.checked ? 0 : volumeEl.value / 100;
+}
+volumeEl.addEventListener("input", applyVolume);
+muteEl.addEventListener("change", applyVolume);
+
+const showPadEl = document.getElementById("show-pad");
+showPadEl.addEventListener("change", () => {
+  padEl.style.display = showPadEl.checked && console_id ? "flex" : "none";
+  requestAnimationFrame(fit);
+});
+
+document.getElementById("fullscreen-toggle").addEventListener("click", () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(() => {});
+});
+
 /* ------------------------------------------------------------ servers */
 
 /*
@@ -511,7 +657,6 @@ requestAnimationFrame(pollGamepad);
  */
 const KEY = "bottom_screen.servers";
 const serversEl = document.getElementById("servers");
-const openServersEl = document.getElementById("openServers");
 
 function loadServers() {
   try {
@@ -592,7 +737,7 @@ function drawServers() {
 
   for (const entry of list) {
     const row = document.createElement("div");
-    row.className = "row2";
+    row.className = "srv";
 
     const link = document.createElement("a");
     link.href = location.protocol + "//" + entry.host + "/#s=" +
@@ -650,10 +795,10 @@ function drawServers() {
   serversEl.appendChild(hint);
 }
 
-openServersEl.addEventListener("click", () => {
-  serversEl.classList.toggle("open");
-  if (serversEl.classList.contains("open")) drawServers();
+document.getElementById("group-servers").addEventListener("toggle", (e) => {
+  if (e.target.open) drawServers();
 });
+drawServers();
 
 /* ---------------------------------------------------------- connection */
 
@@ -707,8 +852,9 @@ function connect() {
              * that has not been touched yet suspends the context, and
              * everything still schedules into silence. Saying so beats
              * leaving somebody to wonder. */
-            (audioCtx && audioCtx.state !== "running"
-               ? "  (tap to allow sound)" : ""));
+            "");
+        problem(audioRate && audioCtx && audioCtx.state !== "running"
+                  ? "tap to allow sound" : "");
         lastReport = now;
       }
     } else if (type === MSG.AUDIO) {

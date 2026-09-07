@@ -408,10 +408,38 @@ is confirmed — the packets decode, they are not silence, and the context
 is running — but the last inch is yours.
 
 ### C3. Menu design
-- [ ] Carry capture2cloud's menu design into all three clients (js / nro
-      / apk), with the same options
-- [ ] Keep only what makes sense here: no dongle, no capture card, this
+- [x] capture2cloud's menu design in the web client
+- [x] Keep only what makes sense here: no dongle, no capture card, this
       project uses neither
+- [ ] The same in the Android and Switch clients
+
+Eleven-pixel monospace on near-black, `#222` on `#444` with `#ddd` text,
+a bar that fades out of the way, and menus as a `summary` that reads
+like a button with a panel opening **over** the picture rather than
+growing the bar downwards — the bar sits on top of what you are
+watching, so it must not push into it. The groups are `stream`, `sound`,
+`buttons` and `servers`, plus fullscreen; the counters are green beside
+them and a warning gets its own place rather than replacing them.
+
+Dropped from capture2cloud, as the brief asks: capture format and
+resolution of a capture card, the login, the cloud. None of it exists
+here.
+
+Two things came out of doing it rather than reading about it.
+
+The picture was being sized by script measuring the box it sat in, which
+is a loop: the canvas grew, the stage shrank around it, and the next
+measurement disagreed with the last. capture2cloud's own rule —
+`object-fit: contain` — has the browser do it, and cannot distort
+because it only ever fits.
+
+But that moves the picture inside its element: the box fills the stage
+and the drawing is letterboxed within it. Touch measured against the
+element's box would land short by the width of those bands, which on a
+4:3 screen in a wide window is most of the width. Corrected, and then
+measured rather than trusted: pressing a quarter across and a quarter
+down put the crosshair at 0.252, 0.248 — read out of the canvas itself,
+so no screen offset is being guessed at.
 
 ### C4. On-screen buttons
 - [x] Showable and hideable
