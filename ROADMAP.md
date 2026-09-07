@@ -640,8 +640,10 @@ with no common ancestor and ordinary pushes are rejected as well.
 Realigning it takes unprotecting `main` there, one force-push of the
 branch and the tags, and putting the protection back. Deliberately left
 until somebody is at that machine.
-- [x] A v0.1.0 tag with release notes
-- [ ] Turn that tag into a GitHub Release (needs a valid `gh` token)
+- [x] Tags v0.1.0 and v0.2.0 with release notes
+- [x] Both published as GitHub Releases, with the three emulator patches
+      attached to v0.2.0 so somebody can apply them without cloning a
+      mirror
 - [x] README pointing at the emulator forks (`wozt/melonDS`,
       `wozt/azahar`, `wozt/Cemu`), which are public too
 - [x] `goal.md` renamed to `prompt.md` and kept out of the repository
