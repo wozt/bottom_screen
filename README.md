@@ -12,8 +12,18 @@ and the buttons that exist, and the interface builds itself from that.
 
 ## The emulators
 
-This only works with **the forks**, on the `bottom-screen` branch. The
-upstream emulators have no bridge.
+This only works with an emulator that has the bridge in it. There are
+two ways to get one, and no emulator is distributed here either way.
+
+**Apply the patch** to your own checkout — `patches/`, one per emulator,
+each naming the upstream commit it was made against:
+
+```sh
+git -C melonDS apply patches/melonDS.patch
+```
+
+**Or use the fork**, on the `bottom-screen` branch, which is the same
+change with a repository around it:
 
 | Console | Fork | Branch |
 |---|---|---|
@@ -21,7 +31,7 @@ upstream emulators have no bridge.
 | Nintendo 3DS | [wozt/azahar](https://github.com/wozt/azahar) | `bottom-screen` |
 | Wii U | [wozt/Cemu](https://github.com/wozt/Cemu) | `bottom-screen` |
 
-Each fork expects to find this repository beside it:
+Either way, the emulator expects to find this repository beside it:
 
 ```
 bottom_screen_server/

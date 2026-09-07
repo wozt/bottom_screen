@@ -29,7 +29,8 @@ typedef enum {
 
 typedef struct {
     const char *name;
-    const char *relative_binary;
+    const char *key;             /* what it is called in the settings file */
+    const char *relative_binary; /* where it sits in a checkout, as a fallback */
     const char *console;
     int         native_w, native_h;
     int         default_port;
@@ -37,7 +38,7 @@ typedef struct {
     const char *scale_note;
 
     char        binary[1024];
-    GtkWidget  *enable, *port, *scale, *launch, *status;
+    GtkWidget  *enable, *port, *scale, *launch, *status, *path_label;
     GPid        pid;
     int         announced_port;
 } Emu;
@@ -45,6 +46,7 @@ typedef struct {
 static Emu emus[] = {
     {
         .name = "melonDS",
+        .key = "melonds",
         .relative_binary = "emulators/melonDS/build/melonDS",
         .console = "Nintendo DS",
         .native_w = 256, .native_h = 192,
@@ -61,6 +63,7 @@ static Emu emus[] = {
     },
     {
         .name = "Azahar",
+        .key = "azahar",
         .relative_binary = "emulators/azahar/build/bin/Release/azahar",
         .console = "Nintendo 3DS",
         .native_w = 320, .native_h = 240,
@@ -71,6 +74,7 @@ static Emu emus[] = {
     },
     {
         .name = "Cemu",
+        .key = "cemu",
         .relative_binary = "emulators/Cemu/bin/Cemu_release",
         .console = "Wii U",
         .native_w = 854, .native_h = 480,
@@ -86,6 +90,63 @@ static const int EMU_COUNT = (int)(sizeof(emus) / sizeof(emus[0]));
 
 static char g_project[1024];
 static GtkWidget *g_host_label;
+
+/*
+ * Where each emulator lives.
+ *
+ * A checkout with the emulators beside it is the convenient case and
+ * stays the fallback, but it must not be the only one: this launcher
+ * runs somebody else's build of somebody else's emulator, installed
+ * wherever their distribution put it. Nothing here distributes an
+ * emulator, and nothing here should assume it did.
+ */
+static char *paths_file(void)
+{
+    return g_build_filename(g_get_user_config_dir(),
+                            "bottom_screen", "emulators.conf", NULL);
+}
+
+static void load_paths(void)
+{
+    char *path = paths_file();
+    char *text = NULL;
+    if (!g_file_get_contents(path, &text, NULL, NULL)) {
+        g_free(path);
+        return;
+    }
+
+    char **lines = g_strsplit(text, "\n", -1);
+    for (int i = 0; lines[i]; i++) {
+        char *eq = strchr(lines[i], '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        const char *key = g_strstrip(lines[i]);
+        const char *value = g_strstrip(eq + 1);
+        for (int e = 0; e < EMU_COUNT; e++)
+            if (g_strcmp0(key, emus[e].key) == 0 && *value)
+                g_strlcpy(emus[e].binary, value, sizeof(emus[e].binary));
+    }
+    g_strfreev(lines);
+    g_free(text);
+    g_free(path);
+}
+
+static void save_paths(void)
+{
+    char *dir = g_build_filename(g_get_user_config_dir(), "bottom_screen", NULL);
+    g_mkdir_with_parents(dir, 0755);
+    g_free(dir);
+
+    GString *out = g_string_new("# Where each emulator is installed.\n");
+    for (int i = 0; i < EMU_COUNT; i++)
+        g_string_append_printf(out, "%s=%s\n", emus[i].key, emus[i].binary);
+
+    char *path = paths_file();
+    g_file_set_contents(path, out->str, -1, NULL);
+    g_free(path);
+    g_string_free(out, TRUE);
+}
 
 /* ------------------------------------------------------------ helpers */
 
@@ -395,6 +456,41 @@ static void apply_scale(Emu *e)
     }
 }
 
+static void refresh_path(Emu *e)
+{
+    const gboolean ok = g_file_test(e->binary, G_FILE_TEST_IS_EXECUTABLE);
+    char *m = g_markup_printf_escaped("<small>%s%s</small>",
+                                      ok ? "" : "not found: ", e->binary);
+    gtk_label_set_markup(GTK_LABEL(e->path_label), m);
+    g_free(m);
+    set_status(e, ok ? "<small>not running</small>"
+                     : "<small>set the path to the program</small>");
+}
+
+static void on_browse(GtkButton *button, gpointer user)
+{
+    Emu *e = user;
+    GtkWidget *dialog = gtk_file_chooser_dialog_new(
+        "Where is it installed?",
+        GTK_WINDOW(gtk_widget_get_toplevel(GTK_WIDGET(button))),
+        GTK_FILE_CHOOSER_ACTION_OPEN,
+        "Cancel", GTK_RESPONSE_CANCEL, "Select", GTK_RESPONSE_ACCEPT, NULL);
+
+    if (e->binary[0])
+        gtk_file_chooser_set_filename(GTK_FILE_CHOOSER(dialog), e->binary);
+
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        char *chosen = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        if (chosen) {
+            g_strlcpy(e->binary, chosen, sizeof(e->binary));
+            g_free(chosen);
+            save_paths();
+            refresh_path(e);
+        }
+    }
+    gtk_widget_destroy(dialog);
+}
+
 static void on_launch(GtkButton *button, gpointer user)
 {
     Emu *e = user;
@@ -405,7 +501,7 @@ static void on_launch(GtkButton *button, gpointer user)
         return;
     }
     if (!g_file_test(e->binary, G_FILE_TEST_IS_EXECUTABLE)) {
-        set_status(e, "<small>not built yet</small>");
+        set_status(e, "<small>set the path to the program</small>");
         return;
     }
 
@@ -552,14 +648,21 @@ static GtkWidget *build_emu_panel(Emu *e)
     GtkWidget *phone = gtk_button_new_with_label("Send to phone");
     g_signal_connect(phone, "clicked", G_CALLBACK(on_send_to_phone), e);
     gtk_box_pack_start(GTK_BOX(brow), phone, FALSE, FALSE, 0);
+
+    GtkWidget *browse = gtk_button_new_with_label("Path\u2026");
+    g_signal_connect(browse, "clicked", G_CALLBACK(on_browse), e);
+    gtk_box_pack_start(GTK_BOX(brow), browse, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), brow, FALSE, FALSE, 0);
+
+    e->path_label = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(e->path_label), 0.0f);
+    gtk_label_set_ellipsize(GTK_LABEL(e->path_label), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_box_pack_start(GTK_BOX(box), e->path_label, FALSE, FALSE, 0);
 
     e->status = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(e->status), 0.0f);
-    set_status(e, g_file_test(e->binary, G_FILE_TEST_IS_EXECUTABLE)
-                  ? "<small>not running</small>"
-                  : "<small>not built yet</small>");
     gtk_box_pack_start(GTK_BOX(box), e->status, FALSE, FALSE, 0);
+    refresh_path(e);
 
     return frame;
 }
@@ -661,6 +764,9 @@ int main(int argc, char **argv)
         g_strlcpy(emus[i].binary, p, sizeof(emus[i].binary));
         g_free(p);
     }
+    /* A saved path wins over the checkout layout: somebody who pointed
+     * this at their own installation meant it. */
+    load_paths();
 
     if (argc == 4 && !strcmp(argv[1], "--set-resolution"))
         return apply_from_command_line(argv[2], argv[3]);
