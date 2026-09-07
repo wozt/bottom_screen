@@ -135,11 +135,18 @@ Two ways, and the difference matters.
 **Clone the fork.** The same change with a repository around it, already
 applied and known to build:
 
-| Console | Fork | Branch |
-|---|---|---|
-| Nintendo DS | [wozt/melonDS](https://github.com/wozt/melonDS) | `bottom-screen` |
-| Nintendo 3DS | [wozt/azahar](https://github.com/wozt/azahar) | `bottom-screen` |
-| Wii U | [wozt/Cemu](https://github.com/wozt/Cemu) | `bottom-screen` |
+| Console | Fork, on the `bottom-screen` branch |
+|---|---|
+| Nintendo DS | [wozt/melonDS](https://github.com/wozt/melonDS/tree/bottom-screen) |
+| Nintendo 3DS | [wozt/azahar](https://github.com/wozt/azahar/tree/bottom-screen) |
+| Wii U | [wozt/Cemu](https://github.com/wozt/Cemu/tree/bottom-screen) |
+
+The bridge is on `bottom-screen`, never on the default branch, so the
+branch has to be asked for:
+
+```sh
+git clone -b bottom-screen --recursive https://github.com/wozt/melonDS
+```
 
 **Or apply the patch** to a checkout of your own:
 
