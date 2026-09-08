@@ -23,6 +23,8 @@
 
 #include "bs_protocol.h"
 #include "stream.h"
+#include "ui.h"
+#include "vpad.h"
 
 #define SCREEN_W 1280
 #define SCREEN_H 720
@@ -30,6 +32,14 @@
 #define CONFIG_DIR  "sdmc:/switch/bottom_screen"
 #define CONFIG_PATH   CONFIG_DIR "/server.txt"
 #define SETTINGS_PATH CONFIG_DIR "/settings.txt"
+/*
+ * One arrangement per console, so a DS layout and a Wii U one do not
+ * overwrite each other: the two do not even have the same controls.
+ * Semicolon-separated "anchor:x,y", written by vpad itself, so a file
+ * from a build with different anchors is read as the entries it
+ * recognises rather than rejected whole.
+ */
+#define LAYOUT_PATH_FMT CONFIG_DIR "/layout_%d.txt"
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
@@ -88,7 +98,8 @@ typedef enum {
     ROWID_NONE = 0, ROWID_SIZE, ROWID_VOLUME, ROWID_QUALITY,
     ROWID_AUDIO_SOURCE, ROWID_HOME, ROWID_DISCONNECT, ROWID_DECODER,
     ROWID_ADDRESS, ROWID_PORT, ROWID_SAVED, ROWID_CONNECT, ROWID_BUTTONS,
-    ROWID_STATS
+    ROWID_STATS, ROWID_PAD_EDIT, ROWID_PAD_RESET, ROWID_PAD_COLOUR,
+    ROWID_PAD_OPACITY
 } RowId;
 
 typedef struct {
@@ -231,6 +242,34 @@ static void load_settings(void)
     if (g_audio_source < 0 || g_audio_source > 2) g_audio_source = 0;
 }
 
+static void save_layout(int console)
+{
+    char path[128];
+    snprintf(path, sizeof(path), LAYOUT_PATH_FMT, console);
+    mkdir("sdmc:/switch", 0777);
+    mkdir(CONFIG_DIR, 0777);
+    FILE *f = fopen(path, "w");
+    if (!f)
+        return;
+    char text[1024];
+    vpad_layout_to_string(text, sizeof(text));
+    fprintf(f, "%s\n", text);
+    fclose(f);
+}
+
+static void load_layout(int console)
+{
+    char path[128];
+    snprintf(path, sizeof(path), LAYOUT_PATH_FMT, console);
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return;
+    char text[1024] = "";
+    if (fgets(text, sizeof(text), f))
+        vpad_layout_from_string(text);
+    fclose(f);
+}
+
 static void save_server(void)
 {
     remember_server();
@@ -357,185 +396,14 @@ static const struct { u64 mask; int code; } BUTTONS[] = {
     { HidNpadButton_Right,  BS_BTN_RIGHT },
 };
 
-static void send_pad(u64 down, u64 up)
-{
-    for (size_t i = 0; i < sizeof(BUTTONS) / sizeof(BUTTONS[0]); i++) {
-        if (down & BUTTONS[i].mask) stream_send_button(BUTTONS[i].code, 1);
-        if (up   & BUTTONS[i].mask) stream_send_button(BUTTONS[i].code, 0);
-    }
-}
-
 /*
- * Below this a stick counts as centred. A Joy-Con does not return to
- * exactly zero, and forwarding that residue walks the character slowly
- * into a wall while nobody is touching anything -- the web client uses
- * the same 12%, and this had none at all.
- */
-#define STICK_DEADZONE 3900
-
-static int deadzoned(int v)
-{
-    return (v > -STICK_DEADZONE && v < STICK_DEADZONE) ? 0 : v;
-}
-
-static void send_sticks(const HidAnalogStickState *left,
-                        const HidAnalogStickState *right)
-{
-    static int lx, ly, rx, ry;
-    const int nlx = deadzoned(left->x),  nly = deadzoned(left->y);
-    const int nrx = deadzoned(right->x), nry = deadzoned(right->y);
-    /* Only on change: a stick at rest would otherwise fill the link with
-     * events saying nothing happened. */
-    if (nlx != lx) { lx = nlx; stream_send_axis(BS_AXIS_LEFT_X, lx); }
-    if (nly != ly) { ly = nly; stream_send_axis(BS_AXIS_LEFT_Y, ly); }
-    if (nrx != rx) { rx = nrx; stream_send_axis(BS_AXIS_RIGHT_X, rx); }
-    if (nry != ry) { ry = nry; stream_send_axis(BS_AXIS_RIGHT_Y, ry); }
-}
-
-/*
- * A finger on the picture becomes a stylus on the console.
+ * Between the on-screen pad's vocabulary and the protocol's.
  *
- * The coordinates sent are in the space the server announced, not the
- * console's native size: the stream is larger whenever the emulator
- * renders at a higher internal resolution, and dividing by the native
- * size instead would put every tap wrong by exactly that scale.
+ * vpad.c speaks in slots named after an Xbox controller, because that is
+ * what it was written against; this protocol speaks in Nintendo button
+ * codes. The two meet here and nowhere else, which is why the table is
+ * written out rather than the pad being rewritten.
  */
-/* ------------------------------------------------ on-screen buttons */
-
-static void fill(int x, int y, int w, int h, SDL_Color c);
-
-/*
- * A Switch has every button a DS or a 3DS has, so these are not there to
- * make the console playable: they are for the ones it has not got -- a
- * Wii U's HOME -- and for playing with the tablet held in two hands and
- * the Joy-Cons off.
- *
- * Which is what decides where they go. Held that way, the thumbs reach
- * the lower corners and nothing else, so the controls that get used sit
- * low and the triggers, which are pressed rarely, sit out of the way at
- * the top. They live in the black either side of the picture, which on a
- * 4:3 stream costs nothing at all.
- *
- * Each console gets what it actually has: no ZL on a DS, no stick on
- * either handheld that has not got one.
- */
-typedef struct {
-    SDL_Rect rect;
-    int      code;
-    const char *label;
-} PadButton;
-
-typedef struct {
-    int cx, cy, radius;
-    int axis_x, axis_y;
-    const char *label;
-    int touch;              /* a finger is on it */
-    int kx, ky;             /* where the knob is drawn */
-} PadStick;
-
-#define MAX_PAD_BUTTONS 20
-static PadButton g_pad_buttons[MAX_PAD_BUTTONS];
-static int       g_pad_button_count;
-static PadStick  g_pad_sticks[2];
-static int       g_pad_stick_count;
-/* Which buttons a finger is on, one bit each. */
-static uint32_t  g_pad_touched;
-/* What the Joy-Cons are holding, so the drawing can show it. */
-static u64       g_pad_held;
-
-static void add_pad_button(int cx, int y, int w, int h, int code, const char *label)
-{
-    if (g_pad_button_count >= MAX_PAD_BUTTONS)
-        return;
-    PadButton *b = &g_pad_buttons[g_pad_button_count++];
-    b->rect = (SDL_Rect){ cx - w / 2, y, w, h };
-    b->code = code;
-    b->label = label;
-}
-
-static void add_pad_stick(int cx, int cy, int r, int ax, int ay, const char *label)
-{
-    if (g_pad_stick_count >= 2)
-        return;
-    PadStick *st = &g_pad_sticks[g_pad_stick_count++];
-    st->cx = cx; st->cy = cy; st->radius = r;
-    st->axis_x = ax; st->axis_y = ay;
-    st->label = label;
-    st->touch = 0;
-    st->kx = cx; st->ky = cy;
-}
-
-static void layout_pad_buttons(const StreamInfo *info, const SDL_Rect *pic)
-{
-    g_pad_button_count = 0;
-    g_pad_stick_count = 0;
-    if (!g_show_buttons)
-        return;
-
-    const int lw = pic->x;                   /* left band  */
-    const int rx = pic->x + pic->w;
-    const int rw = SCREEN_W - rx;            /* right band */
-    if (lw < 110 || rw < 110)
-        return;                              /* no room: draw none */
-
-    const int lcx = lw / 2, rcx = rx + rw / 2;
-    const int band = (lw < rw ? lw : rw);
-    const int wide_w = band - 28, wide_h = 34;
-    const int u = 44, gap = 12;
-
-    const int wiiu = (info->console == BS_CONSOLE_WIIU);
-    const int n3ds = (info->console == BS_CONSOLE_3DS);
-    const int has_z     = wiiu || n3ds;
-    const int has_stick = wiiu || n3ds;
-
-    /* Built from the bottom, because that is where the thumbs are. */
-    int lb = SCREEN_H - 24 - wide_h;
-    int rb = lb;
-    add_pad_button(lcx, lb, wide_w, wide_h, BS_BTN_SELECT, "SELECT");
-    add_pad_button(rcx, rb, wide_w, wide_h, BS_BTN_START, "START");
-    if (wiiu) {
-        lb -= wide_h + gap;
-        add_pad_button(lcx, lb, wide_w, wide_h, BS_BTN_HOME, "HOME");
-    }
-
-    int lmid, rmid;
-    if (has_stick) {
-        const int r = (band - 40) / 2;
-        const int sy = lb - gap - r;
-        add_pad_stick(lcx, sy, r, BS_AXIS_LEFT_X, BS_AXIS_LEFT_Y,
-                      n3ds ? "\u25CB" : "L");
-        add_pad_stick(rcx, sy, r, BS_AXIS_RIGHT_X, BS_AXIS_RIGHT_Y,
-                      n3ds ? "C" : "R");
-        lmid = rmid = sy - r - gap - u * 3 / 2;
-    } else {
-        lmid = rmid = lb - gap - u * 3 / 2;
-    }
-
-    /* D-pad on the left, face buttons on the right. */
-    add_pad_button(lcx,         lmid - u,     u, u, BS_BTN_UP,    "\u25B2");
-    add_pad_button(lcx - u,     lmid,         u, u, BS_BTN_LEFT,  "\u25C0");
-    add_pad_button(lcx + u,     lmid,         u, u, BS_BTN_RIGHT, "\u25B6");
-    add_pad_button(lcx,         lmid + u,     u, u, BS_BTN_DOWN,  "\u25BC");
-
-    add_pad_button(rcx,         rmid - u,     u, u, BS_BTN_X, "X");
-    add_pad_button(rcx - u,     rmid,         u, u, BS_BTN_Y, "Y");
-    add_pad_button(rcx + u,     rmid,         u, u, BS_BTN_A, "A");
-    add_pad_button(rcx,         rmid + u,     u, u, BS_BTN_B, "B");
-
-    /* Triggers at the top, where they are out of the way of a thumb
-     * resting in the corner, with Z above its shoulder as on the
-     * machine. */
-    int ly = 40, ry = 40;
-    if (has_z) {
-        add_pad_button(lcx, ly, wide_w, wide_h, BS_BTN_ZL, "ZL"); ly += wide_h + gap;
-        add_pad_button(rcx, ry, wide_w, wide_h, BS_BTN_ZR, "ZR"); ry += wide_h + gap;
-    }
-    add_pad_button(lcx, ly, wide_w, wide_h, BS_BTN_L, "L");
-    add_pad_button(rcx, ry, wide_w, wide_h, BS_BTN_R, "R");
-}
-
-/* The Joy-Con mask that means the same thing as a button code, so a
- * press on the console lights the button on the screen. */
 static u64 mask_for_code(int code)
 {
     for (size_t i = 0; i < sizeof(BUTTONS) / sizeof(BUTTONS[0]); i++)
@@ -544,127 +412,104 @@ static u64 mask_for_code(int code)
     return 0;
 }
 
-static void draw_centred(const char *s, int cx, int cy, SDL_Color colour)
+static const struct { int slot; int code; } SLOT_TO_CODE[] = {
+    { PAD_Y,     BS_BTN_X },      /* top    */
+    { PAD_X,     BS_BTN_Y },      /* left   */
+    { PAD_B,     BS_BTN_A },      /* right  */
+    { PAD_A,     BS_BTN_B },      /* bottom */
+    { PAD_UP,    BS_BTN_UP },    { PAD_DOWN,  BS_BTN_DOWN },
+    { PAD_LEFT,  BS_BTN_LEFT },  { PAD_RIGHT, BS_BTN_RIGHT },
+    { PAD_LB,    BS_BTN_L },     { PAD_RB,    BS_BTN_R },
+    { PAD_LT,    BS_BTN_ZL },    { PAD_RT,    BS_BTN_ZR },
+    { PAD_BACK,  BS_BTN_SELECT },{ PAD_START, BS_BTN_START },
+    { PAD_GUIDE, BS_BTN_HOME },
+};
+
+/* The console's own controller, in those same slots, so the glass and
+ * the Joy-Cons can be merged before either is looked at. */
+static void pad_from_joycons(PadState21 out, u64 held,
+                             const HidAnalogStickState *l,
+                             const HidAnalogStickState *r)
 {
-    int tw = 0, th = 0;
-    TTF_SizeUTF8(g_small, s, &tw, &th);
-    draw_text(g_small, s, cx - tw / 2, cy - th / 2, colour);
+    memset(out, 0, sizeof(PadState21));
+    for (size_t i = 0; i < sizeof(SLOT_TO_CODE) / sizeof(SLOT_TO_CODE[0]); i++) {
+        const u64 mask = mask_for_code(SLOT_TO_CODE[i].code);
+        if (mask && (held & mask))
+            out[SLOT_TO_CODE[i].slot] = 100;
+    }
+    out[PAD_LX] = (int8_t)(l->x * 100 / 32767);
+    out[PAD_LY] = (int8_t)(l->y * 100 / 32767);
+    out[PAD_RX] = (int8_t)(r->x * 100 / 32767);
+    out[PAD_RY] = (int8_t)(r->y * 100 / 32767);
 }
 
-static void draw_pad_buttons(u64 held)
+/* Only what changed, so a held button is not re-sent sixty times a
+ * second and a resting stick says nothing at all. */
+static void send_pad_state(const PadState21 now)
 {
-    for (int i = 0; i < g_pad_button_count; i++) {
-        const PadButton *b = &g_pad_buttons[i];
-        const int on = (g_pad_touched & (1u << i)) ||
-                       (held & mask_for_code(b->code));
-        fill(b->rect.x, b->rect.y, b->rect.w, b->rect.h,
-             on ? COL_SELECTED : COL_ROW);
-        draw_centred(b->label, b->rect.x + b->rect.w / 2,
-                     b->rect.y + b->rect.h / 2, on ? COL_TEXT : COL_DIM);
+    static PadState21 before;
+    static int primed;
+
+    for (size_t i = 0; i < sizeof(SLOT_TO_CODE) / sizeof(SLOT_TO_CODE[0]); i++) {
+        const int slot = SLOT_TO_CODE[i].slot;
+        const int on = now[slot] != 0, was = primed && before[slot] != 0;
+        if (on != was)
+            stream_send_button(SLOT_TO_CODE[i].code, on);
     }
 
-    for (int i = 0; i < g_pad_stick_count; i++) {
-        const PadStick *st = &g_pad_sticks[i];
-        const int r = st->radius;
-        fill(st->cx - r, st->cy - r, r * 2, r * 2, COL_ROW);
-        const int kr = r / 2;
-        fill(st->kx - kr, st->ky - kr, kr * 2, kr * 2,
-             st->touch ? COL_SELECTED : COL_ROW);
-        draw_centred(st->label, st->cx, st->cy - r - 12, COL_DIM);
+    static const struct { int slot; int axis; int flip; } AXES[] = {
+        { PAD_LX, BS_AXIS_LEFT_X,  0 }, { PAD_LY, BS_AXIS_LEFT_Y,  0 },
+        { PAD_RX, BS_AXIS_RIGHT_X, 0 }, { PAD_RY, BS_AXIS_RIGHT_Y, 0 },
+    };
+    for (size_t i = 0; i < sizeof(AXES) / sizeof(AXES[0]); i++) {
+        const int slot = AXES[i].slot;
+        if (primed && now[slot] == before[slot])
+            continue;
+        int v = now[slot] * 32767 / 100;
+        if (v > 32767) v = 32767;
+        if (v < -32767) v = -32767;
+        stream_send_axis(AXES[i].axis, AXES[i].flip ? -v : v);
     }
+
+    memcpy(before, now, sizeof(PadState21));
+    primed = 1;
 }
 
+
+/*
+ * The stylus, and only the stylus.
+ *
+ * The coordinates sent are in the space the server announced, not the
+ * console's native size: the stream is larger whenever the emulator
+ * renders at a higher internal resolution, and dividing by the native
+ * size instead would put every tap wrong by exactly that scale.
+ *
+ * The on-screen pad reads the glass itself and binds each finger to
+ * whatever control it landed on, so a touch it has claimed must not also
+ * be a pen stroke. vpad_near_control answers that, and anything it does
+ * not want that falls inside the picture is the stylus.
+ */
 static void send_touch(const SDL_Rect *dst, const StreamInfo *info)
 {
     static int touching;
 
     HidTouchScreenState st = {0};
     const int have = hidGetTouchScreenStates(&st, 1) && st.count > 0;
-
-    const uint32_t was = g_pad_touched;
-    g_pad_touched = 0;
     int stylus = -1;
-
-    int stick_was[2];
-    for (int i = 0; i < g_pad_stick_count; i++) {
-        stick_was[i] = g_pad_sticks[i].touch;
-        g_pad_sticks[i].touch = 0;
-    }
 
     if (have) {
         for (int t = 0; t < (int)st.count; t++) {
             const int tx = (int)st.touches[t].x, ty = (int)st.touches[t].y;
-
-            int claimed = 0;
-            for (int i = 0; i < g_pad_button_count; i++) {
-                const SDL_Rect *r = &g_pad_buttons[i].rect;
-                if (tx >= r->x && tx < r->x + r->w &&
-                    ty >= r->y && ty < r->y + r->h) {
-                    g_pad_touched |= 1u << i;
-                    claimed = 1;
-                    break;
-                }
-            }
-            if (claimed)
+            if (vpad_enabled() &&
+                vpad_near_control((float)tx / SCREEN_W, (float)ty / SCREEN_H))
                 continue;
-
-            /* A stick keeps the finger that started on it even when it
-             * is dragged past the ring, which is how a thumb actually
-             * moves -- releasing at the edge would be a stick that lets
-             * go on its own. */
-            for (int i = 0; i < g_pad_stick_count; i++) {
-                PadStick *st = &g_pad_sticks[i];
-                const int dx = tx - st->cx, dy = ty - st->cy;
-                const int reach = st->touch ? st->radius * 2 : st->radius;
-                if (dx * dx + dy * dy > reach * reach)
-                    continue;
-                st->touch = 1;
-                float fx = (float)dx / st->radius;
-                float fy = (float)dy / st->radius;
-                const float m = sqrtf(fx * fx + fy * fy);
-                if (m > 1.0f) { fx /= m; fy /= m; }
-                st->kx = st->cx + (int)(fx * st->radius * 0.6f);
-                st->ky = st->cy + (int)(fy * st->radius * 0.6f);
-                stream_send_axis(st->axis_x, (int)(fx * 32767.0f));
-                /* Screen y grows downwards, sticks report up as
-                 * positive. */
-                stream_send_axis(st->axis_y, (int)(-fy * 32767.0f));
-                claimed = 1;
-                break;
-            }
-            if (claimed)
-                continue;
-
             if (tx >= dst->x && tx < dst->x + dst->w &&
                 ty >= dst->y && ty < dst->y + dst->h)
                 stylus = t;
         }
     }
 
-    /* A stick nobody is holding any more goes back to centre: one left
-     * off-centre keeps walking after the thumb has gone. */
-    for (int i = 0; i < g_pad_stick_count; i++) {
-        PadStick *st = &g_pad_sticks[i];
-        if (stick_was[i] && !st->touch) {
-            st->kx = st->cx; st->ky = st->cy;
-            stream_send_axis(st->axis_x, 0);
-            stream_send_axis(st->axis_y, 0);
-        }
-    }
-
-    /* Only the changes, so a held button is not re-sent sixty times a
-     * second. */
-    for (int i = 0; i < g_pad_button_count; i++) {
-        const uint32_t bit = 1u << i;
-        if ((g_pad_touched & bit) && !(was & bit))
-            stream_send_button(g_pad_buttons[i].code, 1);
-        else if (!(g_pad_touched & bit) && (was & bit))
-            stream_send_button(g_pad_buttons[i].code, 0);
-    }
-
     if (stylus < 0) {
-        /* Outside the picture: not a stylus press, and treating it as
-         * one would put the pen on the far edge of the screen. */
         if (touching) {
             touching = 0;
             stream_send_touch(BS_INPUT_TOUCH_UP, 0, 0);
@@ -735,6 +580,8 @@ static void try_connect(void)
         open_audio();
         StreamInfo info;
         stream_info(&info);
+
+        load_layout(info.console);
 
         /* The server starts on its own defaults, so anything remembered
          * has to be asked for again on every connection or it quietly
@@ -878,6 +725,26 @@ static void build_play_rows(const StreamInfo *info)
     r->kind = ROW_VALUE; r->id = ROWID_BUTTONS; r->label = "on-screen buttons";
     snprintf(r->value, sizeof(r->value), "%s", g_show_buttons ? "shown" : "hidden");
 
+    /* Only worth offering once there is a pad on screen to arrange. */
+    if (g_show_buttons) {
+        r = &g_rows[g_row_count++];
+        r->kind = ROW_VALUE; r->id = ROWID_PAD_EDIT; r->label = "move buttons";
+        snprintf(r->value, sizeof(r->value), "%s",
+                 vpad_editing() ? "dragging" : "no");
+
+        r = &g_rows[g_row_count++];
+        r->kind = ROW_VALUE; r->id = ROWID_PAD_COLOUR; r->label = "button colour";
+        snprintf(r->value, sizeof(r->value), "%s", vpad_colour_name());
+
+        r = &g_rows[g_row_count++];
+        r->kind = ROW_VALUE; r->id = ROWID_PAD_OPACITY; r->label = "button opacity";
+        snprintf(r->value, sizeof(r->value), "%d%%", vpad_opacity());
+
+        r = &g_rows[g_row_count++];
+        r->kind = ROW_ACTION; r->id = ROWID_PAD_RESET;
+        r->label = "reset button positions"; r->value[0] = '\0';
+    }
+
     r = &g_rows[g_row_count++];
     r->kind = ROW_VALUE; r->id = ROWID_STATS; r->label = "counters";
     snprintf(r->value, sizeof(r->value), "%s", g_show_stats ? "shown" : "hidden");
@@ -960,6 +827,15 @@ static void adjust_row(const StreamInfo *info, int delta)
     case ROWID_STATS:
         g_show_stats = !g_show_stats;
         break;
+    case ROWID_PAD_EDIT:
+        vpad_set_editing(!vpad_editing());
+        break;
+    case ROWID_PAD_COLOUR:
+        vpad_set_colour(vpad_colour() + delta);
+        break;
+    case ROWID_PAD_OPACITY:
+        vpad_set_opacity(vpad_opacity() + delta * 10);
+        break;
     case ROWID_VOLUME:
         g_volume += delta * 10;
         if (g_volume < 0) g_volume = 0;
@@ -1019,6 +895,24 @@ static void draw_play_menu(const StreamInfo *info)
               90, 180 + g_row_count * 66 + 24, COL_DIM);
 }
 
+/* What the two of them together are doing, for the pad to light up. */
+static PadState21 g_merged_pad;
+
+/* One bit per vpad anchor: what the machine on the other end has got. */
+static unsigned present_for(int console)
+{
+    unsigned m = (1u << VPAD_DPAD) | (1u << VPAD_FACE) |
+                 (1u << VPAD_LB)   | (1u << VPAD_RB) |
+                 (1u << VPAD_SELECT) | (1u << VPAD_START);
+    if (console == BS_CONSOLE_3DS || console == BS_CONSOLE_WIIU)
+        m |= (1u << VPAD_LT) | (1u << VPAD_RT) |
+             (1u << VPAD_LSTICK) | (1u << VPAD_RSTICK);
+    if (console == BS_CONSOLE_WIIU)
+        m |= 1u << VPAD_GUIDE;
+    /* No console here has a stick you can click. */
+    return m;
+}
+
 static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
 {
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
@@ -1042,10 +936,12 @@ static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
             SDL_Rect dst = fit(info->width, info->height);
             SDL_RenderCopy(g_renderer, g_picture, NULL, &dst);
             *dst_out = dst;
-            layout_pad_buttons(info, &dst);
-            draw_pad_buttons(g_pad_held);
+
         }
     }
+
+    if (g_show_buttons)
+        vpad_draw(g_renderer, g_merged_pad);
 
     /*
      * The counters, over everything else and in green.
@@ -1126,6 +1022,8 @@ int main(int argc, char **argv)
         g_small = TTF_OpenFontRW(
             SDL_RWFromMem(font_data.address, font_data.size), 1, 26);
     }
+    ui_bind(g_small, g_font);
+    vpad_init();
 
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;
@@ -1141,7 +1039,6 @@ int main(int argc, char **argv)
     while (appletMainLoop()) {
         padUpdate(&pad);
         const u64 down = padGetButtonsDown(&pad);
-        const u64 up   = padGetButtonsUp(&pad);
 
 
         if (!stream_connected()) {
@@ -1251,6 +1148,9 @@ int main(int argc, char **argv)
                     g_menu_open = 0;
                     snprintf(g_message, sizeof(g_message), "%s", "");
                     break;
+                case ROWID_PAD_RESET:
+                    vpad_reset_layout();
+                    break;
                 case ROWID_HOME:
                     /* Down and up together: there is nothing to hold. */
                     stream_send_button(BS_BTN_HOME, 1);
@@ -1264,11 +1164,35 @@ int main(int argc, char **argv)
             continue;
         }
 
-        g_pad_held = padGetButtons(&pad);
-        send_pad(down, up);
+        /*
+         * The console's controller and the glass are read into one
+         * state and merged before anything is sent, so a Joy-Con in one
+         * hand and a thumb on the screen are a valid way to play rather
+         * than two sources fighting.
+         */
+        vpad_set_enabled(g_show_buttons);
+        vpad_set_present(present_for(info.console));
+        {
+            /* vpad counts its own changes, so a dragged button is
+             * noticed rather than the saving being told about it. */
+            static unsigned seen_revision;
+            const unsigned now = vpad_layout_revision();
+            if (now != seen_revision) {
+                seen_revision = now;
+                save_layout(info.console);
+            }
+        }
+        vpad_set_accepting(!g_menu_open);
+        vpad_poll_touches();
+
+        PadState21 merged;
         HidAnalogStickState left = padGetStickPos(&pad, 0);
         HidAnalogStickState right = padGetStickPos(&pad, 1);
-        send_sticks(&left, &right);
+        pad_from_joycons(merged, padGetButtons(&pad), &left, &right);
+        vpad_merge(merged);
+        send_pad_state(merged);
+        memcpy(g_merged_pad, merged, sizeof(PadState21));
+
         send_touch(&picture_rect, &info);
 
         draw_playing(&info, &picture_rect);
