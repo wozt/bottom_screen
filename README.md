@@ -1,10 +1,12 @@
+<img src="assets/icon-512.png" width="96" align="left" alt="">
+
 # Bottom Screen
 
 Stream a Nintendo console's bottom screen out of an emulator and onto a
 phone, a browser, or a Switch — with touch and buttons travelling back
 the other way.
 
-![The web client streaming a DS bottom screen](docs/screenshots/web-ds.png)
+<br clear="left">
 
 Three consoles, three emulators, one protocol: **melonDS** for the DS,
 **Azahar** for the 3DS, **Cemu** for the Wii U. A client is not
@@ -24,123 +26,79 @@ own; this adds a bridge to one you already have.
   composited, so nothing depends on a window being visible.
 - **Touch and buttons back** — a tap on your phone is a stylus on the
   console. Your own pad on the host keeps working alongside it.
-- **Sound**, taken before the emulator's own volume: muting the PC does
-  not silence the phone.
-- **Any renderer** — software, OpenGL, OpenGL compute, Vulkan. It does
-  not matter which one the emulator was started with.
-- **Internal resolution followed live.** Turn the emulator up to 4× and
-  the stream grows with it, without dropping the clients watching.
+- **Sound**, taken where the emulator makes it rather than where it
+  plays it: muting the PC does not silence the phone, and a PC with no
+  output device configured still streams.
+- **Any renderer** — software, OpenGL, OpenGL compute, Vulkan.
+- **Internal resolution followed live**, up to 1440 tall. Turn the
+  emulator up and the stream grows with it, without dropping the
+  clients watching.
 - **Four clients at once**, off one encoder. A second viewer costs
   bandwidth, not a core.
 
 ---
 
-## The clients
+## The three clients
 
-### In a browser
+The same options in all three: size as a multiple of the console's own
+screen, bitrate, volume, on-screen buttons that can be moved and saved
+per console, and — on a Wii U — which of its two audio outputs to hear.
 
-Open the port the emulator is listening on. Nothing to install.
+**Nintendo DS on the web client.** Nothing to install: open the port the
+emulator is listening on.
 
-```
-http://192.168.1.20:5090/
-```
+![A DS in the browser](docs/screenshots/web-ds.png)
 
-![The stream menu open over the picture](docs/screenshots/web-menu.png)
+**Nintendo 3DS on Android.** Hardware decoding through MediaCodec,
+straight into a Surface.
 
-The same H.264 the phone gets, decoded by **WebCodecs** — in hardware
-where the machine has it, and with no transcoding anywhere. A browser
-without WebCodecs is told so rather than left with a blank canvas.
+<img src="docs/screenshots/android-3ds-landscape.png" width="620" alt="A 3DS on Android">
 
-The **servers** menu remembers the other emulators, since each serves
-its own page on its own port, and following one of its links carries the
-list along.
+**Wii U on the Switch.** Built with devkitA64 and libnx; the console's
+own video block decodes the stream, its touchscreen is the stylus, and
+the Joy-Cons are the buttons. Verified on real hardware. No screenshot:
+taking one on a console means a capture card, and the picture would tell
+you nothing the two above have not.
 
-### On Android
+<details>
+<summary>The rest of the interface</summary>
 
-<img src="docs/screenshots/android-settings.png" width="300" align="right" alt="The settings panel">
+<br>
 
-Hardware decoding through MediaCodec, straight into a Surface. Movable
-on-screen buttons, sticks where the console has them, sound with volume
-and mute, and a list of saved servers so an address is never typed
-twice. A physical pad works too — its presses are merged with the
-on-screen ones rather than replacing them.
+Menus follow [capture2cloud](https://github.com/wozt)'s design, so the
+three are learned once. The on-screen pad on the Switch is ported from
+its homebrew rather than written again — a round d-pad zone that gives
+diagonals, each control its own shape, and a finger bound to whatever it
+lands on until it lifts.
 
-Turn the phone and the buttons move to the sides, where the console
-keeps them, so the picture gets the full height instead of sharing it
-with a band underneath.
+<img src="docs/screenshots/web-menu.png" width="520" alt="The stream menu open over the picture">
+<img src="docs/screenshots/android-settings.png" width="240" alt="The Android settings panel">
 
-<br clear="both">
+A pad plugged into the host keeps working while somebody plays from a
+client: the presses are merged rather than swapped. A client's buttons
+reach the game whether or not the host has a controller configured.
 
-```sh
-cd android && ./gradlew assembleDebug
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-### Three consoles, one client
-
-The same build against each machine, upright and sideways on the phone
-and in a browser beside it. A Wii U brings four triggers, two sticks and
-a HOME button; a DS brings none of those.
-
-The test pattern rather than a game, so what is on display is the client
-and not somebody's cartridge.
-
-**Nintendo DS** — 256×192
-
-<img src="docs/screenshots/web-ds.png" width="430" align="left" alt="A DS in the browser">
-<img src="docs/screenshots/android-ds.png" width="150" alt="A DS on Android, upright">
-
-<br clear="both">
-
-![A DS on Android, sideways](docs/screenshots/android-ds-landscape.png)
-
-**Nintendo 3DS** — 320×240, with the circle pad and a C-stick
-
-<img src="docs/screenshots/web-3ds.png" width="430" align="left" alt="A 3DS in the browser">
-<img src="docs/screenshots/android-3ds.png" width="150" alt="A 3DS on Android, upright">
-
-<br clear="both">
-
-![A 3DS on Android, sideways](docs/screenshots/android-3ds-landscape.png)
-
-**Wii U** — 854×480, the only one of the three that is 16:9
-
-<img src="docs/screenshots/web-wiiu.png" width="430" align="left" alt="A Wii U in the browser">
-<img src="docs/screenshots/android-wiiu.png" width="150" alt="A Wii U on Android, upright">
-
-<br clear="both">
-
-![A Wii U on Android, sideways](docs/screenshots/android-wiiu-landscape.png)
-
-### On a Switch
-
-Built with devkitA64 and libnx. The console's own video block decodes the
-stream, its touchscreen is the stylus, and the Joy-Cons are the buttons.
-
-Verified on a real console: picture, sound, touch and the Joy-Cons, with
-on-screen buttons for what a Switch has not got. See
-[switch/README.md](switch/README.md).
-
-### On Linux
-
-Handy for checking a pipeline without a phone.
+There is a Linux client too, handy for checking a pipeline without a
+phone:
 
 ```sh
 ./bottom_screen_client --host 192.168.1.20 --port 5090
 ```
 
----
+</details>
 
-## The launcher
+<details>
+<summary>The launcher</summary>
+
+<br>
 
 <img src="docs/screenshots/launcher.png" width="420" align="right" alt="The GTK launcher">
 
 Three things have to be right before each launch — the stream, the port,
 the internal resolution — and each emulator keeps them somewhere
-different, two of them with a trap in it.
-
-So the launcher does that, and nothing else: loading a game or mapping a
-pad is still the emulator's job.
+different, two of them with a trap in it. So the launcher does that, and
+nothing else: loading a game or mapping a pad is still the emulator's
+job.
 
 It shows the port **actually bound**, which is not always the one asked
 for: a server whose port is taken moves to the next, which is what lets
@@ -152,13 +110,13 @@ make launcher/bs_launcher && ./launcher/bs_launcher
 
 `--set-resolution <emulator> <n>` does the same with no window.
 
-<br clear="both">
+<br clear="right">
+
+</details>
 
 ---
 
 ## Getting it running
-
-### 1. Build this
 
 ```sh
 sudo apt install libavcodec-dev libavutil-dev libswscale-dev \
@@ -166,12 +124,9 @@ sudo apt install libavcodec-dev libavutil-dev libswscale-dev \
 make
 ```
 
-### 2. Put the bridge in an emulator
-
-Two ways, and the difference matters.
-
-**Clone the fork.** The same change with a repository around it, already
-applied and known to build:
+Then put the bridge in an emulator — **clone the fork**, which is the
+same change with a repository around it, already applied and known to
+build:
 
 | Console | Fork, on the `bottom-screen` branch |
 |---|---|
@@ -179,61 +134,51 @@ applied and known to build:
 | Nintendo 3DS | [wozt/azahar](https://github.com/wozt/azahar/tree/bottom-screen) |
 | Wii U | [wozt/Cemu](https://github.com/wozt/Cemu/tree/bottom-screen) |
 
-The bridge is on `bottom-screen`, never on the default branch, so the
-branch has to be asked for:
+The bridge is never on the default branch, so the branch has to be asked
+for:
 
 ```sh
 git clone -b bottom-screen --recursive https://github.com/wozt/melonDS
 ```
 
-**Or apply the patch** to a checkout of your own:
+Put it beside this directory — `emulators/melonDS`, `emulators/azahar`,
+`emulators/Cemu` — and the emulator's build finds it and turns the
+bridge on by itself. Without it, the fork builds exactly like upstream.
+Then start an emulator: it announces where it is listening.
+
+<details>
+<summary>Or apply the patch, and why it will not last</summary>
+
+<br>
 
 ```sh
 git -C melonDS apply patches/melonDS.patch
 ```
 
-> **The patch will not last.** Each one names, in its header, the exact
-> upstream commit it was made against — and it hooks into specific
-> places in specific files. When an emulator moves on, a hunk that no
-> longer matches is refused, and `git apply` says so. That is the good
-> case. The worse one is a hunk that still applies to code which has
-> changed meaning around it.
->
-> So the patches are a snapshot, not a supported upgrade path. If an
-> emulator has moved and the patch will not go on, take the fork
-> instead, or rebase its `bottom-screen` branch onto the new upstream —
-> a branch is the thing that survives an upstream that keeps moving,
-> which is exactly why both exist.
->
-> The patches here are regenerated from the forks, never edited, and a
-> test fails if they fall behind. That keeps them honest about the forks
-> — it says nothing about upstream.
+Each patch names, in its header, the exact upstream commit it was made
+against, and it hooks into specific places in specific files. When an
+emulator moves on, a hunk that no longer matches is refused and `git
+apply` says so. That is the good case. The worse one is a hunk that
+still applies to code which has changed meaning around it.
 
-### 3. Put them side by side
+So the patches are a snapshot, not a supported upgrade path. If an
+emulator has moved and the patch will not go on, take the fork instead,
+or rebase its `bottom-screen` branch onto the new upstream — a branch is
+what survives an upstream that keeps moving, which is why both exist.
 
-```
-bottom_screen_server/
-├── bs_server.c, bs_encoder.c, …      the core, in C
-└── emulators/
-    ├── melonDS/
-    ├── azahar/
-    └── Cemu/
-```
+The patches here are regenerated from the forks, never edited, and a
+test fails if they fall behind. That keeps them honest about the forks;
+it says nothing about upstream.
 
-The emulator's build looks for this directory beside it and turns the
-bridge on by itself. Without it, the fork builds exactly like upstream.
-
-### 4. Start an emulator and open the port
-
-That is all. The emulator announces where it is listening.
+</details>
 
 ---
 
-## What works, and what does not
+## What is not finished
 
-Everything above is verified against real games rather than a test
-pattern: a commercial DS title, a commercial 3DS title, a commercial Wii U title. The
-screenshots use the pattern; the testing did not.
+Verified against real games rather than a test pattern: a commercial title 64
+DS, a commercial 3DS title, a commercial Wii U title. The screenshots use the built-in
+pattern; the testing did not.
 
 Still open:
 
@@ -244,14 +189,15 @@ Still open:
   encoder is told a frame rate measured once at startup and never
   revisited.
 - **The 3DS system titles**, which are not installed: the only route
-  Azahar supports needs a second console, and there is not one to hand.
+  Azahar supports needs a second console.
 
 [ROADMAP.md](ROADMAP.md) has the detail, including the mistakes worth
 remembering.
 
----
+<details>
+<summary>The protocol</summary>
 
-## The protocol
+<br>
 
 One header, [bs_protocol.h](bs_protocol.h), included by both ends. TCP,
 port 5090 by default, H.264 for the picture and Opus for the sound. The
@@ -259,15 +205,23 @@ browser gets the same bytes inside WebSocket frames, on the same port —
 a native client opens with `BSC1` and a browser with `GET `, and they
 cannot be confused.
 
-One thing that costs dearly when forgotten: touch coordinates are in
-**the space the server announced**, not the console's native size.
-Dividing by the latter puts every tap wrong by exactly the resolution
+Two things that cost dearly when forgotten. Touch coordinates are in
+**the space the server announced**, not the console's native size:
+dividing by the latter puts every tap wrong by exactly the resolution
 scale, and it looks like a calibration problem when it is arithmetic.
+And no client may ask for a keyframe — there is one encoder behind all
+of them, so a client that is struggling would bill its repairs to
+everyone else.
 
----
+</details>
 
-## Licences
+<details>
+<summary>Licences</summary>
+
+<br>
 
 melonDS is GPL-3.0, Azahar GPL-2.0, Cemu MPL-2.0. The patches and forks
 are published under those terms. Everything in this repository that is
 not one of those is my own.
+
+</details>
