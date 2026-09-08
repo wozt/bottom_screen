@@ -245,6 +245,10 @@ Still open:
   run.
 - **Input merging with a physical pad**, which is written into all three
   bridges but has never been tried with a hand actually on one.
+- **Two faults on Android** — an occasional black picture on connecting,
+  and a picture that sometimes drifts until it is repainted. Both seen
+  only on the Android emulator's software decoder, never in a browser on
+  the same stream; whether a real phone is affected is untested.
 
 [ROADMAP.md](ROADMAP.md) has the detail, including the mistakes worth
 remembering.

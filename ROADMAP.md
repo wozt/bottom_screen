@@ -9,6 +9,25 @@ before multiplying the clients that would have to speak them.
 
 ---
 
+## What only a person can do
+
+Everything here is blocked on hardware or on a pair of hands, not on
+code. It is listed together because it was scattered across four
+sections and easy to lose. Each line says where the detail is.
+
+| | Where |
+|---|---|
+| Run the homebrew on a real Switch — the picture, then touch, Joy-Cons, sound | [C1](#c1-switch-homebrew-nro--written-unverified) |
+| Check the two Android faults on a real phone, which has a hardware decoder | [C6](#c6-android-two-faults-left-open) |
+| Play with a physical pad plugged into the host, on each of the three emulators | [B5](#b5-host-controls) |
+| Try the other 3DS against the Artic Setup Tool crash | [A3bis](#a3bis-3ds-system-setup-crashes--parked) |
+| Hear the sound — there are no speakers behind a virtual display | [C2](#c2-web-app-in-js) |
+
+The first two are the ones that unblock other work; the rest confirm
+things that are written and read correct but have never been exercised.
+
+---
+
 ## A. Emulators
 
 ### A1. Azahar (3DS)
@@ -320,11 +339,37 @@ exactly so an overrun cannot hide in slack.
 
 ## C. Clients
 
-### C1. Switch homebrew (NRO)
-- [ ] Hardware decoding
-- [ ] Touch and on-screen buttons
-- [ ] Joy-Con for the ordinary buttons
-- [ ] Sound
+### C1. Switch homebrew (NRO) — written, unverified
+
+Every line below is written and builds. None of it past the menu has
+been seen working, so the boxes say so: **w** for written, **v** for
+verified on hardware.
+
+| | Written | Verified |
+|---|---|---|
+| Menu, rows, saved address | x | x (Citron) |
+| Connecting, receiving a stream | x | x (Citron) |
+| Hardware decoding (`h264_nvtegra`, software fallback) | x | |
+| Drawing the picture | x | |
+| Touch as the stylus | x | |
+| Joy-Con for the ordinary buttons | x | |
+| Sound (Opus, SDL audio) | x | |
+| Address entry with the system keyboard | x | x (Citron) |
+
+**The playing screen draws nothing under Citron.** A marker painted as
+the very first statement of that function never appears, so the loop is
+not reached and it is not the texture or the decoder failing quietly
+further down. Ruled out: the hardware decoder (forcing software changes
+nothing), opening the audio device, and the picture's format. What is
+left is between the connection returning and the loop body.
+
+Citron cannot narrow it further: it refuses the NRO about half the time
+and silently discards writes to the SD card, which is the only way to
+leave a trace on a console you do not have. **This needs real
+hardware**, and everything under it is waiting on the same thing.
+
+- [ ] Run it on a real Switch and find out where the loop stops
+- [ ] Then confirm, in order: picture, touch, Joy-Cons, sound
 
 Starting point: `switch_homebrew/` and `switch_stream.c` from
 capture2cloud.
@@ -423,6 +468,8 @@ There are no speakers behind a virtual display. Every link in the chain
 is confirmed — the packets decode, they are not silence, and the context
 is running — but the last inch is yours.
 
+- [ ] Hear it, on the web client and on the phone
+
 ### C3. Menu design
 - [x] capture2cloud's menu design in the web client
 - [x] The same in the Android client
@@ -478,7 +525,9 @@ so no screen offset is being guessed at.
       arranging them, like capture2cloud
 - [x] The face buttons (A/B/X/Y) stay grouped when moved — the diamond
       moves, not each button
-- [ ] The same on the js and nro clients, once they exist
+- [x] The same on the web client — shown or hidden, and split down both
+      sides in landscape so the picture keeps the full height
+- [ ] The same on the Switch client
 
 Three states rather than a checkbox, because the useful default is
 neither on nor off: somebody who plugs a controller in wants the buttons
@@ -512,7 +561,9 @@ Two things testing turned up:
 ### C5. Profiles
 - [x] Several profiles in the client menu (Android)
 - [x] Switch between them when several emulators are running at once
-- [ ] The same on the js and nro clients, once they exist
+- [x] The same on the web client — the saved list travels in the URL
+      fragment, so following a link carries it along
+- [ ] The same on the Switch client
 
 Known servers are listed above the address field, one tap each. Saving
 happens from the options **once connected**, because that is when the
@@ -533,6 +584,54 @@ Two gaps turned up in testing that made the list useless:
 Verified on the AVD: saving both servers, switching by list and by
 intent, forgetting a profile, and the old connection being released
 server-side.
+
+---
+
+### C6. Android: two faults left open
+
+Both turned up on 2026-09-08 while taking the README screenshots, and
+both were seen **only on the emulator's software decoder**
+(`c2.goldfish.h264.decoder`). The browser, on the same streams at the
+same sizes, shows neither. Whether a real phone with a hardware decoder
+is affected is unknown, and that is the first thing to settle.
+
+**A black picture on connecting, intermittently.** The play interface
+builds, the profile is right, the server counts the client and streams,
+and nothing is drawn. Two real causes were found and fixed:
+
+- `surfaceDestroyed` released whatever decoder was current, but rotation
+  creates the new surface before dropping the old one, so it could tear
+  down the decoder just built for the new surface. It now releases only
+  the decoder belonging to the surface actually going away.
+- `decoder`, `decoderHolder` and `surfaceReady` are written on the UI
+  thread and read on the network thread with no `@Volatile`. The reader
+  was entitled to keep its cached `null` and drop every frame, which is
+  why nothing was logged and why forcing a keyframe changed nothing.
+
+Six cold starts passed afterwards where the same case had failed twice
+out of two — but it came back later, so a third cause remains.
+
+- [ ] Does it happen on a real phone at all?
+- [ ] If it does: find the remaining cause
+
+**A drifted picture.** The test pattern's one moving vertical line
+leaves a trail of several, for seconds at a time. What it is not, each
+established rather than assumed: not the server (no queue ever
+overflowed, in any run), not missing keyframes (11 IDRs measured off the
+wire in five seconds, each carrying its SPS), and not the Wii U or the
+size of its picture (a DS at 60fps produced four lines while a Wii U
+rerun was clean).
+
+A decoded IDR ought to wipe a trail and this one does not, which is the
+part I cannot explain.
+
+One hole was closed on the way, which did **not** fix it: the decoder
+gave any frame 2ms to find an input buffer and silently dropped it
+otherwise, keyframes included — and dropping a keyframe costs every
+frame until the next rather than the difference it carried. Keyframes
+now get 30ms, and any drop asks the server for a fresh one.
+
+- [ ] Does it happen on a real phone at all?
 
 ---
 
