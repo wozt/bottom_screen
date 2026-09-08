@@ -1,4 +1,5 @@
 #include "bs_encoder.h"
+#include "bs_protocol.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -93,6 +94,21 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
      */
     int out_w = cfg->out_width  > 0 ? cfg->out_width  : cfg->width;
     int out_h = cfg->out_height > 0 ? cfg->out_height : cfg->height;
+
+    /*
+     * A ceiling nobody gets to argue with.
+     *
+     * Whether the number came from a client asking for a multiple of the
+     * console's screen or from the emulator's own internal resolution,
+     * past a point it is only cost: there is one encoder behind every
+     * client, so one of them asking for four times a GamePad -- 3416 by
+     * 1920 -- is paid for by all of them, and by the machine doing the
+     * encoding. The shape is kept; only the size is brought down.
+     */
+    if (out_h > BS_MAX_STREAM_HEIGHT) {
+        out_w = (int)((long long)out_w * BS_MAX_STREAM_HEIGHT / out_h);
+        out_h = BS_MAX_STREAM_HEIGHT;
+    }
     out_w &= ~1;
     out_h &= ~1;
     if (out_w < 16) out_w = 16;

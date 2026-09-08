@@ -860,9 +860,15 @@ static void adjust_row(const StreamInfo *info, int delta)
     case ROWID_SIZE: {
         /* The order is: half (Wii U only), native, 2x, 3x..., then
          * whatever is rendered. */
-        int steps[8], n = 0;
+        int steps[12], n = 0;
         if (nw >= 640) steps[n++] = -2;
-        for (int f = 1; nw * f <= info->width; f++) steps[n++] = f;
+        /* Nothing past the ceiling: the server brings anything taller
+         * back down, and an option that quietly means something else is
+         * worse than no option at all. */
+        for (int f = 1; nw * f <= info->width &&
+                        nh * f <= BS_MAX_STREAM_HEIGHT &&
+                        n < (int)(sizeof(steps) / sizeof(steps[0])) - 1; f++)
+            steps[n++] = f;
         steps[n++] = 0;
 
         int at = 0;

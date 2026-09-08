@@ -315,6 +315,21 @@ typedef enum {
     BS_BTN_HOME
 } BsButton;
 
+/*
+ * The tallest picture this will encode, whatever anyone asks for.
+ *
+ * A client asking for a multiple of the console's own screen can reach
+ * absurd numbers without meaning to: four times a Wii U GamePad is
+ * 3416x1920, wider than 4K for a screen that is 854x480, and the cost
+ * of encoding it lands on every client at once because there is one
+ * encoder. Three times the same screen is 2562x1440, which is a little
+ * more than 1440p and is where this stops.
+ *
+ * Enforced in the encoder rather than in the clients, so a client that
+ * asks anyway is reduced rather than believed.
+ */
+#define BS_MAX_STREAM_HEIGHT 1440
+
 typedef enum {
     BS_AXIS_LEFT_X = 1, BS_AXIS_LEFT_Y,   /* DS: none. 3DS: circle pad */
     BS_AXIS_RIGHT_X, BS_AXIS_RIGHT_Y      /* 3DS: C-stick. Wii U: right stick */

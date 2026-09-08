@@ -41,6 +41,17 @@ object BsProtocol {
     const val MSG_PONG = 18
     const val MSG_REQUEST_KEYFRAME = 19
     const val MSG_SET_QUALITY = 20
+    /**
+     * The tallest picture the server will encode, whatever is asked.
+     *
+     * Four times a Wii U GamePad is 3416x1920 -- wider than 4K for a
+     * screen that is 854x480 -- and one encoder serves every client, so
+     * one of them asking for it is paid for by all. Three times the same
+     * screen is 2562x1440, a little over 1440p, and that is the ceiling.
+     * Kept in step with BS_MAX_STREAM_HEIGHT in bs_protocol.h.
+     */
+    const val MAX_STREAM_HEIGHT = 1440
+
     const val MSG_SET_SIZE = 21
     const val MSG_SET_AUDIO_SOURCE = 22
 

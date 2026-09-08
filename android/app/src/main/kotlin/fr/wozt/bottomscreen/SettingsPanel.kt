@@ -269,8 +269,12 @@ class SettingsPanel(
         if (nw >= 640) {
             option("half of native  ${nw / 2}x${nh / 2}", -2)
         }
+        /* Nothing past the ceiling: the server would bring it back down
+         * anyway, and an option that quietly means something else is
+         * worse than no option. */
         var factor = 1
-        while (nw * factor <= settings.sourceWidth) {
+        while (nw * factor <= settings.sourceWidth &&
+               nh * factor <= BsProtocol.MAX_STREAM_HEIGHT) {
             option(if (factor == 1) "native  ${nw}x$nh"
                    else "${factor}x native  ${nw * factor}x${nh * factor}", factor)
             factor++
