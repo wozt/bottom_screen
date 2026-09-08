@@ -1129,7 +1129,7 @@ static void draw_play_menu(const StreamInfo *info)
     draw_rows(180);
 
     draw_text(g_small,
-              "\u2191\u2193  choose   \u2190\u2192  change   A  use   B  back",
+              "\u2191\u2193  choose   \u2190\u2192 or A  change   B  back",
               70, SCREEN_H - 44, COL_DIM);
 }
 
@@ -1398,6 +1398,19 @@ int main(int argc, char **argv)
                     stream_send_button(BS_BTN_HOME, 0);
                     break;
                 default:
+                    /*
+                     * A on anything else means the same as Right.
+                     *
+                     * The footer says the two are different -- arrows
+                     * change a value, A uses an action -- and that is
+                     * true of a list of sizes. It is not true of a
+                     * two-state option: "screen: bottom" looks like
+                     * something you press, and pressing it did nothing
+                     * at all, which reads as an option that was never
+                     * wired up. It was; it just refused the button
+                     * everybody tries first.
+                     */
+                    adjust_row(&info, 1);
                     break;
                 }
             }
