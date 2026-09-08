@@ -415,9 +415,10 @@ output disconnected instead. Rows carry an identity now, on both
 screens, because rows are added per console and their positions are not
 something to hard-code.
 
-- [ ] Run it on a real Switch and find out where the loop stops
-- [ ] Then confirm, in order: picture, touch, Joy-Cons, sound
-- [ ] And the parity above, none of which has ever run
+- [x] Run on a real Switch: picture, touch, Joy-Cons, sound, all of it
+- [x] The parity above, and the on-screen pad ported from capture2cloud
+- [ ] Judge the pad's layout in the hand. Arithmetic settles overlaps;
+      it does not settle whether a thumb can reach something
 
 Starting point: `switch_homebrew/` and `switch_stream.c` from
 capture2cloud.
@@ -530,7 +531,8 @@ picture that was sent.
 - [x] The same in the Android client
 - [x] Keep only what makes sense here: no dongle, no capture card, this
       project uses neither
-- [ ] The same in the Switch client
+- [x] The same in the Switch client — rows in the same palette, driven
+      with the pad, with an identity each rather than a position
 
 Eleven-pixel monospace on near-black, `#222` on `#444` with `#ddd` text,
 a bar that fades out of the way, and menus as a `summary` that reads
@@ -582,7 +584,9 @@ so no screen offset is being guessed at.
       moves, not each button
 - [x] The same on the web client — shown or hidden, and split down both
       sides in landscape so the picture keeps the full height
-- [ ] The same on the Switch client
+- [x] The same on the Switch client, ported from capture2cloud rather
+      than written again: a round d-pad zone that gives diagonals, each
+      control its own shape, a layout that can be dragged and saved
 
 Three states rather than a checkbox, because the useful default is
 neither on nor off: somebody who plugs a controller in wants the buttons
@@ -618,7 +622,8 @@ Two things testing turned up:
 - [x] Switch between them when several emulators are running at once
 - [x] The same on the web client — the saved list travels in the URL
       fragment, so following a link carries it along
-- [ ] The same on the Switch client
+- [x] The same on the Switch client — a saved list rather than the one
+      address it used to keep
 
 Known servers are listed above the address field, one tap each. Saving
 happens from the options **once connected**, because that is when the
