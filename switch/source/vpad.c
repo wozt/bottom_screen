@@ -349,16 +349,33 @@ static void stack_column(float cx, const int *order, int count, float top_pad)
 {
     /* Bottom edge upwards, one control at a time. */
     float y = VPAD_H - 0.6f * U * g_scale;
+    float pending = 0.0f;                     /* owed to the last control */
+
     for (int i = 0; i < count; i++) {
         const int a = order[i];
         if (a < 0)
             continue;
         const VpadStyle st = style_of(a);
         const float half = (st.shape == SHAPE_PILL) ? st.h / 2 : st.radius;
-        y -= half;
+
+        /*
+         * The face cluster asks for more room than the others.
+         *
+         * Its four buttons sit 1.30 units out with a radius of 0.72, so
+         * it reaches 2.02 units while declaring 2.0 -- and stacked on
+         * the same small gap as everything else it grazed the trigger
+         * above it and the stick below. The extra is claimed on both
+         * sides, which is why it is carried over to the next one rather
+         * than only subtracted here.
+         */
+        const float gap = 0.35f * U * g_scale;
+        const float extra = (st.shape == SHAPE_CLUSTER) ? 0.45f * U * g_scale : 0.0f;
+
+        y -= half + pending + extra;
         g_pos[a].x = cx / VPAD_W;
         g_pos[a].y = y / VPAD_H;
-        y -= half + 0.35f * U * g_scale;      /* a small gap, not a gulf */
+        y -= half + gap;
+        pending = extra;
     }
     (void)top_pad;
 }
