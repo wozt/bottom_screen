@@ -208,11 +208,13 @@ button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
     <details class="menu-group" id="group-stream"><summary>stream</summary>
       <div class="menu-items">
         <label title="How much of the picture to receive. An emulator at a raised internal resolution puts far more on the wire than a phone can show. Shared with everyone watching -- there is one encoder.">size
-          <select id="size">
-            <option value="1">full</option>
-            <option value="2">half</option>
-            <option value="4">quarter</option>
-          </select></label>
+          <select id="size"></select></label>
+        <div class="hint" id="remote-hint" hidden>This address is not on
+          your network, so the link is a tunnel or the internet: it will
+          not carry the emulator's full internal resolution. A multiple
+          of the console's own screen is the setting to reach for. The
+          size is shared with everyone watching, which is why it is not
+          lowered for you.</div>
         <label title="Applied between two frames, with a keyframe straight after. Shared, for the same reason as the size.">quality
           <select id="quality">
             <option value="0">automatic</option>
@@ -240,7 +242,13 @@ button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
 
     <details class="menu-group" id="group-buttons"><summary>buttons</summary>
       <div class="menu-items">
-        <label><input id="show-pad" type="checkbox" checked> on-screen buttons</label>
+        <label>on-screen buttons
+          <select id="pad-shown">
+            <option value="auto">automatic — hidden while a pad is connected</option>
+            <option value="always" selected>always shown</option>
+            <option value="never">never shown</option>
+          </select></label>
+        <label>size <input id="pad-size" type="range" min="60" max="160" value="100"><span id="pad-size-v">100%</span></label>
         <label>colour <select id="pad-colour"></select></label>
         <label><input id="arrange-pad" type="checkbox"> move them  (drag where your thumbs are)</label>
         <button id="reset-pad" type="button">reset their positions</button>
@@ -401,14 +409,84 @@ function sendInput(type, code, x, y) {
  * size each would mean an encoder each. The server answers with the
  * size it settled on, which is not always the one asked for.
  */
+/*
+ * Sizes as multiples of the console's own screen, which is how the
+ * other two clients put it.
+ *
+ * This used to divide whatever the emulator happened to be rendering --
+ * full, half, quarter -- and those mean nothing fixed: half of a 4x
+ * internal resolution is twice a 2x one. A multiple of the console's
+ * own screen means the same thing whatever the emulator is set to, and
+ * it is the number the other clients show.
+ *
+ * The ceiling is the server's own: nothing taller than 1440 is offered,
+ * because nothing taller would be encoded.
+ */
+const MAX_STREAM_HEIGHT = 1440;
 const sizeEl = document.getElementById("size");
+
+function nativeSize(id) {
+  return id === 3 ? [854, 480] : id === 2 ? [320, 240] : [256, 192];
+}
+
+/*
+ * Whether the address we dialled is on this network or through a tunnel.
+ *
+ * It matters because the two do not carry the same amount: a LAN will
+ * take the emulator's full internal resolution and a link over the
+ * internet will not, and the default here is "whatever is rendered",
+ * which on a raised internal resolution is a great deal. Tailscale hands
+ * out addresses in 100.64.0.0/10, the carrier-grade NAT range, and
+ * anything that is not a private address is not on this network either.
+ *
+ * The size is not changed on anyone's behalf, because it is shared: one
+ * client quietly lowering it would lower it for everybody watching. It
+ * is said instead, next to the control, and the choice stays where it
+ * belongs.
+ */
+function linkLooksRemote() {
+  const h = location.hostname;
+  const m = h.match(/^(\d+)\.(\d+)\.\d+\.\d+$/);
+  if (!m) return false;                       /* a name says nothing */
+  const a = +m[1], b = +m[2];
+  if (a === 127 || a === 10) return false;
+  if (a === 192 && b === 168) return false;
+  if (a === 172 && b >= 16 && b <= 31) return false;
+  if (a === 169 && b === 254) return false;
+  return true;                                /* 100.64/10 included */
+}
+
+function buildSizes(id) {
+  const [nw, nh] = nativeSize(id);
+  sizeEl.innerHTML = "";
+  const add = (label, value) => {
+    const o = document.createElement("option");
+    o.value = value; o.textContent = label;
+    sizeEl.appendChild(o);
+  };
+  /* Below native only where there is enough to lose: a fraction of a DS
+   * screen is smaller than a decoder will take. */
+  if (nw >= 640) add(`half of native  ${nw / 2}x${nh / 2}`, -2);
+  for (let f = 1; nw * f <= (fullW || nw) && nh * f <= MAX_STREAM_HEIGHT; f++)
+    add(f === 1 ? `native  ${nw}x${nh}` : `${f}x native  ${nw * f}x${nh * f}`, f);
+  add(`whatever is rendered  ${fullW || nw}x${fullH || nh}`, 0);
+  sizeEl.value = "0";
+
+  const warn = document.getElementById("remote-hint");
+  warn.hidden = !linkLooksRemote();
+}
+
 sizeEl.addEventListener("change", () => {
-  const divisor = parseInt(sizeEl.value, 10);
+  const factor = parseInt(sizeEl.value, 10);
+  const [nw, nh] = nativeSize(console_id);
   const b = new Uint8Array(4);
   const v = new DataView(b.buffer);
-  if (divisor > 1 && fullW > 0) {
-    v.setUint16(0, Math.max(16, Math.round(fullW / divisor)), true);
-    v.setUint16(2, Math.max(16, Math.round(fullH / divisor)), true);
+  if (factor === -2) {
+    v.setUint16(0, nw / 2, true);
+    v.setUint16(2, nh / 2, true);
+  } else if (factor > 0) {
+    v.setUint16(0, nw * factor, true);
+    v.setUint16(2, nh * factor, true);
   }
   /* Zero means "follow the source", which is how a client stops
    * asking rather than guessing at the original numbers. */
@@ -945,7 +1023,7 @@ function buildPad(id) {
   placeGroups(padLeftEl, "l", leftGroups.filter(hasContent),
               hasContent(home) ? home : null);
   placeGroups(padRightEl, "r", rightGroups.filter(hasContent), null);
-  setPadShown(showPadEl.checked);
+  applyPadVisibility();
   /* The stage only knows its height once the pad has taken its own, so
    * the picture is sized after the layout has settled. */
   requestAnimationFrame(fit);
@@ -958,6 +1036,7 @@ const GAMEPAD_MAP = [BTN.B, BTN.A, BTN.Y, BTN.X, BTN.L, BTN.R, BTN.ZL, BTN.ZR,
                      BTN.UP, BTN.DOWN, BTN.LEFT, BTN.RIGHT];
 let padState = [];
 let axisState = [0, 0, 0, 0];
+let padPresent = false;
 
 /* Below this a stick is at rest. Analogue sticks do not return exactly
  * to centre, and forwarding that would walk the character slowly into a
@@ -1007,6 +1086,13 @@ function pollGamepad() {
       else if (!st.dragging)
         st.knob.style.transform = "";
     }
+  }
+  /* A pad plugged in or unplugged changes what should be on screen,
+   * and the browser only tells us by the list changing. */
+  {
+    const now = !!(navigator.getGamepads &&
+                   [...navigator.getGamepads()].some((g) => g));
+    if (now !== padPresent) { padPresent = now; applyPadVisibility(); }
   }
   requestAnimationFrame(pollGamepad);
 }
@@ -1158,12 +1244,49 @@ document.getElementById("reset-pad").addEventListener("click", () => {
   if (console_id) buildPad(console_id);
 });
 
-const showPadEl = document.getElementById("show-pad");
+/*
+ * Three states, as the Android client has: the useful default is
+ * neither on nor off. Somebody who plugs a controller in wants the
+ * buttons out of the way without being asked, and somebody who unplugs
+ * it wants them back.
+ */
+const padShownEl = document.getElementById("pad-shown");
+function padWanted() {
+  if (padShownEl.value === "never") return false;
+  if (padShownEl.value === "always") return true;
+  return !(navigator.getGamepads && [...navigator.getGamepads()].some((g) => g));
+}
 function setPadShown(shown) {
   for (const el of [padLeftEl, padRightEl])
-    el.style.display = shown && console_id ? "flex" : "none";
+    el.style.display = shown && console_id ? "block" : "none";
 }
-showPadEl.addEventListener("change", () => setPadShown(showPadEl.checked));
+function applyPadVisibility() { setPadShown(padWanted()); }
+padShownEl.addEventListener("change", () => {
+  try { localStorage.setItem("bs_pad_shown", padShownEl.value); } catch (e) {}
+  applyPadVisibility();
+});
+try {
+  const v = localStorage.getItem("bs_pad_shown");
+  if (v) padShownEl.value = v;
+} catch (e) {}
+
+/* The buttons' size, since a thumb and a mouse do not want the same
+ * one. The whole pad scales together, as it does on the other two. */
+const padSizeEl = document.getElementById("pad-size");
+function applyPadSize() {
+  const pct = parseInt(padSizeEl.value, 10) || 100;
+  document.getElementById("pad-size-v").textContent = pct + "%";
+  document.body.style.setProperty(
+    "--btn", `clamp(${Math.round(24 * pct / 100)}px, ${(6.2 * pct / 100).toFixed(2)}vh, ${Math.round(64 * pct / 100)}px)`);
+  try { localStorage.setItem("bs_pad_size", String(pct)); } catch (e) {}
+  if (console_id) buildPad(console_id);
+}
+padSizeEl.addEventListener("change", applyPadSize);
+try {
+  const v = parseInt(localStorage.getItem("bs_pad_size"), 10);
+  if (v >= 60 && v <= 160) padSizeEl.value = v;
+} catch (e) {}
+applyPadSize();
 
 document.getElementById("fullscreen-toggle").addEventListener("click", () => {
   if (document.fullscreenElement) document.exitFullscreen();
@@ -1363,6 +1486,7 @@ function connect() {
       buildPad(console_id);
       showAudioSource(console_id);
       showStickRows(console_id);
+      buildSizes(console_id);
       /* The server starts on its own default, so a choice already made
        * has to be re-sent on every connection. */
       if (console_id === 3 && audioSourceEl.value !== "0")
@@ -1396,7 +1520,10 @@ function connect() {
     } else if (type === MSG.STREAM_INFO) {
       const v = new DataView(payload.buffer, payload.byteOffset, payload.byteLength);
       resize(v.getUint16(4, true), v.getUint16(6, true));
-      if (sizeEl.value === "1") { fullW = width; fullH = height; }
+      /* What the emulator renders, which is the ceiling for the
+       * multiples offered. Only believed while nothing has been asked
+       * for, since after that the number is our own doing. */
+      if (sizeEl.value === "0") { fullW = width; fullH = height; }
       /* The size changed under the decoder, so its reference picture is
        * worthless whatever it was -- and so is its level, which is why
        * the next keyframe reconfigures rather than this line. */
