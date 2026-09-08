@@ -96,7 +96,7 @@ static const SDL_Color COL_ROW      = { 38,  40,  48, 170};
 
 /* Rows, because a console is driven with a pad: up and down to choose,
  * A to act. A pointer would be the wrong shape entirely. */
-typedef enum { ROW_ACTION, ROW_VALUE, ROW_INFO } RowKind;
+typedef enum { ROW_ACTION, ROW_VALUE, ROW_INFO, ROW_HEADING } RowKind;
 
 /*
  * What a row is, rather than where it sits.
@@ -122,6 +122,7 @@ typedef struct {
 } MenuRow;
 
 /* The row the cursor is on, by identity. */
+
 static RowId selected_id(void);
 
 /*
@@ -146,6 +147,37 @@ static MenuRow *add_row(void)
     if (g_row_count >= (int)(sizeof(g_rows) / sizeof(g_rows[0])))
         return &g_row_overflow;
     return &g_rows[g_row_count++];
+}
+
+/*
+ * Up and down move between things that can be chosen. A heading is a
+ * label, not a row: landing on one and having left and right do nothing
+ * reads as the menu having stopped responding.
+ */
+static void move_selection(int delta)
+{
+    if (g_row_count <= 0)
+        return;
+    int at = g_selected;
+    for (int guard = 0; guard < g_row_count; guard++) {
+        at = (at + delta + g_row_count) % g_row_count;
+        if (g_rows[at].kind != ROW_HEADING) {
+            g_selected = at;
+            return;
+        }
+    }
+}
+
+/* The first thing that can be chosen, for when a menu is rebuilt and
+ * the cursor was sitting on a heading or past the end. */
+static void settle_selection(void)
+{
+    if (g_selected >= g_row_count)
+        g_selected = g_row_count - 1;
+    if (g_selected < 0)
+        g_selected = 0;
+    if (g_row_count > 0 && g_rows[g_selected].kind == ROW_HEADING)
+        move_selection(1);
 }
 
 
@@ -666,28 +698,91 @@ static void fill(int x, int y, int w, int h, SDL_Color c)
  * One row: a translucent band, brighter when it is the one selected,
  * with its label on the left and whatever it is set to on the right.
  */
-static void draw_row(int index, int y)
+/*
+ * The menu, on one page.
+ *
+ * It was one column of 66-pixel rows, and it grew past the bottom of the
+ * screen -- fifteen of them is 990 pixels on a panel that is 720, so the
+ * last third simply was not there and nothing scrolled to reach it.
+ *
+ * Two columns and shorter rows instead of a scrollbar: everything at
+ * once is worth more here than anywhere, because this is read with a
+ * thumb on a d-pad rather than a mouse on a wheel. Grouped under
+ * headings, the same groups the browser page uses, so the two are
+ * learned once.
+ */
+#define ROW_H      40
+#define HEADING_H  32
+#define MENU_TOP  156
+#define COL_GAP    24
+
+static int row_height(const MenuRow *r)
+{
+    return r->kind == ROW_HEADING ? HEADING_H : ROW_H;
+}
+
+/* Where each row ends up, worked out once and used by both the drawing
+ * and nothing else -- the navigation moves by index, not by position. */
+static void layout_rows(int *col_of, int *y_of)
+{
+    int total = 0;
+    for (int i = 0; i < g_row_count; i++)
+        total += row_height(&g_rows[i]) + 4;
+
+    /* Split so a heading is never left at the foot of a column with its
+     * rows in the next one. */
+    const int target = total / 2;
+    int split = g_row_count, run = 0;
+    for (int i = 0; i < g_row_count; i++) {
+        run += row_height(&g_rows[i]) + 4;
+        if (run >= target && g_rows[i].kind != ROW_HEADING) {
+            split = i + 1;
+            while (split < g_row_count && g_rows[split].kind == ROW_HEADING)
+                break;
+            break;
+        }
+    }
+
+    int y0 = MENU_TOP, y1 = MENU_TOP;
+    for (int i = 0; i < g_row_count; i++) {
+        const int col = (i < split) ? 0 : 1;
+        col_of[i] = col;
+        if (col == 0) { y_of[i] = y0; y0 += row_height(&g_rows[i]) + 4; }
+        else          { y_of[i] = y1; y1 += row_height(&g_rows[i]) + 4; }
+    }
+}
+
+static void draw_row(int index, int col, int y)
 {
     const MenuRow *row = &g_rows[index];
     const int selected = (index == g_selected);
-    const int x = 90, w = SCREEN_W - 180, h = 56;
+    const int w = (SCREEN_W - 2 * 70 - COL_GAP) / 2;
+    const int x = 70 + col * (w + COL_GAP);
 
-    fill(x, y, w, h, selected ? COL_SELECTED : COL_ROW);
-    draw_text(g_small, row->label, x + 24, y + 14,
+    if (row->kind == ROW_HEADING) {
+        draw_text(g_small, row->label, x + 6, y + 8, COL_ACCENT);
+        return;
+    }
+
+    fill(x, y, w, ROW_H, selected ? COL_SELECTED : COL_ROW);
+    draw_text(g_small, row->label, x + 16, y + 8,
               row->kind == ROW_INFO ? COL_DIM : COL_TEXT);
 
     if (row->value[0]) {
         int tw = 0, th = 0;
         TTF_SizeUTF8(g_small, row->value, &tw, &th);
-        draw_text(g_small, row->value, x + w - 24 - tw, y + 14,
+        draw_text(g_small, row->value, x + w - 16 - tw, y + 8,
                   selected ? COL_TEXT : COL_DIM);
     }
 }
 
 static void draw_rows(int top)
 {
+    (void)top;
+    int col_of[24], y_of[24];
+    layout_rows(col_of, y_of);
     for (int i = 0; i < g_row_count; i++)
-        draw_row(i, top + i * 66);
+        draw_row(i, col_of[i], y_of[i]);
 }
 
 /* The console's own screen, which every offered size is a multiple of. */
@@ -704,6 +799,9 @@ static void build_connect_rows(void)
 {
     g_row_count = 0;
     MenuRow *r;
+
+    r = add_row();
+    r->kind = ROW_HEADING; r->label = "server"; r->value[0] = '\0';
 
     r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_ADDRESS; r->label = "address";
@@ -727,8 +825,7 @@ static void build_connect_rows(void)
     r->kind = ROW_ACTION; r->id = ROWID_CONNECT;
     r->label = "connect"; r->value[0] = '\0';
 
-    if (g_selected >= g_row_count)
-        g_selected = g_row_count - 1;
+    settle_selection();
 }
 
 /*
@@ -763,6 +860,9 @@ static void build_play_rows(const StreamInfo *info)
     MenuRow *r;
 
     r = add_row();
+    r->kind = ROW_HEADING; r->label = "stream"; r->value[0] = '\0';
+
+    r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_SIZE; r->label = "size received";
     size_label(info, r->value, sizeof(r->value));
 
@@ -773,7 +873,10 @@ static void build_play_rows(const StreamInfo *info)
     snprintf(r->value, sizeof(r->value), "%s", QUALITY[g_quality].label);
 
     r = add_row();
-    r->kind = ROW_VALUE; r->id = ROWID_BUTTONS; r->label = "on-screen buttons";
+    r->kind = ROW_HEADING; r->label = "on-screen buttons"; r->value[0] = '\0';
+
+    r = add_row();
+    r->kind = ROW_VALUE; r->id = ROWID_BUTTONS; r->label = "shown";
     snprintf(r->value, sizeof(r->value), "%s", g_show_buttons ? "shown" : "hidden");
 
     /* Only worth offering once there is a pad on screen to arrange. */
@@ -810,8 +913,7 @@ static void build_play_rows(const StreamInfo *info)
     }
 
     r = add_row();
-    r->kind = ROW_VALUE; r->id = ROWID_STATS; r->label = "counters";
-    snprintf(r->value, sizeof(r->value), "%s", g_show_stats ? "shown" : "hidden");
+    r->kind = ROW_HEADING; r->label = "sound"; r->value[0] = '\0';
 
     r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_VOLUME; r->label = "volume";
@@ -835,6 +937,13 @@ static void build_play_rows(const StreamInfo *info)
     }
 
     r = add_row();
+    r->kind = ROW_HEADING; r->label = "session"; r->value[0] = '\0';
+
+    r = add_row();
+    r->kind = ROW_VALUE; r->id = ROWID_STATS; r->label = "counters";
+    snprintf(r->value, sizeof(r->value), "%s", g_show_stats ? "shown" : "hidden");
+
+    r = add_row();
     r->kind = ROW_ACTION; r->id = ROWID_DISCONNECT;
     r->label = "disconnect"; r->value[0] = '\0';
 
@@ -842,8 +951,7 @@ static void build_play_rows(const StreamInfo *info)
     r->kind = ROW_INFO; r->id = ROWID_DECODER; r->label = "decoder";
     snprintf(r->value, sizeof(r->value), "%s", stream_decoder_name());
 
-    if (g_selected >= g_row_count)
-        g_selected = g_row_count - 1;
+    settle_selection();
 }
 
 /*
@@ -938,8 +1046,8 @@ static void draw_menu(void)
     draw_text(g_font, "Bottom Screen", 90, 60, COL_TEXT);
     draw_rows(150);
 
-    draw_text(g_small, "\u2191\u2193  choose   \u2190\u2192  change   A  use   +  quit",
-              90, 150 + g_row_count * 66 + 24, COL_DIM);
+    draw_text(g_small, "\u2191\u2193  choose   \u2190\u2192  change   A  use",
+              70, SCREEN_H - 44, COL_DIM);
     if (g_message[0])
         draw_text(g_small, g_message, 90, 150 + g_row_count * 66 + 70,
                   COL_BAD);
@@ -967,8 +1075,8 @@ static void draw_play_menu(const StreamInfo *info)
     draw_rows(180);
 
     draw_text(g_small,
-              "\u2191\u2193  choose      \u2190\u2192  change      A  use      B  back",
-              90, 180 + g_row_count * 66 + 24, COL_DIM);
+              "\u2191\u2193  choose   \u2190\u2192  change   A  use   B  back",
+              70, SCREEN_H - 44, COL_DIM);
 }
 
 /* What the two of them together are doing, for the pad to light up. */
@@ -1127,10 +1235,8 @@ int main(int argc, char **argv)
         if (!stream_connected()) {
             build_connect_rows();
 
-            if (down & HidNpadButton_Down)
-                g_selected = (g_selected + 1) % g_row_count;
-            if (down & HidNpadButton_Up)
-                g_selected = (g_selected + g_row_count - 1) % g_row_count;
+            if (down & HidNpadButton_Down) move_selection(1);
+            if (down & HidNpadButton_Up)   move_selection(-1);
 
             /* Left and right walk the saved list, and choosing one fills
              * the address and port above rather than making you retype
@@ -1218,10 +1324,8 @@ int main(int argc, char **argv)
 
         if (g_menu_open) {
             if (down & HidNpadButton_B) g_menu_open = 0;
-            if (down & HidNpadButton_Down)
-                g_selected = (g_selected + 1) % g_row_count;
-            if (down & HidNpadButton_Up)
-                g_selected = (g_selected + g_row_count - 1) % g_row_count;
+            if (down & HidNpadButton_Down) move_selection(1);
+            if (down & HidNpadButton_Up)   move_selection(-1);
             if (down & (HidNpadButton_Left | HidNpadButton_Right))
                 adjust_row(&info, (down & HidNpadButton_Right) ? 1 : -1);
             if (down & HidNpadButton_A) {
