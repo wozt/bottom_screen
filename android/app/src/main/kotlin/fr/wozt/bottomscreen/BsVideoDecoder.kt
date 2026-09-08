@@ -81,7 +81,16 @@ class BsVideoDecoder(
              * backlog. Dropping the frame lets the stream catch up on
              * its own, and the next keyframe repairs the picture.
              */
-            val inIndex = c.dequeueInputBuffer(2000)
+            /*
+             * A keyframe is worth waiting for. Dropping a P-frame costs
+             * the difference it carried; dropping a keyframe costs every
+             * frame after it, because nothing repaints what drifted
+             * until the next one a whole second later. That is what the
+             * stray vertical lines in a screenshot are -- the moving
+             * line of the test pattern leaving a trail where an update
+             * never landed.
+             */
+            val inIndex = c.dequeueInputBuffer(if (isKeyframe) 30000 else 2000)
             if (inIndex >= 0) {
                 val buf: ByteBuffer? = c.getInputBuffer(inIndex)
                 if (buf != null) {

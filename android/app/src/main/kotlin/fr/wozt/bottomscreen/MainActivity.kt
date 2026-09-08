@@ -67,6 +67,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private var volume = 1f
     private var muted = false
     @Volatile private var surfaceReady = false
+    /* When a keyframe was last asked for to repair a dropped frame. */
+    private var lastRepairAsk = 0L
     private var profile = ConsoleProfile.DS
     private var panel: View? = null
     private var settingsGear: TextView? = null
@@ -519,7 +521,22 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
          * nothing for the UI thread to do, and a hop through its queue
          * would only add the wait for whatever it is already doing. */
         val d = decoder ?: return
+        val droppedBefore = d.starved
         if (!d.decode(data, offset, length, keyframe)) return
+        /*
+         * A dropped frame leaves the picture wrong until something
+         * repaints it, and the next scheduled keyframe can be most of a
+         * second away. Ask for one instead of waiting -- rate-limited,
+         * because a decoder that is behind drops frames in bursts and
+         * one request per burst is enough.
+         */
+        if (d.starved != droppedBefore) {
+            val now = System.currentTimeMillis()
+            if (now - lastRepairAsk > 500) {
+                lastRepairAsk = now
+                client?.requestKeyframe()
+            }
+        }
 
         frames++
         val now = System.currentTimeMillis()
