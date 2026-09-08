@@ -42,6 +42,11 @@ typedef struct {
     /* last input seen, drawn into the frame */
     int touch_x, touch_y, touching;
     uint32_t buttons;         /* bitmask over BsButton, 1 = held */
+
+    /* Drawn differently, and without a crosshair. Two identical patterns
+     * would prove the second stream exists without proving it is the
+     * second screen -- and the top screen has no touch to draw. */
+    int is_top;
 } TestPattern;
 
 static void put_px(TestPattern *tp, int x, int y, uint32_t bgra)
@@ -66,7 +71,11 @@ static void draw(TestPattern *tp)
      * immediately instead of hiding in flat colour. */
     for (int y = 0; y < h; y++) {
         uint32_t b = (uint32_t)(40 + 60 * y / h);
-        uint32_t row = (0xFFu << 24) | (b << 16) | (b << 8) | (b + 20);
+        /* Blue-grey below, warm above, so which screen you are looking
+         * at is obvious in a photograph. */
+        uint32_t row = tp->is_top
+            ? (0xFFu << 24) | ((b / 2) << 16) | (b << 8) | (b + 70)
+            : (0xFFu << 24) | (b << 16) | (b << 8) | (b + 20);
         for (int x = 0; x < w; x++) {
             uint32_t g = row + (uint32_t)((90 * x / w) << 8);
             memcpy(tp->pixels + (size_t)y * tp->stride + (size_t)x * 4, &g, 4);
@@ -89,8 +98,10 @@ static void draw(TestPattern *tp)
         fill_rect(tp, 34 + i * 6, 6, 5, 8, bit ? 0xFFFFFFFFu : 0xFF303030u);
     }
 
-    /* Last touch from the client. */
-    if (tp->touching) {
+    /* Last touch from the client. Never on the top screen: there is no
+     * touch panel there, and the server drops what a client sends
+     * anyway. A crosshair drawn here would say the opposite. */
+    if (tp->touching && !tp->is_top) {
         for (int d = -8; d <= 8; d++) {
             put_px(tp, tp->touch_x + d, tp->touch_y, 0xFF0000FFu);
             put_px(tp, tp->touch_x, tp->touch_y + d, 0xFF0000FFu);
@@ -218,13 +229,43 @@ static void tp_destroy(void *self)
     free(tp);
 }
 
+static BsSource *testpattern_new(BsConsole console, int fps, int is_top);
+
 BsSource *bs_testpattern_create(BsConsole console, int fps)
+{
+    return testpattern_new(console, fps, 0);
+}
+
+/*
+ * The other screen, so two streams at once can be exercised without an
+ * emulator -- the same argument that made the bottom one exist.
+ *
+ * Silent, because sound belongs to the machine rather than to a picture:
+ * the server takes it from the bottom source whatever anybody is
+ * watching, and a second source claiming audio would have it encoded
+ * twice.
+ */
+BsSource *bs_testpattern_create_top(BsConsole console, int fps)
+{
+    return testpattern_new(console, fps, 1);
+}
+
+static BsSource *testpattern_new(BsConsole console, int fps, int is_top)
 {
     int w, h;
     switch (console) {
-    case BS_CONSOLE_DS:   w = BS_DS_WIDTH;   h = BS_DS_HEIGHT;   break;
-    case BS_CONSOLE_3DS:  w = BS_3DS_WIDTH;  h = BS_3DS_HEIGHT;  break;
-    case BS_CONSOLE_WIIU: w = BS_WIIU_WIDTH; h = BS_WIIU_HEIGHT; break;
+    case BS_CONSOLE_DS:
+        w = is_top ? BS_DS_TOP_WIDTH  : BS_DS_WIDTH;
+        h = is_top ? BS_DS_TOP_HEIGHT : BS_DS_HEIGHT;
+        break;
+    case BS_CONSOLE_3DS:
+        w = is_top ? BS_3DS_TOP_WIDTH  : BS_3DS_WIDTH;
+        h = is_top ? BS_3DS_TOP_HEIGHT : BS_3DS_HEIGHT;
+        break;
+    case BS_CONSOLE_WIIU:
+        w = is_top ? BS_WIIU_TOP_WIDTH  : BS_WIIU_WIDTH;
+        h = is_top ? BS_WIIU_TOP_HEIGHT : BS_WIIU_HEIGHT;
+        break;
     default: return NULL;
     }
     if (fps <= 0)
@@ -242,8 +283,9 @@ BsSource *bs_testpattern_create(BsConsole console, int fps)
     tp->info.fps     = fps;
     tp->info.pixfmt  = BS_PIXFMT_BGRA;
     tp->info.console = console;
-    tp->info.audio_rate = TP_AUDIO_RATE;
-    tp->info.audio_channels = TP_AUDIO_CHANNELS;
+    tp->is_top       = is_top;
+    tp->info.audio_rate = is_top ? 0 : TP_AUDIO_RATE;
+    tp->info.audio_channels = is_top ? 0 : TP_AUDIO_CHANNELS;
     tp->stride       = w * 4;
     tp->pixels       = calloc(1, (size_t)tp->stride * h);
     if (!tp->pixels) {

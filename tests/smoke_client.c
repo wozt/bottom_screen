@@ -32,6 +32,7 @@ int main(int argc, char **argv)
     const char *host = "127.0.0.1";
     uint16_t port = BS_DEFAULT_PORT;
     int want_frames = 120;
+    int want_screen = BS_SCREEN_BOTTOM;
     const char *dump_path = NULL;
     int ask_w = 0, ask_h = 0;
     int tap_x = 500, tap_y = 500;   /* thousandths of the announced size */
@@ -56,6 +57,12 @@ int main(int argc, char **argv)
             i++;
         }
         else if (!strcmp(argv[i], "--hold")) { hold = 1; }
+        else if (!strcmp(argv[i], "--screen") && next) {
+            if (!strcmp(next, "top"))         want_screen = BS_SCREEN_TOP;
+            else if (!strcmp(next, "bottom")) want_screen = BS_SCREEN_BOTTOM;
+            else return fail("--screen wants top or bottom");
+            i++;
+        }
         else if (!strcmp(argv[i], "--tap") && next) {
             if (sscanf(next, "%d,%d", &tap_x, &tap_y) != 2)
                 return fail("--tap wants X,Y as fractions in thousandths");
@@ -117,11 +124,26 @@ int main(int argc, char **argv)
      */
     const double want = (double)exp_w / exp_h;
     const double got  = (double)ack.width / ack.height;
-    if (got < want * 0.98 || got > want * 1.02)
+    if (want_screen == BS_SCREEN_BOTTOM && (got < want * 0.98 || got > want * 1.02))
         return fail("announced aspect ratio is not the console's");
 
     printf("handshake ok: console=%u %ux%u @%u fps\n",
            ack.console, ack.width, ack.height, ack.fps);
+
+    /*
+     * A client always arrives on the bottom screen, so this is a second
+     * step rather than part of the handshake. What comes back is the
+     * other picture at its own size, announced through STREAM_INFO like
+     * any other change of shape -- there is no separate acknowledgement,
+     * because a new size arriving is the acknowledgement.
+     */
+    if (want_screen != BS_SCREEN_BOTTOM) {
+        BsScreenChoice ch;
+        memset(&ch, 0, sizeof(ch));
+        ch.screen = (uint8_t)want_screen;
+        if (bs_send_msg(conn, BS_MSG_SET_SCREEN, &ch, sizeof(ch), NULL, 0) < 0)
+            return fail("could not ask for the other screen");
+    }
 
     BsDecoder *dec = bs_decoder_create(err, sizeof(err));
     if (!dec) return fail(err);
@@ -143,6 +165,7 @@ int main(int argc, char **argv)
     const int announced_w = ack.width, announced_h = ack.height;
     int asked = 0;
     int resizes = 0;
+    int screens_seen = -1;   /* the mask the server sent, -1 = it said nothing */
 
     int audio_packets = 0;
     size_t audio_bytes = 0;
@@ -157,6 +180,16 @@ int main(int argc, char **argv)
         size_t n = 0;
         if (bs_recv_msg(conn, &type, buf, BS_MAX_PAYLOAD, &n) != 0)
             return fail("stream ended early");
+        if (type == BS_MSG_SCREENS && n >= sizeof(BsScreens)) {
+            /* Which screens this backend has. A client built before this
+             * message existed skips it by its length and never offers
+             * the choice, which is the right outcome for it. */
+            BsScreens sc;
+            memcpy(&sc, buf, sizeof(sc));
+            screens_seen = sc.available;
+            printf("ecrans disponibles: masque %d\n", screens_seen);
+            continue;
+        }
         if (type == BS_MSG_STREAM_INFO && n >= sizeof(BsStreamInfo)) {
             /* The picture changed shape mid-stream, which is what the
              * server sends instead of hanging up when someone moves the
@@ -307,6 +340,10 @@ int main(int argc, char **argv)
             return fail("the picture did not get smaller");
     }
 
+    if (want_screen != BS_SCREEN_BOTTOM)
+        printf("ecran demande %d, recu %dx%d\n", want_screen, cur_w, cur_h);
+    if (screens_seen >= 0 && !(screens_seen & (1 << BS_SCREEN_TOP)))
+        printf("le serveur n'offre pas d'ecran du haut\n");
     printf("luma: min %d, max %d, mean %.1f\n",
            y_min, y_max, y_count ? (double)y_sum / (double)y_count : 0.0);
     if (y_min == y_max)

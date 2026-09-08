@@ -72,6 +72,7 @@ test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_fli
 	./tests/run_smoke.sh
 	./tests/run_multiclient.sh
 	./tests/run_receive_size.sh
+	./tests/run_top_screen.sh
 	./tests/input_merge
 	./tests/resize_flip
 	./tests/run_patches_fresh.sh

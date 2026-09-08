@@ -49,6 +49,30 @@ void bs_server_stop(BsServer *srv);
 /* Stops if still running, then frees. */
 void bs_server_destroy(BsServer *srv);
 
+/*
+ * Offers the machine's other screen -- the top one on a DS or a 3DS, the
+ * television picture on a Wii U.
+ *
+ * Optional, and separate from bs_server_create because it is: a backend
+ * that only has the bottom screen to give simply never calls this, and
+ * its clients are told there is no choice to make rather than being
+ * offered one that does nothing.
+ *
+ * The server does not own this source any more than it owns the other
+ * one. Pass NULL to withdraw it; anyone watching it is moved back.
+ */
+void bs_server_set_top_source(BsServer *srv, BsSource *top);
+
+/*
+ * Whether anybody is watching the given BsScreen right now.
+ *
+ * For the backends, which is where the real cost of a second screen
+ * lands: reading a texture back out of the GPU every frame is not free,
+ * and doing it for a picture nobody has asked for would make this
+ * feature cost something even when it is switched off.
+ */
+int bs_server_wants_screen(const BsServer *srv, int screen);
+
 /* The port the server actually bound, which may not be the one asked
  * for. 0 before it starts. */
 uint16_t bs_server_port(const BsServer *srv);

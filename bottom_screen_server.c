@@ -39,6 +39,7 @@ static void usage(void)
 "  --fps N                 frames per second (default 60)\n"
 "  --bitrate N             bits/s; 0 derives one from the resolution\n"
 "  --encoder NAME          libx264 (default), h264_vaapi, h264_nvenc\n"
+"  --no-top                do not offer the machine's other screen\n"
 "  --help\n"
 "\n"
 "This binary serves a synthetic test pattern. The emulator backends use\n"
@@ -51,6 +52,10 @@ int main(int argc, char **argv)
     BsServerConfig cfg;
     memset(&cfg, 0, sizeof(cfg));
     int fps = 60;
+    /* On by default: a second screen nobody watches costs a sleeping
+     * thread, and having it there is what makes the client's toggle
+     * something to try rather than something to read about. */
+    int offer_top = 1;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -61,6 +66,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--fps") && next)     { fps = atoi(next); i++; }
         else if (!strcmp(a, "--bitrate") && next) { cfg.bitrate = atoi(next); i++; }
         else if (!strcmp(a, "--encoder") && next) { cfg.encoder = next; i++; }
+        else if (!strcmp(a, "--no-top"))          { offer_top = 0; }
         else { fprintf(stderr, "unknown argument: %s\n", a); usage(); return 1; }
     }
     if (!console) { fprintf(stderr, "unknown console\n"); return 1; }
@@ -81,6 +87,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    BsSource *top = NULL;
+    if (offer_top) {
+        top = bs_testpattern_create_top(console, fps);
+        if (top)
+            bs_server_set_top_source(srv, top);
+        else
+            fprintf(stderr, "no top screen: cannot create its test pattern\n");
+    }
+
     /* The server runs on its own thread; this one only waits for a
      * signal. Polling rather than pausing keeps the shutdown path the
      * same one the emulator backend uses. */
@@ -91,6 +106,10 @@ int main(int argc, char **argv)
 
     printf("\nstopping\n");
     bs_server_destroy(srv);
+    if (top) {
+        top->destroy(top->self);
+        free(top);
+    }
     source->destroy(source->self);
     free(source);
     return 0;

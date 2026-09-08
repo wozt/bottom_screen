@@ -84,4 +84,10 @@ struct BsSource {
  * size, for building and measuring the pipeline without an emulator. */
 BsSource *bs_testpattern_create(BsConsole console, int fps);
 
+/* The same, for the machine's other screen: the top one on a DS or 3DS,
+ * the television picture on a Wii U. Drawn in a different colour and
+ * without a touch crosshair, and silent -- the sound comes from the
+ * bottom source whichever screen is being watched. */
+BsSource *bs_testpattern_create_top(BsConsole console, int fps);
+
 #endif /* BOTTOM_SCREEN_SOURCE_H */

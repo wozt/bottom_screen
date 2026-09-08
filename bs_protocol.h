@@ -50,6 +50,27 @@ typedef enum {
 #define BS_WIIU_WIDTH   854
 #define BS_WIIU_HEIGHT  480
 
+/*
+ * And the other screen, for BS_SCREEN_TOP.
+ *
+ * The DS's two are the same size. The 3DS's top is the 400x240 that gets
+ * quoted for the whole machine and is wrong for the touch screen. A Wii
+ * U's television output is 16:9 at 1280x720, which is nearly three times
+ * the pixels of the GamePad picture -- worth knowing before turning it
+ * on over a phone connection.
+ *
+ * Advisory. Every one of these emulators renders at whatever internal
+ * resolution the person chose, and the server takes the real size from
+ * the source; these are what a client draws before the first frame
+ * arrives.
+ */
+#define BS_DS_TOP_WIDTH     256
+#define BS_DS_TOP_HEIGHT    192
+#define BS_3DS_TOP_WIDTH    400
+#define BS_3DS_TOP_HEIGHT   240
+#define BS_WIIU_TOP_WIDTH   1280
+#define BS_WIIU_TOP_HEIGHT  720
+
 typedef enum {
     BS_CODEC_H264 = 1   /* both clients decode this in hardware */
 } BsCodec;
@@ -159,8 +180,64 @@ typedef enum {
      * one encoder, so there is one answer. The last client to ask wins.
      * Meaningless anywhere but a Wii U, and ignored there.
      */
-    BS_MSG_SET_AUDIO_SOURCE = 22
+    BS_MSG_SET_AUDIO_SOURCE = 22,
+
+    /*
+     * Which of the machine's two screens to send.
+     *
+     * Against the whole point of this project, and useful anyway. What
+     * is worth watching on a Wii U is usually the television picture,
+     * not the GamePad's, and somebody who wants the main screen on a
+     * phone should not have to run something else to get it.
+     *
+     * Per client, not shared. This is the one setting that could not be
+     * shared: two people watching two different screens is the entire
+     * feature, and it is why a second screen costs a second encoder
+     * where a second size or bitrate would not. The encoder for a screen
+     * exists only while somebody is watching it, so the cost is paid by
+     * whoever asked and by nobody else.
+     *
+     * There is no touch on the top screen, because there is no touch on
+     * the top screen. Buttons and sticks work exactly as before: input
+     * belongs to the machine, not to the picture you happen to be
+     * looking at.
+     */
+    BS_MSG_SET_SCREEN = 23,
+
+    /*
+     * Server -> client, once, just after the handshake: which screens
+     * this backend can actually produce.
+     *
+     * Sent as its own message rather than added to BsHelloAck, whose
+     * layout is followed immediately by the extradata -- a client built
+     * before this exists would read the SPS/PPS from the wrong offset
+     * and show nothing, which is a poor way to announce a new feature. A
+     * message type it does not recognise is skipped by its length, so
+     * older clients simply never learn about the top screen, and that is
+     * the correct outcome for them.
+     */
+    BS_MSG_SCREENS = 24
 } BsMsgType;
+
+/* Which picture. The bottom screen is 0 so that everything written
+ * before this existed keeps meaning what it meant. */
+typedef enum {
+    BS_SCREEN_BOTTOM = 0,
+    BS_SCREEN_TOP    = 1
+} BsScreen;
+
+#define BS_SCREEN_COUNT 2
+
+typedef struct __attribute__((packed)) {
+    uint8_t screen;      /* BsScreen */
+    uint8_t reserved[3];
+} BsScreenChoice;
+
+/* A bit per BsScreen: 1 << BS_SCREEN_TOP is set when there is one. */
+typedef struct __attribute__((packed)) {
+    uint8_t available;
+    uint8_t reserved[3];
+} BsScreens;
 
 /* What BS_MSG_SET_AUDIO_SOURCE selects. */
 typedef enum {

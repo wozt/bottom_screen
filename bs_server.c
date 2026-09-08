@@ -80,12 +80,63 @@ typedef struct {
     uint32_t  frames_sent;
     uint32_t  audio_seq;
     uint32_t  buttons;     /* what this client is holding down */
+
+    /*
+     * Which screen this one is watching. Per client, unlike the size and
+     * the bitrate: two people looking at two different screens is the
+     * whole point of the setting, and it is why this one is allowed its
+     * own encoder where those two are not.
+     */
+    volatile int screen;   /* BsScreen */
 } BsClient;
 
+/*
+ * One screen being sent: its pictures, its encoder, its thread.
+ *
+ * Everything here used to live directly in BsServer, back when there was
+ * only ever one picture to send. A second screen needs a second encoder
+ * -- two different pictures cannot come out of one -- so what was shared
+ * between clients is now shared between the clients watching the same
+ * screen.
+ *
+ * The size and the bitrate stay shared within a stream, for the reason
+ * they always were: one encoder, one answer, last asker wins. The screen
+ * is the one setting that escapes that, because sharing it would mean
+ * there was nothing to choose.
+ */
+typedef struct BsStream {
+    BsServer    *srv;
+    int          which;        /* BsScreen */
+    BsSource    *source;       /* NULL when this screen is not on offer */
+    BsSourceInfo info;
+    BsEncoder   *enc;          /* built on demand; see stream_idle */
+
+    pthread_t    tid;
+    int          started;
+
+    volatile int pending_bitrate;
+    volatile int quality_dirty;
+    volatile int bitrate_now;
+    volatile int want_w, want_h;
+    volatile int size_dirty;
+
+    int          out_w, out_h;
+    int          told_w, told_h;
+
+    uint32_t     frame_id;
+    uint64_t     bytes;
+} BsStream;
+
 struct BsServer {
+    /*
+     * The source input and sound come from, which is the bottom screen's
+     * -- video[BS_SCREEN_BOTTOM].source, kept here as well because
+     * neither of those belongs to a picture. A client watching the top
+     * screen still presses buttons, and there is one set of speakers
+     * whatever you are looking at.
+     */
     BsSource      *source;
-    BsSourceInfo   info;
-    BsEncoder     *enc;
+    BsStream       video[BS_SCREEN_COUNT];
     BsAudioEncoder *aenc;      /* NULL when the source is silent */
     BsServerConfig cfg;
 
@@ -94,60 +145,16 @@ struct BsServer {
 
     pthread_t accept_thread;
     int       accept_started;
-    pthread_t pump_thread;
-    int       pump_started;
     pthread_t audio_tid;
     int       audio_started;
 
     volatile int stop;
     volatile uint32_t frames;
 
-    /*
-     * A quality change arrives on a client's thread but is applied by
-     * the video loop, between two frames. Swapping the encoder from
-     * under a bs_encoder_encode already in progress would be a
-     * use-after-free with a very confusing crash.
-     *
-     * With several clients the encoder is shared, so the setting is too:
-     * the last person to move it wins. Giving each client its own
-     * bitrate would mean an encoder each, which is the cost this whole
-     * design exists to avoid.
-     */
-    volatile int pending_bitrate;
-    volatile int quality_dirty;
-    /*
-     * What the encoder is actually on, as opposed to what it was started
-     * with. Every rebuild has to use this: two of them used cfg.bitrate,
-     * so asking for a different size -- or merely turning the emulator's
-     * internal resolution up, which rebuilds on its own -- threw away
-     * whatever quality the client had chosen, without saying so.
-     */
-    volatile int bitrate_now;
-
-    /*
-     * The size a client asked to receive, 0 meaning "whatever the source
-     * produces". Shared like the bitrate, and for the same reason: there
-     * is one encoder, so a size each would mean an encoder each.
-     */
-    volatile int want_w, want_h;
-    volatile int size_dirty;
     /* Which of a Wii U's two audio outputs to send. Shared between
-     * clients because there is one encoder; see BS_MSG_SET_AUDIO_SOURCE. */
+     * clients because there is one sound, whatever is on screen; see
+     * BS_MSG_SET_AUDIO_SOURCE. */
     volatile int audio_source;
-
-    /* What is actually encoded, which is not the source's size once
-     * somebody has asked for less. */
-    int out_w, out_h;
-
-    /*
-     * What the clients were last told. Kept apart from out_w because
-     * the two can drift: a quality change and a size change arriving in
-     * the same frame are one rebuild, the first branch applies both, and
-     * the second then sees no difference and announces nothing. The
-     * clients were left drawing and aiming at a size that no longer
-     * existed.
-     */
-    int told_w, told_h;
 
     BsClient *clients;
     int       max_clients;
@@ -355,6 +362,71 @@ static void client_release_all(BsClient *cl)
 
 /* ------------------------------------------------------------ handshake */
 
+/*
+ * Tells a client which screens this backend can actually produce, so it
+ * can offer the choice or not offer it.
+ *
+ * A client that does not know this message skips it by its length and
+ * carries on, which is exactly right: it never learns there is a top
+ * screen, and it never had one before either.
+ */
+static void client_send_screens(BsClient *cl)
+{
+    BsScreens sc;
+    memset(&sc, 0, sizeof(sc));
+    for (int i = 0; i < BS_SCREEN_COUNT; i++)
+        if (cl->srv->video[i].source)
+            sc.available |= (uint8_t)(1u << i);
+    client_send(cl, BS_MSG_SCREENS, 0, &sc, sizeof(sc), NULL, 0);
+}
+
+/*
+ * Moves one client to the other screen.
+ *
+ * Nothing is sent to it until the new stream's next keyframe: what it
+ * has been decoding is a different picture of a different size, and a P
+ * frame from the new one applied to the old reference is garbage. The
+ * stream it is joining may not even be running yet, so the pump is
+ * woken to build an encoder; the one it left may now have nobody on it,
+ * and that same wake-up is what lets that loop notice and stop.
+ */
+static void client_set_screen(BsClient *cl, int screen)
+{
+    BsServer *srv = cl->srv;
+    if (screen < 0 || screen >= BS_SCREEN_COUNT || screen == cl->screen)
+        return;
+    if (!srv->video[screen].source)
+        return;   /* asked for a screen this backend does not have */
+
+    cl->screen = screen;
+    cl->want_key = 1;
+
+    /*
+     * Throw away what is queued for the screen it just left -- those are
+     * pictures of somewhere else, and sending them costs the bandwidth
+     * this switch was probably made to save.
+     *
+     * Under cl->lock, which client_purge requires and which is not
+     * ceremony here. The sending thread takes a packet off the head
+     * under that lock and releases it before writing to the socket, so a
+     * purge without it can free the packet the socket is reading from.
+     * That is not theoretical: it took thirty seconds of clients
+     * switching screens to catch it.
+     */
+    pthread_mutex_lock(&cl->lock);
+    client_purge(cl);
+    pthread_mutex_unlock(&cl->lock);
+
+    pthread_mutex_lock(&srv->roster);
+    pthread_cond_broadcast(&srv->roster_cond);
+    pthread_mutex_unlock(&srv->roster);
+
+    if (!srv->cfg.quiet)
+        fprintf(stderr, "bottom_screen: client %s moved to the %s screen\n",
+                bs_conn_peer(cl->conn),
+                screen == BS_SCREEN_TOP ? "top" : "bottom");
+}
+
 static int client_handshake(BsClient *cl)
 {
     BsServer *srv = cl->srv;
@@ -377,25 +449,32 @@ static int client_handshake(BsClient *cl)
         }
     }
 
+    /*
+     * A client always arrives on the bottom screen, so this is the one
+     * that answers for it. Switching afterwards needs no new parameter
+     * sets: the encoder repeats SPS/PPS in front of every keyframe, and
+     * a client that has just changed screens is waiting for one anyway.
+     */
+    BsStream *st = &srv->video[BS_SCREEN_BOTTOM];
     size_t extra_size = 0;
-    const uint8_t *extra = bs_encoder_extradata(srv->enc, &extra_size);
+    const uint8_t *extra = bs_encoder_extradata(st->enc, &extra_size);
 
     BsHelloAck ack;
     memset(&ack, 0, sizeof(ack));
     ack.magic    = BS_MAGIC;
     ack.version  = BS_VERSION;
     ack.accepted = 1;
-    ack.console  = (uint8_t)srv->info.console;
+    ack.console  = (uint8_t)st->info.console;
     ack.codec    = BS_CODEC_H264;
     /* What is on the wire, which is what a client has to draw and to
      * aim its touches in -- not what the emulator happens to render. */
-    ack.width    = (uint16_t)srv->out_w;
-    ack.height   = (uint16_t)srv->out_h;
-    ack.fps      = (uint16_t)srv->info.fps;
+    ack.width    = (uint16_t)st->out_w;
+    ack.height   = (uint16_t)st->out_h;
+    ack.fps      = (uint16_t)st->info.fps;
     ack.extradata_size = (uint16_t)extra_size;
     if (srv->aenc) {
         ack.audio_codec    = BS_ACODEC_OPUS;
-        ack.audio_channels = (uint8_t)srv->info.audio_channels;
+        ack.audio_channels = (uint8_t)st->info.audio_channels;
         ack.audio_rate     = (uint16_t)48000;   /* what Opus actually carries */
     }
 
@@ -447,6 +526,15 @@ static void *client_recv_thread(void *arg)
     cl->want_key = 1;
     cl->ready = 1;
 
+    /*
+     * After ready, not inside the handshake. Everything on the normal
+     * path goes out through the sending thread, and client_send drops
+     * whatever is handed to it before the client is ready -- so an
+     * announcement made a few lines earlier was thrown away in silence,
+     * and every client believed there was no top screen.
+     */
+    client_send_screens(cl);
+
     /* Someone is watching, so the pump has work to do. */
     pthread_mutex_lock(&srv->roster);
     pthread_cond_broadcast(&srv->roster_cond);
@@ -482,13 +570,25 @@ static void *client_recv_thread(void *arg)
                  * the backends would put every tap wrong by exactly the
                  * scale, in three different files.
                  */
-                if (srv->source->touch) {
+                /*
+                 * Dropped outright from a client watching the top
+                 * screen. There is no touch panel up there, and a tap
+                 * arriving in that picture's coordinates would be scaled
+                 * by the bottom screen's numbers and land somewhere
+                 * arbitrary -- a stray press in the game rather than a
+                 * missing one, which is the worse of the two. The
+                 * clients do not draw a touch area in that mode either;
+                 * this is the half of it that does not depend on every
+                 * client being well behaved.
+                 */
+                if (srv->source->touch && cl->screen == BS_SCREEN_BOTTOM) {
+                    BsStream *bot = &srv->video[BS_SCREEN_BOTTOM];
                     int tx = ev.x, ty = ev.y;
-                    if (srv->out_w > 0 && srv->out_h > 0 &&
-                        (srv->out_w != srv->info.width ||
-                         srv->out_h != srv->info.height)) {
-                        tx = ev.x * srv->info.width / srv->out_w;
-                        ty = ev.y * srv->info.height / srv->out_h;
+                    if (bot->out_w > 0 && bot->out_h > 0 &&
+                        (bot->out_w != bot->info.width ||
+                         bot->out_h != bot->info.height)) {
+                        tx = ev.x * bot->info.width / bot->out_w;
+                        ty = ev.y * bot->info.height / bot->out_h;
                     }
                     srv->source->touch(srv->source->self, ev.type, tx, ty);
                 }
@@ -528,9 +628,14 @@ static void *client_recv_thread(void *arg)
         } else if (type == BS_MSG_SET_SIZE && n >= sizeof(BsSize)) {
             BsSize sz;
             memcpy(&sz, buf, sizeof(sz));
-            srv->want_w = sz.width;
-            srv->want_h = sz.height;
-            srv->size_dirty = 1;
+            BsStream *st = &srv->video[cl->screen];
+            st->want_w = sz.width;
+            st->want_h = sz.height;
+            st->size_dirty = 1;
+        } else if (type == BS_MSG_SET_SCREEN && n >= sizeof(BsScreenChoice)) {
+            BsScreenChoice sc;
+            memcpy(&sc, buf, sizeof(sc));
+            client_set_screen(cl, sc.screen);
         } else if (type == BS_MSG_SET_AUDIO_SOURCE && n >= sizeof(BsAudioChoice)) {
             BsAudioChoice ac;
             memcpy(&ac, buf, sizeof(ac));
@@ -539,8 +644,9 @@ static void *client_recv_thread(void *arg)
         } else if (type == BS_MSG_SET_QUALITY && n >= sizeof(BsQuality)) {
             BsQuality q;
             memcpy(&q, buf, sizeof(q));
-            srv->pending_bitrate = (int)q.bitrate;
-            srv->quality_dirty = 1;
+            BsStream *st = &srv->video[cl->screen];
+            st->pending_bitrate = (int)q.bitrate;
+            st->quality_dirty = 1;
         }
     }
 
@@ -734,17 +840,18 @@ static int server_adopt(BsServer *srv, BsConn *conn, int is_web)
  * with none: a bitrate the encoder would not take should cost the person
  * their setting, not their picture.
  */
-static int encoder_rebuild(BsServer *srv, int bitrate)
+static int encoder_rebuild(BsStream *st, int bitrate)
 {
+    BsServer *srv = st->srv;
     BsEncoderConfig ecfg = {
-        .width      = srv->info.width,
-        .height     = srv->info.height,
-        .out_width  = srv->want_w,
-        .out_height = srv->want_h,
-        .fps        = srv->info.fps,
+        .width      = st->info.width,
+        .height     = st->info.height,
+        .out_width  = st->want_w,
+        .out_height = st->want_h,
+        .fps        = st->info.fps,
         .bitrate    = bitrate,
         .gop        = srv->cfg.gop,
-        .pixfmt     = srv->info.pixfmt,
+        .pixfmt     = st->info.pixfmt,
         .encoder    = srv->cfg.encoder,
     };
 
@@ -756,27 +863,46 @@ static int encoder_rebuild(BsServer *srv, int bitrate)
         return -1;
     }
 
-    BsEncoder *old = srv->enc;
-    srv->enc = fresh;
+    BsEncoder *old = st->enc;
+    st->enc = fresh;
     bs_encoder_destroy(old);
-    bs_encoder_request_keyframe(srv->enc);
-    bs_encoder_out_size(srv->enc, &srv->out_w, &srv->out_h);
+    bs_encoder_request_keyframe(st->enc);
+    bs_encoder_out_size(st->enc, &st->out_w, &st->out_h);
     return 0;
+}
+
+/*
+ * Nobody is watching this screen, so nothing should be encoding it.
+ *
+ * The bottom screen's encoder is built once and kept -- it is what the
+ * handshake hands a client its parameter sets from, and it costs nothing
+ * while the pump is asleep. The top screen's is built when somebody asks
+ * for it and thrown away when the last of them leaves, because a second
+ * encoder is real memory and a real thread's worth of work, and a
+ * feature nobody is using should not be one of the machine's costs.
+ */
+static void stream_idle(BsStream *st)
+{
+    if (st->which == BS_SCREEN_BOTTOM || !st->enc)
+        return;
+    bs_encoder_destroy(st->enc);
+    st->enc = NULL;
+    st->told_w = st->told_h = 0;
 }
 
 /* ----------------------------------------------------------- broadcast */
 
 typedef struct {
-    BsServer *srv;
+    BsStream *st;
     uint32_t  frame_id;
     uint32_t  timestamp_us;
-    uint64_t  bytes;
 } SendCtx;
 
 static void on_encoded(const uint8_t *data, size_t size, int keyframe, void *user)
 {
     SendCtx *s = user;
-    BsServer *srv = s->srv;
+    BsStream *st = s->st;
+    BsServer *srv = st->srv;
 
     BsVideoHeader vh;
     memset(&vh, 0, sizeof(vh));
@@ -788,10 +914,10 @@ static void on_encoded(const uint8_t *data, size_t size, int keyframe, void *use
 
     for (int i = 0; i < srv->max_clients; i++) {
         BsClient *cl = &srv->clients[i];
-        if (cl->in_use && !cl->gone)
+        if (cl->in_use && !cl->gone && cl->screen == st->which)
             client_send(cl, BS_MSG_VIDEO, keyframe, &vh, sizeof(vh), data, size);
     }
-    s->bytes += size;
+    st->bytes += size;
 }
 
 typedef struct {
@@ -814,17 +940,18 @@ static void on_audio(const uint8_t *data, size_t size, void *user)
     }
 }
 
-static void broadcast_stream_info(BsServer *srv, uint32_t from_frame_id)
+static void broadcast_stream_info(BsStream *st, uint32_t from_frame_id)
 {
+    BsServer *srv = st->srv;
     BsStreamInfo si;
     si.from_frame_id = from_frame_id;
-    si.width  = (uint16_t)srv->out_w;
-    si.height = (uint16_t)srv->out_h;
-    si.fps    = (uint16_t)srv->info.fps;
+    si.width  = (uint16_t)st->out_w;
+    si.height = (uint16_t)st->out_h;
+    si.fps    = (uint16_t)st->info.fps;
 
     for (int i = 0; i < srv->max_clients; i++) {
         BsClient *cl = &srv->clients[i];
-        if (cl->in_use && !cl->gone) {
+        if (cl->in_use && !cl->gone && cl->screen == st->which) {
             client_send(cl, BS_MSG_STREAM_INFO, 0, &si, sizeof(si), NULL, 0);
             /* The size changed under it, so its reference picture is
              * worthless whatever it was. */
@@ -855,13 +982,14 @@ static void broadcast_stream_info(BsServer *srv, uint32_t from_frame_id)
 static void *audio_thread(void *arg)
 {
     BsServer *srv = arg;
-    if (!srv->aenc || !srv->source->take_audio || srv->info.audio_rate <= 0)
+    const BsSourceInfo *info = &srv->video[BS_SCREEN_BOTTOM].info;
+    if (!srv->aenc || !srv->source->take_audio || info->audio_rate <= 0)
         return NULL;
 
     /* 10ms per drain: small enough that nothing waits on it, large
      * enough that the loop is not the busiest thing on the machine. */
-    const int chunk = srv->info.audio_rate / 100 + 64;
-    int16_t *buf = malloc((size_t)chunk * srv->info.audio_channels * sizeof(int16_t));
+    const int chunk = info->audio_rate / 100 + 64;
+    int16_t *buf = malloc((size_t)chunk * info->audio_channels * sizeof(int16_t));
     if (!buf)
         return NULL;
 
@@ -884,14 +1012,36 @@ static void *audio_thread(void *arg)
 /* ------------------------------------------------------------ the pump */
 
 /*
- * One loop, however many clients. It idles while nobody is watching --
- * an emulator should not pay for an encoder that feeds no one.
+ * How many of them are watching this particular screen.
+ *
+ * A stream sleeps on its own count, not on the server's: with somebody
+ * on the bottom screen and nobody on the top, the top must still be
+ * idle. Called with the roster held.
+ */
+static int stream_live_clients(BsStream *st)
+{
+    BsServer *srv = st->srv;
+    int n = 0;
+    for (int i = 0; i < srv->max_clients; i++) {
+        BsClient *cl = &srv->clients[i];
+        if (cl->in_use && !cl->gone && cl->ready && cl->screen == st->which)
+            n++;
+    }
+    return n;
+}
+
+/*
+ * One loop per screen, however many clients. It idles while nobody is
+ * watching that screen -- an emulator should not pay for an encoder
+ * that feeds no one, and with two screens on offer that is the usual
+ * case rather than the exception: almost nobody watches both.
  */
 static void *pump_thread(void *arg)
 {
-    BsServer *srv = arg;
+    BsStream *st  = arg;
+    BsServer *srv = st->srv;
 
-    SendCtx  sc = { .srv = srv, .frame_id = 0, .timestamp_us = 0, .bytes = 0 };
+    SendCtx  sc = { .st = st, .frame_id = 0, .timestamp_us = 0 };
     uint32_t started = bs_now_us();
 
     while (!srv->stop) {
@@ -900,13 +1050,21 @@ static void *pump_thread(void *arg)
          * down to wait. Reaping only when the next client arrives would
          * park a socket and two threads for as long as nobody does --
          * which, on a machine serving one person, is for good.
+         *
+         * Both loops reap, and they have to: with somebody on the bottom
+         * screen its loop never goes idle, so a client leaving the top
+         * screen would lie there until the bottom emptied. server_reap
+         * holds reap_lock across the whole sweep and clears in_use as it
+         * goes, so the second caller finds nothing rather than joining a
+         * thread twice.
          */
         pthread_mutex_lock(&srv->roster);
-        while (!srv->stop && server_live_clients(srv) == 0) {
+        while (!srv->stop && (stream_live_clients(st) == 0 || !st->source)) {
             pthread_mutex_unlock(&srv->roster);
+            stream_idle(st);
             server_reap(srv);
             pthread_mutex_lock(&srv->roster);
-            if (srv->stop || server_live_clients(srv) > 0)
+            if (srv->stop || (stream_live_clients(st) > 0 && st->source))
                 break;
             pthread_cond_wait(&srv->roster_cond, &srv->roster);
         }
@@ -914,19 +1072,40 @@ static void *pump_thread(void *arg)
         if (srv->stop)
             break;
 
-        if (srv->quality_dirty) {
-            srv->quality_dirty = 0;
-            if (encoder_rebuild(srv, srv->pending_bitrate) == 0) {
-                srv->bitrate_now = srv->pending_bitrate;
+        /*
+         * Somebody has just arrived on a screen that was asleep, so
+         * there is no encoder yet. The bottom's is built at startup and
+         * kept; this is the top's, and every setting it starts from is
+         * whatever was last asked for on this screen.
+         */
+        if (!st->enc) {
+            st->source->get_info(st->source->self, &st->info);
+            if (encoder_rebuild(st, st->bitrate_now) != 0) {
+                /* Nothing to encode with. Wait rather than spin: the
+                 * client is still connected and may yet go elsewhere. */
+                struct timespec ts = { 0, 100 * 1000 * 1000 };
+                nanosleep(&ts, NULL);
+                continue;
+            }
+            if (!srv->cfg.quiet)
+                fprintf(stderr, "bottom_screen: encoding the %s screen at %dx%d\n",
+                        st->which == BS_SCREEN_TOP ? "top" : "bottom",
+                        st->out_w, st->out_h);
+        }
+
+        if (st->quality_dirty) {
+            st->quality_dirty = 0;
+            if (encoder_rebuild(st, st->pending_bitrate) == 0) {
+                st->bitrate_now = st->pending_bitrate;
                 if (!srv->cfg.quiet)
                     fprintf(stderr, "bottom_screen: bitrate now %d bit/s\n",
-                            srv->pending_bitrate);
+                            st->pending_bitrate);
             }
         }
 
-        if (srv->size_dirty) {
-            srv->size_dirty = 0;
-            encoder_rebuild(srv, srv->bitrate_now);
+        if (st->size_dirty) {
+            st->size_dirty = 0;
+            encoder_rebuild(st, st->bitrate_now);
         }
 
         /*
@@ -935,14 +1114,14 @@ static void *pump_thread(void *arg)
          * size -- they share one encoder -- so tying the announcement to
          * one of them loses it whenever the other got there first.
          */
-        if (srv->out_w != srv->told_w || srv->out_h != srv->told_h) {
-            srv->told_w = srv->out_w;
-            srv->told_h = srv->out_h;
-            broadcast_stream_info(srv, sc.frame_id);
+        if (st->out_w != st->told_w || st->out_h != st->told_h) {
+            st->told_w = st->out_w;
+            st->told_h = st->out_h;
+            broadcast_stream_info(st, sc.frame_id);
             if (!srv->cfg.quiet)
                 fprintf(stderr, "bottom_screen: sending %dx%d from a %dx%d source\n",
-                        srv->out_w, srv->out_h,
-                        srv->info.width, srv->info.height);
+                        st->out_w, st->out_h,
+                        st->info.width, st->info.height);
         }
 
         /*
@@ -951,37 +1130,39 @@ static void *pump_thread(void *arg)
          * the clients, rather than dropping connections over a setting.
          */
         BsSourceInfo now;
-        srv->source->get_info(srv->source->self, &now);
-        if (now.width != srv->info.width || now.height != srv->info.height) {
-            srv->info.width = now.width;
-            srv->info.height = now.height;
-            if (encoder_rebuild(srv, srv->bitrate_now) == 0) {
-                broadcast_stream_info(srv, sc.frame_id);
+        st->source->get_info(st->source->self, &now);
+        if (now.width != st->info.width || now.height != st->info.height) {
+            st->info.width = now.width;
+            st->info.height = now.height;
+            if (encoder_rebuild(st, st->bitrate_now) == 0) {
+                broadcast_stream_info(st, sc.frame_id);
                 if (!srv->cfg.quiet)
                     fprintf(stderr, "bottom_screen: now %dx%d\n",
-                            srv->info.width, srv->info.height);
+                            st->info.width, st->info.height);
             }
         }
 
         int stride = 0;
         uint32_t ts = 0;
-        const uint8_t *pixels = srv->source->acquire(srv->source->self, &stride, &ts);
+        const uint8_t *pixels = st->source->acquire(st->source->self, &stride, &ts);
         if (!pixels)
             break;
 
         sc.timestamp_us = ts;
-        if (bs_encoder_encode(srv->enc, pixels, stride, on_encoded, &sc) < 0) {
+        if (bs_encoder_encode(st->enc, pixels, stride, on_encoded, &sc) < 0) {
             if (!srv->cfg.quiet)
                 fprintf(stderr, "bottom_screen: encode failed\n");
             break;
         }
         sc.frame_id++;
-        srv->frames++;
+        st->frame_id = sc.frame_id;
+        if (st->which == BS_SCREEN_BOTTOM)
+            srv->frames++;
 
-        if (!srv->cfg.quiet && srv->info.fps > 0 &&
-            sc.frame_id % (uint32_t)(srv->info.fps * 5) == 0) {
+        if (!srv->cfg.quiet && st->info.fps > 0 && st->which == BS_SCREEN_BOTTOM &&
+            sc.frame_id % (uint32_t)(st->info.fps * 5) == 0) {
             uint32_t elapsed = bs_now_us() - started;
-            double mbps = elapsed ? (double)sc.bytes * 8.0 / elapsed : 0.0;
+            double mbps = elapsed ? (double)st->bytes * 8.0 / elapsed : 0.0;
             printf("bottom_screen: %u frames, %.2f Mbit/s, %d client(s)\n",
                    sc.frame_id, mbps, server_live_clients(srv));
             fflush(stdout);
@@ -1038,9 +1219,16 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     srv->listen_fd = -1;
     if (cfg) {
         srv->cfg = *cfg;
-        srv->bitrate_now = cfg->bitrate;
     }
-    source->get_info(source->self, &srv->info);
+
+    for (int i = 0; i < BS_SCREEN_COUNT; i++) {
+        srv->video[i].srv   = srv;
+        srv->video[i].which = i;
+        srv->video[i].bitrate_now = srv->cfg.bitrate;
+    }
+    BsStream *bot = &srv->video[BS_SCREEN_BOTTOM];
+    bot->source = source;
+    source->get_info(source->self, &bot->info);
 
     srv->max_clients = srv->cfg.max_clients > 0 ? srv->cfg.max_clients
                                                 : BS_CLIENTS_DEFAULT;
@@ -1054,29 +1242,29 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     pthread_cond_init(&srv->roster_cond, NULL);
 
     BsEncoderConfig ecfg = {
-        .width   = srv->info.width,
-        .height  = srv->info.height,
-        .fps     = srv->info.fps,
+        .width   = bot->info.width,
+        .height  = bot->info.height,
+        .fps     = bot->info.fps,
         .bitrate = srv->cfg.bitrate,
         .gop     = srv->cfg.gop,
-        .pixfmt  = srv->info.pixfmt,
+        .pixfmt  = bot->info.pixfmt,
         .encoder = srv->cfg.encoder,
     };
-    srv->enc = bs_encoder_create(&ecfg, err, errlen);
-    if (!srv->enc)
+    bot->enc = bs_encoder_create(&ecfg, err, errlen);
+    if (!bot->enc)
         goto fail;
     /* Nobody has asked for a size yet, so this is the source's -- but it
      * is read from the encoder rather than assumed, because that is
      * where rounding to even numbers happens. The handshake carries it
      * to every client, so it counts as already told. */
-    bs_encoder_out_size(srv->enc, &srv->out_w, &srv->out_h);
-    srv->told_w = srv->out_w;
-    srv->told_h = srv->out_h;
+    bs_encoder_out_size(bot->enc, &bot->out_w, &bot->out_h);
+    bot->told_w = bot->out_w;
+    bot->told_h = bot->out_h;
 
-    if (srv->info.audio_rate > 0 && srv->info.audio_channels > 0) {
+    if (bot->info.audio_rate > 0 && bot->info.audio_channels > 0) {
         BsAudioConfig acfg = {
-            .rate = srv->info.audio_rate,
-            .channels = srv->info.audio_channels,
+            .rate = bot->info.audio_rate,
+            .channels = bot->info.audio_channels,
             .bitrate = 0,
         };
         char aerr[128] = "";
@@ -1106,11 +1294,21 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     if (srv->listen_fd < 0)
         goto fail;
 
-    if (pthread_create(&srv->pump_thread, NULL, pump_thread, srv) != 0) {
-        if (err) snprintf(err, errlen, "cannot start the video thread");
-        goto fail;
+    /*
+     * A loop per screen, both started now even though the top one may
+     * never have a source or a viewer. It costs a thread asleep on a
+     * condition variable, and starting one later would mean creating a
+     * thread from inside a client's message handler -- a failure with
+     * nowhere sensible to report itself.
+     */
+    for (int i = 0; i < BS_SCREEN_COUNT; i++) {
+        if (pthread_create(&srv->video[i].tid, NULL, pump_thread,
+                           &srv->video[i]) != 0) {
+            if (err) snprintf(err, errlen, "cannot start the video thread");
+            goto fail;
+        }
+        srv->video[i].started = 1;
     }
-    srv->pump_started = 1;
 
     if (srv->aenc &&
         pthread_create(&srv->audio_tid, NULL, audio_thread, srv) == 0)
@@ -1132,8 +1330,8 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     if (!srv->cfg.quiet)
         fprintf(stderr, "bottom_screen: %dx%d @ %d fps, %s, listening on port %u "
                         "(up to %d clients)\n",
-                srv->info.width, srv->info.height, srv->info.fps,
-                bs_encoder_name(srv->enc), (unsigned)srv->port, srv->max_clients);
+                bot->info.width, bot->info.height, bot->info.fps,
+                bs_encoder_name(bot->enc), (unsigned)srv->port, srv->max_clients);
     return srv;
 
 fail:
@@ -1172,8 +1370,11 @@ void bs_server_stop(BsServer *srv)
     pthread_cond_broadcast(&srv->roster_cond);
     pthread_mutex_unlock(&srv->roster);
 
-    if (srv->source && srv->source->unblock)
-        srv->source->unblock(srv->source->self);
+    for (int i = 0; i < BS_SCREEN_COUNT; i++) {
+        BsSource *src = srv->video[i].source;
+        if (src && src->unblock)
+            src->unblock(src->self);
+    }
 
     if (srv->accept_started) {
         pthread_join(srv->accept_thread, NULL);
@@ -1183,9 +1384,11 @@ void bs_server_stop(BsServer *srv)
         pthread_join(srv->audio_tid, NULL);
         srv->audio_started = 0;
     }
-    if (srv->pump_started) {
-        pthread_join(srv->pump_thread, NULL);
-        srv->pump_started = 0;
+    for (int i = 0; i < BS_SCREEN_COUNT; i++) {
+        if (srv->video[i].started) {
+            pthread_join(srv->video[i].tid, NULL);
+            srv->video[i].started = 0;
+        }
     }
     if (srv->clients)
         server_reap(srv);
@@ -1198,8 +1401,9 @@ void bs_server_destroy(BsServer *srv)
     bs_server_stop(srv);
     if (srv->listen_fd >= 0)
         close(srv->listen_fd);
-    if (srv->enc)
-        bs_encoder_destroy(srv->enc);
+    for (int i = 0; i < BS_SCREEN_COUNT; i++)
+        if (srv->video[i].enc)
+            bs_encoder_destroy(srv->video[i].enc);
     if (srv->aenc)
         bs_audio_destroy(srv->aenc);
     if (srv->clients) {
@@ -1209,6 +1413,38 @@ void bs_server_destroy(BsServer *srv)
         free(srv->clients);
     }
     free(srv);
+}
+
+void bs_server_set_top_source(BsServer *srv, BsSource *top)
+{
+    if (!srv)
+        return;
+    BsStream *st = &srv->video[BS_SCREEN_TOP];
+    st->source = top;
+    if (top)
+        top->get_info(top->self, &st->info);
+
+    /* Anyone already connected was told there was no top screen. */
+    pthread_mutex_lock(&srv->roster);
+    for (int i = 0; i < srv->max_clients; i++) {
+        BsClient *cl = &srv->clients[i];
+        if (cl->in_use && !cl->gone && cl->ready)
+            client_send_screens(cl);
+    }
+    pthread_cond_broadcast(&srv->roster_cond);
+    pthread_mutex_unlock(&srv->roster);
+}
+
+int bs_server_wants_screen(const BsServer *srv, int screen)
+{
+    if (!srv || !srv->clients || screen < 0 || screen >= BS_SCREEN_COUNT)
+        return 0;
+    for (int i = 0; i < srv->max_clients; i++) {
+        const BsClient *cl = &srv->clients[i];
+        if (cl->in_use && !cl->gone && cl->ready && cl->screen == screen)
+            return 1;
+    }
+    return 0;
 }
 
 uint16_t bs_server_port(const BsServer *srv) { return srv ? srv->port : 0; }
