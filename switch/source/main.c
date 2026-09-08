@@ -1049,7 +1049,7 @@ static void draw_menu(void)
     draw_text(g_small, "\u2191\u2193  choose   \u2190\u2192  change   A  use",
               70, SCREEN_H - 44, COL_DIM);
     if (g_message[0])
-        draw_text(g_small, g_message, 90, 150 + g_row_count * 66 + 70,
+        draw_text(g_small, g_message, 70, SCREEN_H - 84,
                   COL_BAD);
 
     SDL_RenderPresent(g_renderer);
