@@ -55,7 +55,28 @@ body { grid-template-columns: auto minmax(0, 1fr) auto;
  * the bottom of the window. The top padding keeps the bar clear even
  * for the tallest side, which is the Wii U's.
  */
-.padside { display: flex; align-items: stretch; padding: 52px 6px 26px; }
+/*
+ * A positioned space rather than a stack.
+ *
+ * Flexbox decided where every control went, which is fine until
+ * somebody wants to move one: there was nothing to move. Each group --
+ * the triggers, the d-pad, the stick, the menu button -- now carries its
+ * own place in the column, kept as a fraction so it survives a resize
+ * and a different window.
+ */
+/*
+ * A width of its own, because absolutely positioned children give a
+ * column none: the grid's auto track collapsed to nothing and the pad
+ * hung off both edges of the window. Wide enough for the broadest
+ * group, which is the face diamond at three buttons across.
+ */
+.padside { position: relative; padding: 0;
+           width: calc(var(--btn) * 3.4); }
+.pgroup { position: absolute; transform: translate(-50%, -50%);
+          display: flex; flex-direction: column; align-items: center; gap: 8px; }
+body.arranging .pgroup { outline: 2px dashed rgba(255,220,0,.9);
+                         outline-offset: 6px; cursor: move; }
+body.arranging button.b, body.arranging .stick { pointer-events: none; }
 #padLeft  { grid-area: padl; justify-content: flex-start; }
 #padRight { grid-area: padr; justify-content: flex-end; }
 
@@ -135,8 +156,7 @@ body { --btn-bg: rgba(255,255,255,.14); --btn-border: rgba(255,255,255,.4);
        --btn-pressed: rgba(255,255,255,.45);
        --btn: clamp(30px, 6.2vh, 52px); }
 .padside:empty { display: none; }
-.cluster { display: flex; flex-direction: column; align-items: center;
-           justify-content: center; gap: calc(var(--btn) * 0.34); }
+
 .stack { display: flex; flex-direction: column; gap: 8px; }
 button.b { width: var(--btn); height: var(--btn); border-radius: 50%;
            border: 2px solid var(--btn-border); background: var(--btn-bg);
@@ -146,7 +166,7 @@ button.b { width: var(--btn); height: var(--btn); border-radius: 50%;
            user-select: none; box-shadow: 0 0 4px rgba(0,0,0,.5); }
 button.b:active, button.b.held { background: var(--btn-pressed); }
 .row { display: flex; gap: 8px; }
-.cluster > .row { flex-direction: column; }
+.pgroup > .row { flex-direction: column; }
 #dpad { display: grid; grid-template-columns: repeat(3, calc(var(--btn) * 0.86));
         grid-template-rows: repeat(3, calc(var(--btn) * 0.86)); gap: 2px; }
 #dpad button.b { width: calc(var(--btn) * 0.86); height: calc(var(--btn) * 0.86);
@@ -222,6 +242,8 @@ button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
       <div class="menu-items">
         <label><input id="show-pad" type="checkbox" checked> on-screen buttons</label>
         <label>colour <select id="pad-colour"></select></label>
+        <label><input id="arrange-pad" type="checkbox"> move them  (drag where your thumbs are)</label>
+        <button id="reset-pad" type="button">reset their positions</button>
         <label id="stick-l-row" hidden>left stick
           <select id="stick-l">
             <option value="0">above the d-pad</option>
@@ -736,7 +758,109 @@ function addStick(parent, spec) {
   return wrap;
 }
 
+/* An empty container -- a stick column on a DS, say -- is not a group.
+ * Placing one would leave a draggable frame around nothing. */
+function hasContent(el) { return el && el.childElementCount > 0; }
+
+/*
+ * Where the groups sit, as fractions of their column, per console.
+ *
+ * Kept per console because the three do not have the same controls: a
+ * Wii U's arrangement has a HOME button in it and a DS's has no stick,
+ * so one layout could not describe both. Three sets, saved separately,
+ * which is what the other two clients do.
+ */
+let padLayout = {};
+function layoutKey() { return "bs_pad_layout_" + (console_id || 1); }
+function loadLayout() {
+  try { padLayout = JSON.parse(localStorage.getItem(layoutKey())) || {}; }
+  catch (e) { padLayout = {}; }
+}
+function saveLayout() {
+  try { localStorage.setItem(layoutKey(), JSON.stringify(padLayout)); }
+  catch (e) {}
+}
+
+/*
+ * Stacked from the bottom, with the same small gap between groups the
+ * Switch client uses, and any position somebody saved taking precedence
+ * over the default.
+ */
+function placeGroups(column, side, groups, pinnedTop) {
+  column.innerHTML = "";
+  const gap = 14;
+  let bottom = 26;
+  groups.forEach((g, i) => {
+    g.classList.add("pgroup");
+    g.dataset.key = side + i;
+    column.appendChild(g);
+  });
+  if (pinnedTop) {
+    pinnedTop.classList.add("pgroup");
+    pinnedTop.dataset.key = side + "top";
+    column.appendChild(pinnedTop);
+  }
+  /* Measured after they are in the document, since a group's height is
+   * whatever its contents came to. */
+  requestAnimationFrame(() => {
+    const box = column.getBoundingClientRect();
+    if (!box.height) return;
+    for (const g of groups) {
+      const saved = padLayout[g.dataset.key];
+      const h = g.getBoundingClientRect().height;
+      if (saved) {
+        g.style.left = (saved.x * 100) + "%";
+        g.style.top = (saved.y * 100) + "%";
+      } else {
+        g.style.left = "50%";
+        g.style.top = (((box.height - bottom - h / 2) / box.height) * 100) + "%";
+      }
+      bottom += h + gap;
+    }
+    if (pinnedTop) {
+      const saved = padLayout[pinnedTop.dataset.key];
+      const h = pinnedTop.getBoundingClientRect().height;
+      pinnedTop.style.left = saved ? (saved.x * 100) + "%" : "50%";
+      pinnedTop.style.top = saved
+        ? (saved.y * 100) + "%"
+        : (((26 + h / 2) / box.height) * 100) + "%";
+    }
+    fit();
+  });
+}
+
+/* Dragging a group moves it, and only while arranging: a thumb on a
+ * button during play must press it, not carry it off. */
+function armDragging() {
+  for (const column of [padLeftEl, padRightEl]) {
+    column.addEventListener("pointerdown", (ev) => {
+      if (!document.body.classList.contains("arranging")) return;
+      const g = ev.target.closest(".pgroup");
+      if (!g) return;
+      const box = column.getBoundingClientRect();
+      column.setPointerCapture(ev.pointerId);
+      const move = (e) => {
+        const x = Math.min(1, Math.max(0, (e.clientX - box.left) / box.width));
+        const y = Math.min(1, Math.max(0, (e.clientY - box.top) / box.height));
+        g.style.left = (x * 100) + "%";
+        g.style.top = (y * 100) + "%";
+        padLayout[g.dataset.key] = { x, y };
+      };
+      const up = () => {
+        column.removeEventListener("pointermove", move);
+        column.removeEventListener("pointerup", up);
+        saveLayout();
+      };
+      column.addEventListener("pointermove", move);
+      column.addEventListener("pointerup", up);
+      ev.preventDefault();
+    });
+  }
+}
+armDragging();
+
 function buildPad(id) {
+  loadLayout();
   padLeftEl.innerHTML = "";
   padRightEl.innerHTML = "";
   padButtons.clear();
@@ -778,12 +902,16 @@ function buildPad(id) {
   lMenu.className = "row";
   const rMenu = document.createElement("div");
   rMenu.className = "row";
+  /* HOME on its own, pinned to the top of its column: it stops the
+   * game, so it should take a deliberate reach rather than sit under a
+   * thumb that is already resting somewhere. */
+  const home = document.createElement("div");
+  home.className = "row";
   (profile.menu || ["SELECT", "START"]).forEach((n, i) => {
-    addButton(i % 2 ? rMenu : lMenu, MENU_LABEL[n] || n, BTN[n])
-      .classList.add("wide");
+    const into = n === "HOME" ? home : (i % 2 ? rMenu : lMenu);
+    addButton(into, MENU_LABEL[n] || n, BTN[n]).classList.add("wide");
   });
-  if (stickBelow(0)) left.append(lShoulders, dpad, lStick, lMenu);
-  else               left.append(lShoulders, lStick, dpad, lMenu);
+
 
   const right = document.createElement("div");
   right.className = "cluster";
@@ -801,11 +929,22 @@ function buildPad(id) {
   addButton(face, "A", BTN.A).classList.add("right");
   addButton(face, "B", BTN.B).classList.add("bottom");
 
-  if (stickBelow(1)) right.append(shoulders, face, rStick, rMenu);
-  else               right.append(shoulders, rStick, face, rMenu);
+  /*
+   * Each group placed in its column, stacked from the bottom -- which
+   * is the end a thumb reaches -- in the order that side asked for.
+   * "left" and "right" are gone: there is nothing between a column and
+   * the groups in it any more.
+   */
+  const leftGroups = stickBelow(0)
+    ? [lMenu, lStick, dpad, lShoulders]
+    : [lMenu, dpad, lStick, lShoulders];
+  const rightGroups = stickBelow(1)
+    ? [rMenu, rStick, face, shoulders]
+    : [rMenu, face, rStick, shoulders];
 
-  padLeftEl.appendChild(left);
-  padRightEl.appendChild(right);
+  placeGroups(padLeftEl, "l", leftGroups.filter(hasContent),
+              hasContent(home) ? home : null);
+  placeGroups(padRightEl, "r", rightGroups.filter(hasContent), null);
   setPadShown(showPadEl.checked);
   /* The stage only knows its height once the pad has taken its own, so
    * the picture is sized after the layout has settled. */
@@ -1008,6 +1147,16 @@ for (const [el, key, dflt] of [[stickLEl, "bs_stick_l", "0"],
     if (console_id) buildPad(console_id);
   });
 }
+
+const arrangeEl = document.getElementById("arrange-pad");
+arrangeEl.addEventListener("change", () => {
+  document.body.classList.toggle("arranging", arrangeEl.checked);
+});
+document.getElementById("reset-pad").addEventListener("click", () => {
+  padLayout = {};
+  saveLayout();
+  if (console_id) buildPad(console_id);
+});
 
 const showPadEl = document.getElementById("show-pad");
 function setPadShown(shown) {

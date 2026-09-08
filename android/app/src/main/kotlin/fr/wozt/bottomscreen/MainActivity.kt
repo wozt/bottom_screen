@@ -224,6 +224,14 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         client?.sendInput(BsProtocol.INPUT_AXIS, BsProtocol.AXIS_RIGHT_Y,
             -Gamepad.axis(event, MotionEvent.AXIS_RZ), 0)
 
+        /* And shown on the drawn sticks, the way a press already lights
+         * the drawn button. */
+        pad?.showPadAxes(
+            Gamepad.axis(event, MotionEvent.AXIS_X),
+            -Gamepad.axis(event, MotionEvent.AXIS_Y),
+            Gamepad.axis(event, MotionEvent.AXIS_Z),
+            -Gamepad.axis(event, MotionEvent.AXIS_RZ))
+
         /* Most pads report their d-pad as a hat rather than as keys. */
         val hat = Gamepad.hatButtons(event)
         for (code in padHat - hat) sendPadButton(code, false)

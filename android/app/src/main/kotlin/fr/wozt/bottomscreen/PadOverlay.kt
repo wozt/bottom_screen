@@ -372,6 +372,34 @@ class PadOverlay(context: Context) : View(context) {
         }
     }
 
+    /*
+     * What a physical pad's sticks are doing, shown on the drawn ones.
+     *
+     * The buttons have always lit up for a connected controller; the
+     * sticks did not, so pushing one moved the character and nothing on
+     * screen -- which reads as a control that is not wired to anything.
+     * A stick a thumb is holding is left alone: two things moving one
+     * knob would fight.
+     *
+     * Values are in the protocol's range and its convention, up
+     * positive, so the y is flipped back to the screen's here.
+     */
+    fun showPadAxes(lx: Int, ly: Int, rx: Int, ry: Int) {
+        var moved = false
+        for (st in sticks) {
+            if (st.active) continue
+            val fx = (if (st.spec.left) lx else rx) / 32767f
+            val fy = (if (st.spec.left) ly else ry) / 32767f
+            val nx = st.centre.x + fx * st.radius * 0.6f
+            val ny = st.centre.y - fy * st.radius * 0.6f
+            if (st.knob.x != nx || st.knob.y != ny) {
+                st.knob.set(nx, ny)
+                moved = true
+            }
+        }
+        if (moved) invalidate()
+    }
+
     /* One height per side, since the two are chosen independently. */
     private fun placeSticksPerSide(w: Float, leftX: Float, rightX: Float, r: Float,
                                    leftY: Float, rightY: Float) {
