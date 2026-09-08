@@ -96,6 +96,8 @@ struct BsServer {
     int       accept_started;
     pthread_t pump_thread;
     int       pump_started;
+    pthread_t audio_tid;
+    int       audio_started;
 
     volatile int stop;
     volatile uint32_t frames;
@@ -121,6 +123,9 @@ struct BsServer {
      */
     volatile int want_w, want_h;
     volatile int size_dirty;
+    /* Which of a Wii U's two audio outputs to send. Shared between
+     * clients because there is one encoder; see BS_MSG_SET_AUDIO_SOURCE. */
+    volatile int audio_source;
 
     /* What is actually encoded, which is not the source's size once
      * somebody has asked for less. */
@@ -502,6 +507,11 @@ static void *client_recv_thread(void *arg)
             srv->want_w = sz.width;
             srv->want_h = sz.height;
             srv->size_dirty = 1;
+        } else if (type == BS_MSG_SET_AUDIO_SOURCE && n >= sizeof(BsAudioChoice)) {
+            BsAudioChoice ac;
+            memcpy(&ac, buf, sizeof(ac));
+            if (ac.source <= BS_AUDIO_PAD)
+                srv->audio_source = ac.source;
         } else if (type == BS_MSG_SET_QUALITY && n >= sizeof(BsQuality)) {
             BsQuality q;
             memcpy(&q, buf, sizeof(q));
@@ -799,6 +809,54 @@ static void broadcast_stream_info(BsServer *srv, uint32_t from_frame_id)
     }
 }
 
+/*
+ * Sound on its own clock.
+ *
+ * It used to be drained inside the video loop, one frame's worth per
+ * frame, which sounds reasonable and is not: the loop spends the gap
+ * between frames asleep in acquire(), so the sound came out in clumps
+ * one frame apart. Measured against Cemu at 30fps, 39% of packets
+ * arrived less than a millisecond after the one before and the median
+ * gap was 33ms -- exactly the frame period. A client then has to smooth
+ * 33ms of granularity, and when it cannot, that is the stutter.
+ *
+ * Here it is drained every couple of milliseconds regardless of what
+ * the picture is doing, so packets leave at the 20ms cadence Opus
+ * encodes them at rather than in bursts.
+ *
+ * It holds reap_lock while broadcasting because that is what stops a
+ * client being freed underneath it: reaping happens on the pump thread,
+ * and the two used to be the same thread.
+ */
+static void *audio_thread(void *arg)
+{
+    BsServer *srv = arg;
+    if (!srv->aenc || !srv->source->take_audio || srv->info.audio_rate <= 0)
+        return NULL;
+
+    /* 10ms per drain: small enough that nothing waits on it, large
+     * enough that the loop is not the busiest thing on the machine. */
+    const int chunk = srv->info.audio_rate / 100 + 64;
+    int16_t *buf = malloc((size_t)chunk * srv->info.audio_channels * sizeof(int16_t));
+    if (!buf)
+        return NULL;
+
+    AudioCtx ac = { .srv = srv };
+    while (!srv->stop) {
+        int got = srv->source->take_audio(srv->source->self, buf, chunk);
+        if (got > 0) {
+            pthread_mutex_lock(&srv->reap_lock);
+            bs_audio_encode(srv->aenc, buf, got, on_audio, &ac);
+            pthread_mutex_unlock(&srv->reap_lock);
+        } else {
+            struct timespec ts = { 0, 2 * 1000 * 1000 };   /* 2ms */
+            nanosleep(&ts, NULL);
+        }
+    }
+    free(buf);
+    return NULL;
+}
+
 /* ------------------------------------------------------------ the pump */
 
 /*
@@ -810,18 +868,7 @@ static void *pump_thread(void *arg)
     BsServer *srv = arg;
 
     SendCtx  sc = { .srv = srv, .frame_id = 0, .timestamp_us = 0, .bytes = 0 };
-    AudioCtx ac = { .srv = srv };
     uint32_t started = bs_now_us();
-
-    /* One video frame's worth of sound is the natural drain size: the
-     * loop already runs once per frame, and asking for more would only
-     * add latency waiting to fill it. */
-    const int audio_chunk = srv->aenc && srv->info.audio_rate > 0
-                          ? srv->info.audio_rate / (srv->info.fps > 0 ? srv->info.fps : 30) + 64
-                          : 0;
-    int16_t *audio_buf = NULL;
-    if (audio_chunk > 0)
-        audio_buf = malloc((size_t)audio_chunk * srv->info.audio_channels * sizeof(int16_t));
 
     while (!srv->stop) {
         /*
@@ -904,15 +951,6 @@ static void *pump_thread(void *arg)
         sc.frame_id++;
         srv->frames++;
 
-        /* Sound goes out alongside, in its own messages. A client that
-         * cannot keep up drops one without disturbing the other. */
-        if (audio_buf && srv->source->take_audio) {
-            int got = srv->source->take_audio(srv->source->self,
-                                              audio_buf, audio_chunk);
-            if (got > 0)
-                bs_audio_encode(srv->aenc, audio_buf, got, on_audio, &ac);
-        }
-
         if (!srv->cfg.quiet && srv->info.fps > 0 &&
             sc.frame_id % (uint32_t)(srv->info.fps * 5) == 0) {
             uint32_t elapsed = bs_now_us() - started;
@@ -923,7 +961,6 @@ static void *pump_thread(void *arg)
         }
     }
 
-    free(audio_buf);
     return NULL;
 }
 
@@ -1046,6 +1083,10 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     }
     srv->pump_started = 1;
 
+    if (srv->aenc &&
+        pthread_create(&srv->audio_tid, NULL, audio_thread, srv) == 0)
+        srv->audio_started = 1;
+
     if (pthread_create(&srv->accept_thread, NULL, accept_thread, srv) != 0) {
         if (err) snprintf(err, errlen, "cannot start the accept thread");
         goto fail;
@@ -1109,6 +1150,10 @@ void bs_server_stop(BsServer *srv)
         pthread_join(srv->accept_thread, NULL);
         srv->accept_started = 0;
     }
+    if (srv->audio_started) {
+        pthread_join(srv->audio_tid, NULL);
+        srv->audio_started = 0;
+    }
     if (srv->pump_started) {
         pthread_join(srv->pump_thread, NULL);
         srv->pump_started = 0;
@@ -1138,6 +1183,11 @@ void bs_server_destroy(BsServer *srv)
 }
 
 uint16_t bs_server_port(const BsServer *srv) { return srv ? srv->port : 0; }
+int bs_server_audio_source(const BsServer *srv)
+{
+    return srv ? srv->audio_source : BS_AUDIO_BOTH;
+}
+
 uint32_t bs_server_frames(const BsServer *srv) { return srv ? srv->frames : 0; }
 
 int bs_server_has_client(const BsServer *srv)

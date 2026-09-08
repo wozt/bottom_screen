@@ -359,6 +359,21 @@ void stream_send_size(int width, int height)
     bs_send_msg(g_conn, BS_MSG_SET_SIZE, &sz, sizeof(sz), NULL, 0);
 }
 
+/*
+ * A Wii U mixes for the television and for the GamePad's own speakers at
+ * once, and they do not carry the same thing. Meaningless on the other
+ * two consoles, which is why the menu only offers it here.
+ */
+void stream_send_audio_source(int source)
+{
+    if (!g_conn)
+        return;
+    BsAudioChoice ac;
+    memset(&ac, 0, sizeof(ac));
+    ac.source = (uint8_t)source;
+    bs_send_msg(g_conn, BS_MSG_SET_AUDIO_SOURCE, &ac, sizeof(ac), NULL, 0);
+}
+
 void stream_request_keyframe(void)
 {
     if (g_conn && g_connected)

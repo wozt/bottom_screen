@@ -143,8 +143,36 @@ typedef enum {
      * choice belongs there rather than in a server flag they would have
      * to go and change on the PC.
      */
-    BS_MSG_SET_QUALITY = 20
+    BS_MSG_SET_QUALITY = 20,
+
+    /*
+     * BsAudioChoice, client -> server: which of a Wii U's two outputs to
+     * hear.
+     *
+     * A Wii U game mixes for two speakers at once, the television's and
+     * the GamePad's own, and they do not carry the same thing: a title
+     * can put its music on one and a menu's clicks on the other. Since
+     * the screen being streamed is the GamePad's, either may be the one
+     * somebody wants, so the choice belongs to whoever is listening.
+     *
+     * Shared between clients, like the size and the bitrate: there is
+     * one encoder, so there is one answer. The last client to ask wins.
+     * Meaningless anywhere but a Wii U, and ignored there.
+     */
+    BS_MSG_SET_AUDIO_SOURCE = 22
 } BsMsgType;
+
+/* What BS_MSG_SET_AUDIO_SOURCE selects. */
+typedef enum {
+    BS_AUDIO_BOTH = 0,   /* summed, which is what a Wii U owner hears */
+    BS_AUDIO_TV   = 1,
+    BS_AUDIO_PAD  = 2
+} BsAudioSource;
+
+typedef struct {
+    uint8_t source;      /* BsAudioSource */
+    uint8_t reserved[3];
+} BsAudioChoice;
 
 /*
  * Prefixes every message on the TCP transport. Over UDP one datagram

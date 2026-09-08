@@ -416,6 +416,9 @@ static void size_label(const StreamInfo *info, char *out, size_t outlen)
                  nw * g_receive_scale, nh * g_receive_scale);
 }
 
+/* BS_AUDIO_BOTH until somebody says otherwise. */
+static int g_audio_source = 0;
+
 static void build_play_rows(const StreamInfo *info)
 {
     g_row_count = 0;
@@ -429,6 +432,16 @@ static void build_play_rows(const StreamInfo *info)
     r->kind = ROW_VALUE; r->label = "volume";
     snprintf(r->value, sizeof(r->value), "%d%%%s", g_volume,
              g_muted ? "   muted" : "");
+
+    /* Only a Wii U has two outputs, so only there is there a choice to
+     * make. Offering it on a DS would be a question with one answer. */
+    if (info->console == BS_CONSOLE_WIIU) {
+        static const char *const names[3] = { "both, summed", "television",
+                                              "GamePad" };
+        r = &g_rows[g_row_count++];
+        r->kind = ROW_VALUE; r->label = "sound from";
+        snprintf(r->value, sizeof(r->value), "%s", names[g_audio_source]);
+    }
 
     r = &g_rows[g_row_count++];
     r->kind = ROW_ACTION; r->label = "disconnect"; r->value[0] = '\0';
@@ -474,6 +487,11 @@ static void adjust_row(const StreamInfo *info, int delta)
         if (g_volume < 0) g_volume = 0;
         if (g_volume > 100) g_volume = 100;
         g_muted = (g_volume == 0);
+    } else if (g_selected == 2 && info->console == BS_CONSOLE_WIIU) {
+        g_audio_source += delta;
+        if (g_audio_source < 0) g_audio_source = 0;
+        if (g_audio_source > 2) g_audio_source = 2;
+        stream_send_audio_source(g_audio_source);
     }
 }
 

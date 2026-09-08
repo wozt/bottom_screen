@@ -85,6 +85,11 @@ class BsClient(
         if (running) outQueue.offer(BsProtocol.emptyMessage(BsProtocol.MSG_REQUEST_KEYFRAME))
     }
 
+    /** Picks which of a Wii U's two audio outputs to receive. */
+    fun sendAudioSource(source: Int) {
+        if (running) outQueue.offer(BsProtocol.audioSourceMessage(source))
+    }
+
     /** Asks the server to re-encode at a different bitrate. */
     fun setQuality(bitrate: Int) {
         if (running) outQueue.offer(BsProtocol.qualityMessage(bitrate))

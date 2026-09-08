@@ -40,7 +40,6 @@ class PadOverlay(context: Context) : View(context) {
 
     /** Long press outside any control: the way to the settings when the
      *  corner button is awkward to reach with a thumb. */
-    var onLongPress: (() -> Unit)? = null
 
     var profile: ConsoleProfile = ConsoleProfile.DS
         set(value) { field = value; layoutControls(); invalidate() }
@@ -130,7 +129,6 @@ class PadOverlay(context: Context) : View(context) {
     private var dragging: Int? = null
     private var dragDx = 0f
     private var dragDy = 0f
-    private var pressStart = 0L
     private var pressX = 0f
     private var pressY = 0f
 
@@ -494,7 +492,6 @@ class PadOverlay(context: Context) : View(context) {
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 val i = event.actionIndex
-                pressStart = System.currentTimeMillis()
                 pressX = event.getX(i)
                 pressY = event.getY(i)
                 press(event.getPointerId(i), pressX, pressY)
@@ -509,16 +506,14 @@ class PadOverlay(context: Context) : View(context) {
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_POINTER_UP -> {
                 val i = event.actionIndex
-                /* A long press on bare background is the other way into
-                 * the settings, for when the corner button is not where
-                 * a thumb wants to be. */
-                if (event.actionMasked == MotionEvent.ACTION_UP &&
-                    System.currentTimeMillis() - pressStart > 600 &&
-                    hypot(event.getX(i) - pressX, event.getY(i) - pressY) < 40f &&
-                    hitTest(pressX, pressY) == null && !nearDpad(pressX, pressY)
-                ) {
-                    onLongPress?.invoke()
-                }
+                /*
+                 * A long press on the black used to open the settings as
+                 * a second way in. It is gone: resting a thumb in the
+                 * empty space is something you do while playing, not a
+                 * request, and having the menu appear over the game is
+                 * worse than walking to the corner button. That button
+                 * is the only way in now.
+                 */
                 release(event.getPointerId(i))
             }
             MotionEvent.ACTION_CANCEL -> releaseEverything()

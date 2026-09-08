@@ -56,7 +56,11 @@ class SettingsPanel(
          */
         var receiveScale: Int
         var menuColumns: Boolean
+        /** BsProtocol.AUDIO_BOTH / AUDIO_TV / AUDIO_PAD. Only a Wii U
+         *  has two outputs, so only there is it offered. */
+        var audioSource: Int
         val hasAudio: Boolean
+        val isWiiU: Boolean
         val streamLine: String
         val savedServers: List<Profile>
 
@@ -292,6 +296,40 @@ class SettingsPanel(
             actions.onApply()
         }
         check("mute", settings.muted) { settings.muted = it; actions.onApply() }
+
+        /* Only a Wii U has two outputs, so only there is there anything
+         * to choose. Offering it elsewhere would be a question with one
+         * answer. */
+        if (settings.isWiiU) {
+            group("which output")
+            choice(
+                listOf("both, summed" to BsProtocol.AUDIO_BOTH,
+                       "television" to BsProtocol.AUDIO_TV,
+                       "GamePad" to BsProtocol.AUDIO_PAD),
+                settings.audioSource
+            ) { settings.audioSource = it; actions.onApply() }
+        }
+    }
+
+    /* A row of tick boxes behaving as one choice, which is how quality
+     * and the button modes are already offered here. */
+    private fun choice(options: List<Pair<String, Int>>, current: Int,
+                       onPick: (Int) -> Unit) {
+        val boxes = mutableListOf<CheckBox>()
+        options.forEachIndexed { i, (label, value) ->
+            val cb = CheckBox(context).apply {
+                text = label
+                textSize = 12f
+                setTextColor(Color.WHITE)
+                isChecked = value == current
+            }
+            cb.setOnClickListener {
+                boxes.forEachIndexed { j, b -> b.isChecked = j == i }
+                onPick(value)
+            }
+            boxes.add(cb)
+            body.addView(cb)
+        }
     }
 
     private fun controls() {

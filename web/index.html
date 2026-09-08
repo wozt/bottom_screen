@@ -55,7 +55,7 @@ body { grid-template-columns: auto minmax(0, 1fr) auto;
  * the bottom of the window. The top padding keeps the bar clear even
  * for the tallest side, which is the Wii U's.
  */
-.padside { display: flex; align-items: stretch; padding: 52px 12px 26px; }
+.padside { display: flex; align-items: stretch; padding: 52px 6px 26px; }
 #padLeft  { grid-area: padl; justify-content: flex-start; }
 #padRight { grid-area: padr; justify-content: flex-end; }
 
@@ -122,27 +122,60 @@ label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
 .srv a:hover { background: #ffffff22; }
 
 /* The on-screen buttons, in capture2cloud's own values. */
+/*
+ * The buttons are sized from the window, not fixed.
+ *
+ * In landscape the picture is limited by whatever the two button
+ * columns leave it, so every pixel the buttons do not take is a pixel
+ * the picture gets. Fixed 58px buttons cost a 4:3 screen most of a
+ * small window. The floor is what stays pressable; the ceiling stops
+ * them looking absurd on a large display.
+ */
 body { --btn-bg: rgba(255,255,255,.14); --btn-border: rgba(255,255,255,.4);
-       --btn-pressed: rgba(255,255,255,.45); }
+       --btn-pressed: rgba(255,255,255,.45);
+       --btn: clamp(30px, 6.2vh, 52px); }
 .padside:empty { display: none; }
 .cluster { display: flex; flex-direction: column; align-items: center;
-           justify-content: center; gap: 20px; }
+           justify-content: center; gap: calc(var(--btn) * 0.34); }
 .stack { display: flex; flex-direction: column; gap: 8px; }
-button.b { width: 58px; height: 58px; border-radius: 50%;
+button.b { width: var(--btn); height: var(--btn); border-radius: 50%;
            border: 2px solid var(--btn-border); background: var(--btn-bg);
-           color: #fff; font: bold 13px sans-serif; touch-action: none;
+           color: #fff; font: bold calc(var(--btn) * 0.24) sans-serif;
+           touch-action: none;
            user-select: none; box-shadow: 0 0 4px rgba(0,0,0,.5); }
 button.b:active { background: var(--btn-pressed); }
 .row { display: flex; gap: 8px; }
-#dpad { display: grid; grid-template-columns: repeat(3, 50px);
-        grid-template-rows: repeat(3, 50px); gap: 2px; }
-#dpad button.b { width: 50px; height: 50px; border-radius: 8px; }
-.diamond { display: grid; grid-template-columns: repeat(3, 58px);
-           grid-template-rows: repeat(3, 58px); gap: 2px; }
+.cluster > .row { flex-direction: column; }
+#dpad { display: grid; grid-template-columns: repeat(3, calc(var(--btn) * 0.86));
+        grid-template-rows: repeat(3, calc(var(--btn) * 0.86)); gap: 2px; }
+#dpad button.b { width: calc(var(--btn) * 0.86); height: calc(var(--btn) * 0.86);
+                 border-radius: 8px; }
+/*
+ * Shoulders and menu buttons are oblong, as they are on the console and
+ * in the Android client: they are pressed with the side of a finger
+ * rather than aimed at, and a circle wastes the width their labels
+ * need -- which is why they were abbreviated to SEL and STA.
+ */
+button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
+                border-radius: 8px; font-size: calc(var(--btn) * 0.22); }
+.diamond { display: grid; grid-template-columns: repeat(3, var(--btn));
+           grid-template-rows: repeat(3, var(--btn)); gap: 2px; }
 .diamond .top    { grid-area: 1 / 2; }
 .diamond .left   { grid-area: 2 / 1; }
 .diamond .right  { grid-area: 2 / 3; }
 .diamond .bottom { grid-area: 3 / 2; }
+.stickwrap { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.sticklabel { font: 10px monospace; color: rgba(255,255,255,.55); }
+.stick { position: relative; width: calc(var(--btn) * 1.3);
+         height: calc(var(--btn) * 1.3); border-radius: 50%;
+         border: 2px solid var(--btn-border); background: var(--btn-bg);
+         touch-action: none; }
+.stick .knob { position: absolute; left: 50%; top: 50%;
+               width: calc(var(--btn) * 0.58); height: calc(var(--btn) * 0.58);
+               margin: calc(var(--btn) * -0.29) 0 0 calc(var(--btn) * -0.29);
+               border-radius: 50%;
+               border: 2px solid var(--btn-border); background: var(--btn-pressed);
+               pointer-events: none; }
 </style>
 
 <div id="bar">
@@ -173,6 +206,14 @@ button.b:active { background: var(--btn-pressed); }
       <div class="menu-items" id="soundItems">
         <label>volume <input id="volume" type="range" min="0" max="100" value="100"><span id="volume-v">100%</span></label>
         <label><input id="mute" type="checkbox"> mute</label>
+        <label id="audioSourceRow" hidden>from
+          <select id="audioSource">
+            <option value="0">both outputs</option>
+            <option value="1">television</option>
+            <option value="2">GamePad</option>
+          </select>
+        </label>
+        <div class="hint" id="audioSourceHint" hidden>A Wii U mixes for two speakers at once and they do not carry the same thing.</div>
       </div>
     </details>
 
@@ -210,7 +251,7 @@ button.b:active { background: var(--btn-pressed); }
 
 const MSG = { VIDEO: 1, AUDIO: 2, STREAM_INFO: 3,
               INPUT: 16, PING: 17, PONG: 18, REQUEST_KEYFRAME: 19,
-              SET_SIZE: 21 };
+              SET_SIZE: 21, SET_AUDIO_SOURCE: 22 };
 const INPUT = { TOUCH_DOWN: 1, TOUCH_MOVE: 2, TOUCH_UP: 3,
                 BUTTON_DOWN: 4, BUTTON_UP: 5, AXIS: 6 };
 const BTN = { A:1, B:2, X:3, Y:4, L:5, R:6, ZL:7, ZR:8,
@@ -218,11 +259,28 @@ const BTN = { A:1, B:2, X:3, Y:4, L:5, R:6, ZL:7, ZR:8,
 
 /* The button set each console actually has. Drawing a ZL for a DS would
  * be offering a control that goes nowhere. */
+/*
+ * The same three profiles the Android client carries, which is the
+ * reference: a 3DS has ZL and ZR and two sticks, a Wii U has a HOME
+ * button and two sticks, and neither was drawn here. Offering a control
+ * the machine has not got is one fault; leaving out one it has is the
+ * worse one, because there is then no way to press it at all.
+ */
 const CONSOLES = {
-  1: { name: "Nintendo DS",  shoulders: ["L","R"] },
-  2: { name: "Nintendo 3DS", shoulders: ["L","R"] },
-  3: { name: "Wii U",        shoulders: ["L","ZL","ZR","R"] },
+  1: { name: "Nintendo DS",  shoulders: ["L","R"],
+       menu: ["SELECT","START"], sticks: [] },
+  2: { name: "Nintendo 3DS", shoulders: ["L","R","ZL","ZR"],
+       menu: ["SELECT","START"],
+       sticks: [{ label: "\u25CB", x: 1, y: 2, left: true },
+                { label: "C",       x: 3, y: 4, left: false }] },
+  3: { name: "Wii U",        shoulders: ["L","R","ZL","ZR"],
+       menu: ["SELECT","START","HOME"],
+       sticks: [{ label: "L", x: 1, y: 2, left: true },
+                { label: "R", x: 3, y: 4, left: false }] },
 };
+
+/* Full words now that the buttons are wide enough to hold them. */
+const MENU_LABEL = { SELECT: "SELECT", START: "START", HOME: "HOME" };
 
 const canvas = document.getElementById("screen");
 const ctx = canvas.getContext("2d", { alpha: false });
@@ -237,6 +295,19 @@ let width = 256, height = 192, console_id = 1;
 let frames = 0, decoded = 0, lastReport = 0, chosenCodec = "";
 let audioRate = 0, audioChannels = 0, audioDecoder = null, audioCtx = null;
 let audioFrames = 0, nextAudioAt = 0, audioPeak = 0, gain = null;
+let audioLead = 0;
+/*
+ * How far ahead of the clock the audio schedule may run.
+ *
+ * The old code corrected one direction only: falling behind reset the
+ * schedule, but nothing stopped it running ahead. A stall followed by a
+ * rush of packets got scheduled back to back into the future, and every
+ * packet after it inherited that lead -- so one hiccup became a delay
+ * that never went away. Correcting both ends costs a click where the
+ * backlog is dropped; carrying it costs the whole point of the project.
+ */
+const AUDIO_LEAD = 0.04;
+const AUDIO_MAX_LEAD = 0.15;
 /* The size before anybody asked for less, so the fractions below mean
  * fractions of what the emulator renders rather than of each other. */
 let fullW = 0, fullH = 0;
@@ -316,6 +387,16 @@ sizeEl.addEventListener("change", () => {
 function startAudio() {
   if (audioDecoder || !audioRate) return;
 
+  /*
+   * "interactive", not 0.
+   *
+   * latencyHint 0 asks for a 128-frame buffer -- 2.7ms -- and was tried
+   * here on the strength of that number alone. It made things audibly
+   * worse: a buffer that small underruns on any pause of the main
+   * thread, and the canvas is drawn on that same thread, so the picture
+   * suffered with the sound. The 18ms it saves are not worth having if
+   * they are spent on glitches.
+   */
   audioCtx = new (window.AudioContext || window.webkitAudioContext)(
     { sampleRate: 48000, latencyHint: "interactive" });
   /* Everything goes through one gain, so volume and mute are a single
@@ -354,12 +435,14 @@ function startAudio() {
       src.connect(gain);
       /*
        * A little ahead of now, so a packet that arrives fractionally
-       * late still has somewhere to go. Falling behind resets the
-       * schedule rather than piling up: a queue that only grows turns a
-       * hiccup into a permanent delay.
+       * late still has somewhere to go -- and not much ahead, in either
+       * direction. Behind, the schedule would stutter; ahead, it would
+       * quietly become the latency.
        */
       const now = audioCtx.currentTime;
-      if (nextAudioAt < now + 0.02) nextAudioAt = now + 0.05;
+      if (nextAudioAt < now + 0.02 || nextAudioAt > now + AUDIO_MAX_LEAD)
+        nextAudioAt = now + AUDIO_LEAD;
+      audioLead = nextAudioAt - now;
       src.start(nextAudioAt);
       nextAudioAt += buffer.duration;
     },
@@ -564,6 +647,58 @@ function addButton(parent, label, code) {
   return b;
 }
 
+/*
+ * A stick: drag inside the circle, let go and it re-centres.
+ *
+ * Both axes are sent on every move rather than only the one that
+ * changed, because a diagonal is two axes and sending one of them makes
+ * the character walk along a wall. Releasing sends zero on both -- a
+ * stick left off-centre keeps walking after the thumb has gone.
+ */
+function addStick(parent, spec) {
+  const wrap = document.createElement("div");
+  wrap.className = "stickwrap";
+  const label = document.createElement("div");
+  label.className = "sticklabel";
+  label.textContent = spec.label;
+  const el = document.createElement("div");
+  el.className = "stick";
+  const knob = document.createElement("div");
+  knob.className = "knob";
+  el.appendChild(knob);
+  wrap.append(label, el);
+  parent.appendChild(wrap);
+
+  let held = null;
+  const move = (ev) => {
+    const r = el.getBoundingClientRect();
+    const radius = r.width / 2;
+    let dx = (ev.clientX - (r.left + radius)) / radius;
+    let dy = (ev.clientY - (r.top + radius)) / radius;
+    const m = Math.hypot(dx, dy);
+    if (m > 1) { dx /= m; dy /= m; }
+    knob.style.transform = `translate(${dx * radius * 0.6}px, ${dy * radius * 0.6}px)`;
+    sendInput(INPUT.AXIS, spec.x, Math.round(dx * 32767), 0);
+    sendInput(INPUT.AXIS, spec.y, Math.round(dy * 32767), 0);
+  };
+  const release = () => {
+    held = null;
+    knob.style.transform = "";
+    sendInput(INPUT.AXIS, spec.x, 0, 0);
+    sendInput(INPUT.AXIS, spec.y, 0, 0);
+  };
+  el.addEventListener("pointerdown", (ev) => {
+    held = ev.pointerId;
+    el.setPointerCapture(ev.pointerId);
+    move(ev);
+    ev.preventDefault();
+  });
+  el.addEventListener("pointermove", (ev) => { if (held === ev.pointerId) move(ev); });
+  for (const e of ["pointerup", "pointercancel"])
+    el.addEventListener(e, (ev) => { if (held === ev.pointerId) release(); });
+  return wrap;
+}
+
 function buildPad(id) {
   padLeftEl.innerHTML = "";
   padRightEl.innerHTML = "";
@@ -584,7 +719,8 @@ function buildPad(id) {
   left.className = "cluster";
   const lShoulders = document.createElement("div");
   lShoulders.className = "stack";
-  shoulderSide("L", "ZL").forEach((n) => addButton(lShoulders, n, BTN[n]));
+  shoulderSide("L", "ZL").forEach(
+    (n) => addButton(lShoulders, n, BTN[n]).classList.add("wide"));
   const dpad = document.createElement("div");
   dpad.id = "dpad";
   const cells = [null, BTN.UP, null, BTN.LEFT, null, BTN.RIGHT, null, BTN.DOWN, null];
@@ -593,16 +729,28 @@ function buildPad(id) {
     if (code === null) { dpad.appendChild(document.createElement("div")); return; }
     addButton(dpad, names[i], code);
   });
+  const lStick = document.createElement("div");
+  const rStick = document.createElement("div");
+  (profile.sticks || []).forEach((sp) => addStick(sp.left ? lStick : rStick, sp));
+
+  /* Menu buttons alternate sides, as they do on Android: a Wii U has
+   * three and there are two places to put them. */
   const lMenu = document.createElement("div");
   lMenu.className = "row";
-  addButton(lMenu, "SEL", BTN.SELECT);
-  left.append(lShoulders, dpad, lMenu);
+  const rMenu = document.createElement("div");
+  rMenu.className = "row";
+  (profile.menu || ["SELECT", "START"]).forEach((n, i) => {
+    addButton(i % 2 ? rMenu : lMenu, MENU_LABEL[n] || n, BTN[n])
+      .classList.add("wide");
+  });
+  left.append(lShoulders, dpad, lStick, lMenu);
 
   const right = document.createElement("div");
   right.className = "cluster";
   const shoulders = document.createElement("div");
   shoulders.className = "stack";
-  shoulderSide("R", "ZR").forEach((n) => addButton(shoulders, n, BTN[n]));
+  shoulderSide("R", "ZR").forEach(
+    (n) => addButton(shoulders, n, BTN[n]).classList.add("wide"));
 
   /* X on top, Y left, A right, B bottom -- the layout every console
      here uses, rather than the order they happen to be listed in. */
@@ -613,10 +761,7 @@ function buildPad(id) {
   addButton(face, "A", BTN.A).classList.add("right");
   addButton(face, "B", BTN.B).classList.add("bottom");
 
-  const menu = document.createElement("div");
-  menu.className = "row";
-  addButton(menu, "STA", BTN.START);
-  right.append(shoulders, face, menu);
+  right.append(shoulders, face, rStick, rMenu);
 
   padLeftEl.appendChild(left);
   padRightEl.appendChild(right);
@@ -693,6 +838,22 @@ function applyVolume() {
 }
 volumeEl.addEventListener("input", applyVolume);
 muteEl.addEventListener("change", applyVolume);
+
+/*
+ * Only a Wii U has two outputs to choose between, so the row appears
+ * only there rather than offering a choice with one answer.
+ */
+const audioSourceEl = document.getElementById("audioSource");
+function showAudioSource(id) {
+  const wiiu = id === 3;
+  document.getElementById("audioSourceRow").hidden = !wiiu;
+  document.getElementById("audioSourceHint").hidden = !wiiu;
+}
+audioSourceEl.addEventListener("change", () => {
+  const b = new Uint8Array(4);
+  b[0] = parseInt(audioSourceEl.value, 10) || 0;
+  send(MSG.SET_AUDIO_SOURCE, b);
+});
 
 const showPadEl = document.getElementById("show-pad");
 function setPadShown(shown) {
@@ -897,6 +1058,11 @@ function connect() {
       if (audioRate > 0 && "AudioDecoder" in window) startAudio();
       if (!fullW) { fullW = width; fullH = height; }
       buildPad(console_id);
+      showAudioSource(console_id);
+      /* The server starts on its own default, so a choice already made
+       * has to be re-sent on every connection. */
+      if (console_id === 3 && audioSourceEl.value !== "0")
+        audioSourceEl.dispatchEvent(new Event("change"));
       say(consoleName() + "  " + width + "×" + height + ", waiting for a keyframe");
       send(MSG.REQUEST_KEYFRAME);
       return;
@@ -911,7 +1077,8 @@ function connect() {
         say(consoleName() + "  " + width + "×" + height + "  " +
             chosenCodec + "  " + decoded + "/" + frames + " frames" +
             (audioRate ? "  " + audioFrames + " audio, peak " +
-                         audioPeak.toFixed(2) : "") +
+                         audioPeak.toFixed(2) +
+                         ", lead " + Math.round(audioLead * 1000) + "ms" : "") +
             /* Decoded and audible are not the same thing: a browser
              * that has not been touched yet suspends the context, and
              * everything still schedules into silence. Saying so beats

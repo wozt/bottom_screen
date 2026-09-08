@@ -108,12 +108,15 @@ It also reaches the stream every 3ms rather than every 12ms.
 The host being silent is a Cemu setting (`<TVDevice>` empty,
 `<PadVolume>` 0), not a fault here.
 
-**Cemu does not list an Xbox pad plugged into the host** in its
-controller configuration — and yet that pad drives the game. So it is a
-gap in what the configuration window shows, not in the input path. Not
-ours, and less alarming than it first looked.
+**Cemu does not see an Xbox pad plugged into the host.** Not in its
+controller configuration, and not in the game either — the presses that
+looked like the pad working were coming from the web client. The pad
+works elsewhere on the machine, so it is Cemu's input backend or its
+configuration, and not something this project touches.
 
-The distorted sound is on **both** renderers, OpenGL and Vulkan. Touch
+- [ ] Configure the pad in Cemu itself, or find why it cannot be
+
+The distorted sound was on **both** renderers and is fixed above. Touch
 works on both.
 
 ### A3bis. 3DS: system setup crashes — parked
@@ -369,21 +372,20 @@ pressed on a client has to reach the game whether or not the host has a
 controller configured. It is the whole point: the phone *is* the
 controller.
 
-**Reported broken once and not reproduced.** On Cemu/OpenGL the
-on-screen buttons appeared to do nothing from either client; on
-Cemu/Vulkan, minutes later, they worked — and so did the host's pad,
-though Cemu still does not list it in its controller configuration. The
-tester's own reading is that the first test was wrong. Input does not
-depend on the renderer, so that is the likely explanation, and the fault
-is recorded as doubtful rather than as fact.
+**Met, and now demonstrated.** Reported broken on Cemu/OpenGL, then
+found working on Cemu/Vulkan minutes later — and the tester afterwards
+established what had actually happened: Cemu never responded to the
+host's pad at all, and what looked like the pad working was the web
+client's buttons driving the game. Which is the proof this asked for.
+With no controller configured in Cemu, a client's buttons reach the
+game.
 
-What is worth keeping is the requirement, because nothing proves it
-today: the merging in B5 ORs a client's presses into a controller's
-state, and no test has ever run with no controller present at all.
+Still worth a test that runs with nothing plugged in, because the only
+evidence is one session someone happened to interpret correctly.
 
-- [ ] Re-test deliberately: unplug every pad, then press buttons from a
-      client on each of the three emulators
 - [ ] A test that runs with no controller present, so this cannot rot
+- [ ] Confirm the same on melonDS and Azahar, which have only ever been
+      tried with a pad attached
 
 ### B6. Every render backend
 

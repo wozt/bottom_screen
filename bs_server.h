@@ -62,4 +62,11 @@ int bs_server_clients(const BsServer *srv);
 /* Frames sent since the server started. */
 uint32_t bs_server_frames(const BsServer *srv);
 
+/*
+ * Which of a Wii U's two audio outputs the clients asked for, as a
+ * BsAudioSource. Read by the Cemu bridge, which is the only place that
+ * has two to choose from; every other backend can ignore it.
+ */
+int bs_server_audio_source(const BsServer *srv);
+
 #endif /* BOTTOM_SCREEN_SERVER_H */

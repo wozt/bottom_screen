@@ -42,6 +42,12 @@ object BsProtocol {
     const val MSG_REQUEST_KEYFRAME = 19
     const val MSG_SET_QUALITY = 20
     const val MSG_SET_SIZE = 21
+    const val MSG_SET_AUDIO_SOURCE = 22
+
+    /** Which of a Wii U's two outputs to hear. */
+    const val AUDIO_BOTH = 0
+    const val AUDIO_TV = 1
+    const val AUDIO_PAD = 2
 
     // Video flags
     const val VFLAG_KEYFRAME = 0x01
@@ -234,6 +240,21 @@ object BsProtocol {
         b.putInt(4)
         b.putShort(width.toShort())
         b.putShort(height.toShort())
+        return b.array()
+    }
+
+    /*
+     * A Wii U mixes for the television and for the GamePad's own
+     * speakers at once, and they do not carry the same thing. Shared
+     * between clients like the size, because there is one encoder.
+     */
+    fun audioSourceMessage(source: Int): ByteArray {
+        val b = buffer(MSG_HEADER_SIZE + 4)
+        b.put(MSG_SET_AUDIO_SOURCE.toByte())
+        b.put(0); b.put(0); b.put(0)
+        b.putInt(4)
+        b.put(source.toByte())
+        b.put(0); b.put(0); b.put(0)
         return b.array()
     }
 

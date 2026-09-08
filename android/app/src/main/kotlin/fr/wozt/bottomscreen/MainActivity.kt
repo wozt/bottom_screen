@@ -104,6 +104,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private var quality = Quality.AUTO
     private var buttonScale = 1f
     private var fullscreen = false
+    /* Which of a Wii U's two outputs to hear; ignored elsewhere. */
+    private var audioSource = BsProtocol.AUDIO_BOTH
     private var startInEdit = false
 
     private var frames = 0
@@ -123,6 +125,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         muted = prefs0.getBoolean("muted", false)
         buttonScale = prefs0.getFloat("pad_scale", 1f)
         fullscreen = prefs0.getBoolean("fullscreen", false)
+        audioSource = prefs0.getInt("audio_source", BsProtocol.AUDIO_BOTH)
         padVisibility = PadVisibility.byName(prefs0.getString("pad_visibility", null))
         receiveScale = prefs0.getInt("receive_scale", 0)
         gamepadPresent = Gamepad.anyConnected()
@@ -285,6 +288,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     override fun onResume() {
         super.onResume()
+        audio?.volume = if (muted) 0f else volume
         (getSystemService(INPUT_SERVICE) as InputManager)
             .registerInputDeviceListener(deviceListener, null)
         padsChanged()
@@ -292,6 +296,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     override fun onPause() {
         super.onPause()
+        /* Silence while it is not on screen. A stream carries on
+         * arriving when the app is behind something else, and sound with
+         * no picture coming out of a pocket is not a feature. */
+        audio?.volume = 0f
         (getSystemService(INPUT_SERVICE) as InputManager)
             .unregisterInputDeviceListener(deviceListener)
     }
@@ -496,6 +504,9 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
          * has to be re-sent on every connection or it silently does
          * nothing after the first one. */
         if (quality != Quality.AUTO) client?.setQuality(quality.bitrate)
+        if (ack.console == BsProtocol.CONSOLE_WIIU &&
+            audioSource != BsProtocol.AUDIO_BOTH)
+            client?.sendAudioSource(audioSource)
         runOnUiThread { buildPlayUi(ack) }
     }
 
@@ -655,7 +666,6 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 client?.sendInput(BsProtocol.INPUT_AXIS, code, value, 0)
             }
             onMoved = { code, fx, fy -> savePosition(code, fx, fy, landscape) }
-            onLongPress = { showSettings() }
         }
         loadPositions(overlay, landscape)
         if (startInEdit) overlay.editMode = true
@@ -673,10 +683,16 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         if (landscape) {
             /* Picture in the middle, controls down each side, the way
              * they sit on the console. The bands get a floor so the
-             * buttons cannot be squeezed into nothing by a wide screen --
-             * and none at all when there are no buttons to keep room
-             * for, which is the whole point of hiding them. */
-            val minBand = if (showPadOverlay()) (availW * 0.17f).toInt() else 0
+             * buttons cannot be squeezed into nothing -- and none at all
+             * when there are no buttons to keep room for, which is the
+             * whole point of hiding them.
+             *
+             * The floor is a width, not a fraction of the screen. At 17%
+             * a 16:9 GamePad could not reach the full height of a
+             * 2400x1080 phone: it needed 12.4% and was given 17, which
+             * left a band of black above and below the picture in order
+             * to keep buttons bigger than they need to be. */
+            val minBand = if (showPadOverlay()) minBandPx() else 0
             var videoH = availH
             var videoW = availH * ack.width / ack.height
             if (availW - videoW < minBand * 2) {
@@ -804,6 +820,14 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
      * aspect ratio exactly. Run after layout, because that is the first
      * moment the usable size -- panel minus system bars -- is known.
      */
+    /*
+     * The narrowest a side band is allowed to get. Below this the
+     * buttons stop being pressable; above it the picture is being made
+     * smaller to keep them comfortable, which is the wrong trade on a
+     * screen whose whole purpose is the picture.
+     */
+    private fun minBandPx() = (resources.displayMetrics.density * 96).toInt()
+
     private fun sizeVideo(
         container: View,
         view: ScreenView,
@@ -818,7 +842,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         var videoW: Int
         var videoH: Int
         if (landscape) {
-            val minBand = if (showPadOverlay()) (w * 0.17f).toInt() else 0
+            val minBand = if (showPadOverlay()) minBandPx() else 0
             videoH = h
             videoW = h * ack.width / ack.height
             if (w - videoW < minBand * 2) {
@@ -999,6 +1023,11 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 get() = prefs.getBoolean("menu_columns", false)
                 set(v) { prefs.edit().putBoolean("menu_columns", v).apply() }
             override val hasAudio: Boolean get() = ack?.hasAudio == true
+            override val isWiiU: Boolean
+                get() = ack?.console == BsProtocol.CONSOLE_WIIU
+            override var audioSource: Int
+                get() = this@MainActivity.audioSource
+                set(v) { this@MainActivity.audioSource = v }
             override val streamLine: String get() = statusLine()
             override val savedServers: List<Profile> get() = Profiles.load(prefs)
             override val nativeWidth: Int get() = profile.width
@@ -1064,6 +1093,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             .putBoolean("muted", muted)
             .putFloat("pad_scale", buttonScale)
             .putBoolean("fullscreen", fullscreen)
+            .putInt("audio_source", audioSource)
             .putString("pad_visibility", padVisibility.name)
             .putString("quality", quality.name)
             .putInt("receive_scale", receiveScale)
@@ -1075,6 +1105,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         applyPadVisibility()
 
         client?.sendQuality(quality.bitrate)
+        client?.sendAudioSource(audioSource)
         /*
          * Zero means "follow the source", which is how a client stops
          * asking rather than guessing at the original numbers. Every
