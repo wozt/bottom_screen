@@ -1020,9 +1020,10 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     }
     srv->source = source;
     srv->listen_fd = -1;
-    if (cfg)
+    if (cfg) {
         srv->cfg = *cfg;
         srv->bitrate_now = cfg->bitrate;
+    }
     source->get_info(source->self, &srv->info);
 
     srv->max_clients = srv->cfg.max_clients > 0 ? srv->cfg.max_clients

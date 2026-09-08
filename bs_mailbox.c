@@ -1,3 +1,4 @@
+#include <stdio.h>
 #include "bs_mailbox.h"
 #include "bs_net.h"
 
@@ -31,6 +32,22 @@ typedef struct {
     int      audio_cap;      /* in frames */
     int      audio_head;     /* next frame to read */
     int      audio_count;    /* frames held */
+    /*
+     * The most sound allowed to stand in the ring, in frames.
+     *
+     * Not the same thing as its size. The ring is half a second so a
+     * burst has somewhere to go, but sound that sits in it *is* the
+     * latency, one for one -- and dropping the oldest frame when full,
+     * which is what this used to do, keeps it full for good. One stall
+     * at startup and every client is half a second behind for the rest
+     * of the session.
+     *
+     * So the backlog is trimmed back to this whenever it grows past it.
+     * A dropped moment is heard once; a standing delay is heard for as
+     * long as you play.
+     */
+    int      audio_target;
+    int      audio_trimmed;  /* said once */
 } Mailbox;
 
 static void mb_unblock(void *self);
@@ -110,6 +127,18 @@ void bs_mailbox_submit_audio(BsSource *src, const int16_t *samples, int frames)
         for (int c = 0; c < ch; c++)
             mb->audio[(size_t)slot * ch + c] = samples[(size_t)i * ch + c];
         mb->audio_count++;
+    }
+
+    /* Anything beyond the target is delay nobody asked for. */
+    if (mb->audio_target > 0 && mb->audio_count > mb->audio_target) {
+        const int excess = mb->audio_count - mb->audio_target;
+        mb->audio_head = (mb->audio_head + excess) % mb->audio_cap;
+        mb->audio_count -= excess;
+        if (!mb->audio_trimmed) {
+            mb->audio_trimmed = 1;
+            fprintf(stderr, "bottom_screen: audio backlog trimmed to %d ms\n",
+                    mb->audio_target * 1000 / mb->info.audio_rate);
+        }
     }
     pthread_mutex_unlock(&mb->lock);
 }
@@ -282,7 +311,10 @@ BsSource *bs_mailbox_create(BsConsole console, int width, int height,
     }
 
     if (audio_rate > 0 && audio_channels > 0) {
-        mb->audio_cap = audio_rate / 2;          /* half a second */
+        mb->audio_cap = audio_rate / 2;          /* half a second of room */
+        /* 60ms of standing sound: three Opus frames, which is enough to
+         * absorb a hiccup and little enough to be inaudible as delay. */
+        mb->audio_target = audio_rate * 60 / 1000;
         mb->audio = calloc((size_t)mb->audio_cap * audio_channels,
                            sizeof(int16_t));
         if (!mb->audio) {
