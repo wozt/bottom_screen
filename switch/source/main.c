@@ -85,7 +85,7 @@ typedef enum { ROW_ACTION, ROW_VALUE, ROW_INFO } RowKind;
 typedef enum {
     ROWID_NONE = 0, ROWID_SIZE, ROWID_VOLUME, ROWID_QUALITY,
     ROWID_AUDIO_SOURCE, ROWID_HOME, ROWID_DISCONNECT, ROWID_DECODER,
-    ROWID_ADDRESS, ROWID_PORT, ROWID_SAVED, ROWID_CONNECT
+    ROWID_ADDRESS, ROWID_PORT, ROWID_SAVED, ROWID_CONNECT, ROWID_BUTTONS
 } RowId;
 
 typedef struct {
@@ -220,6 +220,18 @@ static void draw_text(TTF_Font *font, const char *s, int x, int y, SDL_Color col
  * panel, insisting on whole multiples of 256 would throw away a third of
  * the screen to keep pixels square that nobody is inspecting.
  */
+/*
+ * How wide a band the on-screen buttons need down each side.
+ *
+ * A 4:3 screen already leaves exactly this much: 960 wide on a 1280
+ * panel is 160 either side, which is where the buttons go for nothing.
+ * A Wii U's 16:9 fills the width and leaves none, so there the picture
+ * gives some back -- but only while the buttons are actually shown.
+ */
+#define BUTTON_BAND 160
+
+static int g_show_buttons;   /* off until asked for */
+
 static SDL_Rect fit(int w, int h)
 {
     if (w <= 0 || h <= 0)
@@ -230,6 +242,10 @@ static SDL_Rect fit(int w, int h)
     if (dh > SCREEN_H) {
         dh = SCREEN_H;
         dw = dh * w / h;
+    }
+    if (g_show_buttons && SCREEN_W - dw < 2 * BUTTON_BAND) {
+        dw = SCREEN_W - 2 * BUTTON_BAND;
+        dh = dw * h / w;
     }
     return (SDL_Rect){ (SCREEN_W - dw) / 2, (SCREEN_H - dh) / 2, dw, dh };
 }
@@ -316,23 +332,183 @@ static void send_sticks(const HidAnalogStickState *left,
  * renders at a higher internal resolution, and dividing by the native
  * size instead would put every tap wrong by exactly that scale.
  */
+/* ------------------------------------------------ on-screen buttons */
+
+static void fill(int x, int y, int w, int h, SDL_Color c);
+
+/*
+ * A Switch has every button a DS or a 3DS has, so these are not there to
+ * make the console playable -- they are for the ones it has not got
+ * (a Wii U's HOME) and for playing with a finger while the Joy-Cons are
+ * detached. Off by default for that reason.
+ *
+ * They live in the black either side of the picture, which on a 4:3
+ * stream costs nothing at all.
+ */
+typedef struct {
+    SDL_Rect rect;
+    int      code;
+    const char *label;
+} PadButton;
+
+#define MAX_PAD_BUTTONS 20
+static PadButton g_pad_buttons[MAX_PAD_BUTTONS];
+static int       g_pad_button_count;
+/* Which of them a finger is on, one bit each. */
+static uint32_t  g_pad_touched;
+/* What the Joy-Cons are holding, so the drawing can show it. */
+static u64       g_pad_held;
+
+static void add_pad_button(int x, int y, int w, int h, int code, const char *label)
+{
+    if (g_pad_button_count >= MAX_PAD_BUTTONS)
+        return;
+    PadButton *b = &g_pad_buttons[g_pad_button_count++];
+    b->rect = (SDL_Rect){ x, y, w, h };
+    b->code = code;
+    b->label = label;
+}
+
+/*
+ * One column each side, in the console's own order: shoulders at the
+ * top, the thumb control in the middle, menu buttons at the bottom --
+ * the same arrangement the web and Android clients use.
+ */
+static void layout_pad_buttons(const StreamInfo *info, const SDL_Rect *pic)
+{
+    g_pad_button_count = 0;
+    if (!g_show_buttons)
+        return;
+
+    const int lw = pic->x;                       /* left band  */
+    const int rx = pic->x + pic->w;              /* right band starts */
+    const int rw = SCREEN_W - rx;
+    if (lw < 90 || rw < 90)
+        return;                                  /* no room: draw none */
+
+    const int u = 44, gap = 10;
+    const int wide_w = (lw < rw ? lw : rw) - 24, wide_h = 34;
+    const int lcx = lw / 2, rcx = rx + rw / 2;
+
+    const int wiiu = (info->console == BS_CONSOLE_WIIU);
+    const int has_z = wiiu || info->console == BS_CONSOLE_3DS;
+
+    /* Shoulders, stacked, Z above its shoulder as on the machine. */
+    int ly = 60, ry = 60;
+    if (has_z) {
+        add_pad_button(lcx - wide_w / 2, ly, wide_w, wide_h, BS_BTN_ZL, "ZL");
+        ly += wide_h + gap;
+        add_pad_button(rcx - wide_w / 2, ry, wide_w, wide_h, BS_BTN_ZR, "ZR");
+        ry += wide_h + gap;
+    }
+    add_pad_button(lcx - wide_w / 2, ly, wide_w, wide_h, BS_BTN_L, "L");
+    add_pad_button(rcx - wide_w / 2, ry, wide_w, wide_h, BS_BTN_R, "R");
+
+    /* D-pad on the left, face buttons on the right, both centred. */
+    const int mid = SCREEN_H / 2;
+    add_pad_button(lcx - u / 2,     mid - u * 3 / 2, u, u, BS_BTN_UP,    "\u25B2");
+    add_pad_button(lcx - u * 3 / 2, mid - u / 2,     u, u, BS_BTN_LEFT,  "\u25C0");
+    add_pad_button(lcx + u / 2,     mid - u / 2,     u, u, BS_BTN_RIGHT, "\u25B6");
+    add_pad_button(lcx - u / 2,     mid + u / 2,     u, u, BS_BTN_DOWN,  "\u25BC");
+
+    add_pad_button(rcx - u / 2,     mid - u * 3 / 2, u, u, BS_BTN_X, "X");
+    add_pad_button(rcx - u * 3 / 2, mid - u / 2,     u, u, BS_BTN_Y, "Y");
+    add_pad_button(rcx + u / 2,     mid - u / 2,     u, u, BS_BTN_A, "A");
+    add_pad_button(rcx - u / 2,     mid + u / 2,     u, u, BS_BTN_B, "B");
+
+    /* Menu buttons at the bottom, and a Wii U's HOME, which this console
+     * has no spare button for. */
+    int lb = SCREEN_H - 60 - wide_h, rb = SCREEN_H - 60 - wide_h;
+    add_pad_button(lcx - wide_w / 2, lb, wide_w, wide_h, BS_BTN_SELECT, "SELECT");
+    add_pad_button(rcx - wide_w / 2, rb, wide_w, wide_h, BS_BTN_START, "START");
+    if (wiiu) {
+        lb -= wide_h + gap;
+        add_pad_button(lcx - wide_w / 2, lb, wide_w, wide_h, BS_BTN_HOME, "HOME");
+    }
+}
+
+/* The Joy-Con mask that means the same thing as a button code, so a
+ * press on the console lights the button on the screen. */
+static u64 mask_for_code(int code)
+{
+    for (size_t i = 0; i < sizeof(BUTTONS) / sizeof(BUTTONS[0]); i++)
+        if (BUTTONS[i].code == code)
+            return BUTTONS[i].mask;
+    return 0;
+}
+
+static void draw_pad_buttons(u64 held)
+{
+    for (int i = 0; i < g_pad_button_count; i++) {
+        const PadButton *b = &g_pad_buttons[i];
+        const int on = (g_pad_touched & (1u << i)) ||
+                       (held & mask_for_code(b->code));
+        fill(b->rect.x, b->rect.y, b->rect.w, b->rect.h,
+             on ? COL_SELECTED : COL_ROW);
+        int tw = 0, th = 0;
+        TTF_SizeUTF8(g_small, b->label, &tw, &th);
+        draw_text(g_small, b->label,
+                  b->rect.x + (b->rect.w - tw) / 2,
+                  b->rect.y + (b->rect.h - th) / 2,
+                  on ? COL_TEXT : COL_DIM);
+    }
+}
+
+/*
+ * Every finger on the glass, not just the first.
+ *
+ * One of them may be on the picture, which is the stylus; the others may
+ * be on the on-screen buttons, and holding a direction while tapping
+ * elsewhere is the whole point of having them. Pressing a button and
+ * dragging the pen at the same time has to work, so the two are decided
+ * separately rather than by whichever touch happens to be reported
+ * first.
+ */
 static void send_touch(const SDL_Rect *dst, const StreamInfo *info)
 {
     static int touching;
 
     HidTouchScreenState st = {0};
-    if (!hidGetTouchScreenStates(&st, 1) || st.count == 0) {
-        if (touching) {
-            touching = 0;
-            stream_send_touch(BS_INPUT_TOUCH_UP, 0, 0);
+    const int have = hidGetTouchScreenStates(&st, 1) && st.count > 0;
+
+    const uint32_t was = g_pad_touched;
+    g_pad_touched = 0;
+    int stylus = -1;
+
+    if (have) {
+        for (int t = 0; t < (int)st.count; t++) {
+            const int tx = (int)st.touches[t].x, ty = (int)st.touches[t].y;
+
+            int on_button = 0;
+            for (int i = 0; i < g_pad_button_count; i++) {
+                const SDL_Rect *r = &g_pad_buttons[i].rect;
+                if (tx >= r->x && tx < r->x + r->w &&
+                    ty >= r->y && ty < r->y + r->h) {
+                    g_pad_touched |= 1u << i;
+                    on_button = 1;
+                    break;
+                }
+            }
+            if (on_button)
+                continue;
+
+            if (tx >= dst->x && tx < dst->x + dst->w &&
+                ty >= dst->y && ty < dst->y + dst->h)
+                stylus = t;
         }
-        return;
     }
 
-    const int tx = (int)st.touches[0].x;
-    const int ty = (int)st.touches[0].y;
-    if (tx < dst->x || tx >= dst->x + dst->w ||
-        ty < dst->y || ty >= dst->y + dst->h) {
+    /* Only the changes, so a held button is not re-sent sixty times a
+     * second. */
+    for (int i = 0; i < g_pad_button_count; i++) {
+        const uint32_t bit = 1u << i;
+        if ((g_pad_touched & bit) && !(was & bit))
+            stream_send_button(g_pad_buttons[i].code, 1);
+        else if (!(g_pad_touched & bit) && (was & bit))
+            stream_send_button(g_pad_buttons[i].code, 0);
+    }
+
+    if (stylus < 0) {
         /* Outside the picture: not a stylus press, and treating it as
          * one would put the pen on the far edge of the screen. */
         if (touching) {
@@ -342,8 +518,8 @@ static void send_touch(const SDL_Rect *dst, const StreamInfo *info)
         return;
     }
 
-    const int x = (tx - dst->x) * info->width / dst->w;
-    const int y = (ty - dst->y) * info->height / dst->h;
+    const int x = ((int)st.touches[stylus].x - dst->x) * info->width / dst->w;
+    const int y = ((int)st.touches[stylus].y - dst->y) * info->height / dst->h;
     stream_send_touch(touching ? BS_INPUT_TOUCH_MOVE : BS_INPUT_TOUCH_DOWN, x, y);
     touching = 1;
 }
@@ -544,6 +720,10 @@ static void build_play_rows(const StreamInfo *info)
     snprintf(r->value, sizeof(r->value), "%s", QUALITY[g_quality].label);
 
     r = &g_rows[g_row_count++];
+    r->kind = ROW_VALUE; r->id = ROWID_BUTTONS; r->label = "on-screen buttons";
+    snprintf(r->value, sizeof(r->value), "%s", g_show_buttons ? "shown" : "hidden");
+
+    r = &g_rows[g_row_count++];
     r->kind = ROW_VALUE; r->id = ROWID_VOLUME; r->label = "volume";
     snprintf(r->value, sizeof(r->value), "%d%%%s", g_volume,
              g_muted ? "   muted" : "");
@@ -615,6 +795,9 @@ static void adjust_row(const StreamInfo *info, int delta)
         stream_send_quality(QUALITY[g_quality].bitrate);
         break;
     }
+    case ROWID_BUTTONS:
+        g_show_buttons = !g_show_buttons;
+        break;
     case ROWID_VOLUME:
         g_volume += delta * 10;
         if (g_volume < 0) g_volume = 0;
@@ -706,6 +889,8 @@ static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
             SDL_Rect dst = fit(info->width, info->height);
             SDL_RenderCopy(g_renderer, g_picture, NULL, &dst);
             *dst_out = dst;
+            layout_pad_buttons(info, &dst);
+            draw_pad_buttons(g_pad_held);
         }
     }
 
@@ -783,8 +968,6 @@ int main(int argc, char **argv)
         const u64 down = padGetButtonsDown(&pad);
         const u64 up   = padGetButtonsUp(&pad);
 
-        if (down & HidNpadButton_Plus)
-            break;
 
         if (!stream_connected()) {
             build_connect_rows();
@@ -840,13 +1023,42 @@ int main(int argc, char **argv)
         stream_info(&info);
 
         /*
+         * START and SELECT together: a second opens the settings, five
+         * seconds leave the application.
+         *
+         * Both are buttons the game wants, so neither can do anything on
+         * its own, and a moment's overlap while playing must not count
+         * either -- hence the hold. When the menu opens they are
+         * released towards the game, which would otherwise be left
+         * holding two buttons nobody is pressing any more.
+         *
          * While the settings are open the pad drives them rather than
          * the console: a menu that also presses A on the game underneath
          * it is worse than no menu.
          */
-        if (down & HidNpadButton_Minus) {
-            g_menu_open = !g_menu_open;
-            g_selected = 0;
+        {
+            static Uint32 combo_since = 0;
+            static int    combo_opened = 0;
+            const u64 holding = padGetButtons(&pad);
+            const int both = (holding & HidNpadButton_Plus) &&
+                             (holding & HidNpadButton_Minus);
+            if (!both) {
+                combo_since = 0;
+                combo_opened = 0;
+            } else {
+                if (!combo_since)
+                    combo_since = SDL_GetTicks();
+                const Uint32 held_ms = SDL_GetTicks() - combo_since;
+                if (!combo_opened && held_ms >= 1000) {
+                    combo_opened = 1;
+                    g_menu_open = !g_menu_open;
+                    g_selected = 0;
+                    stream_send_button(BS_BTN_START, 0);
+                    stream_send_button(BS_BTN_SELECT, 0);
+                }
+                if (held_ms >= 5000)
+                    break;
+            }
         }
 
         if (g_menu_open) {
@@ -877,6 +1089,7 @@ int main(int argc, char **argv)
             continue;
         }
 
+        g_pad_held = padGetButtons(&pad);
         send_pad(down, up);
         HidAnalogStickState left = padGetStickPos(&pad, 0);
         HidAnalogStickState right = padGetStickPos(&pad, 1);
