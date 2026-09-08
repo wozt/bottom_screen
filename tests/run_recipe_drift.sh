@@ -15,6 +15,10 @@
 # gone must FAIL rather than land somewhere plausible. A patcher that
 # always succeeds is worse than one that refuses, because the failure
 # moves from the message to the build.
+#
+# And then the same question asked of real code rather than of code bent
+# on purpose, because a fabricated case only proves the mechanism works
+# on the case it was built for. Azahar's own history supplies one.
 set -e
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
@@ -109,6 +113,60 @@ if echo "$out" | grep -q "FAILED"; then
 else
     echo "  a hook whose code is gone was NOT refused -- that is the dangerous case"
     fail=1
+fi
+
+# --- the same thing, on real upstream code ----------------------------
+#
+# Everything above bends the code on purpose, and a case built to be
+# survived proves little. This one was not built: it is Azahar as it
+# stood on 2026-02-25, six months and 278 commits before the recipes were
+# written, where a real change to the configuration backend moved the
+# lines two of the hooks sit on.
+#
+# Both mechanisms are beaten there, and that is the honest part -- an
+# anchor is not magic and this is where it stops. What differs is what
+# you are left holding. The diff refuses the whole file set and touches
+# nothing; the recipe lands twenty of the twenty-two edits and names the
+# two it could not, with the reason for each. Recovering from the second
+# is an afternoon; recovering from the first starts with finding out
+# which of twenty-two changes was the problem.
+#
+# Pinned to the commit rather than counted back from the recipe's base,
+# which moves every time the recipes are regenerated.
+DRIFTED=fe2f63746750f68712dc75ec600428806e5b3952
+
+if git -C "$DIR/emulators/azahar" rev-parse --verify -q "$DRIFTED^{commit}" >/dev/null 2>&1; then
+    echo
+    tree=$WORK/azahar
+    git -C "$DIR/emulators/azahar" worktree add --detach -q "$tree" "$DRIFTED"
+
+    (cd "$tree" && git apply "$DIR/patches/azahar.patch" >/dev/null 2>&1) || true
+    diff_touched=$(git -C "$tree" status --porcelain | wc -l | tr -d ' ')
+    git -C "$tree" checkout -q -- . && git -C "$tree" clean -qfd
+
+    out=$(python3 "$DIR/tools/bs_patch.py" azahar "$tree" 2>&1 || true)
+    recipe_touched=$(git -C "$tree" status --porcelain | wc -l | tr -d ' ')
+    git -C "$DIR/emulators/azahar" worktree remove --force "$tree" 2>/dev/null || true
+
+    echo "  on real upstream drift (azahar, 2026-02-25):"
+    echo "    the diff changed $diff_touched file(s), the recipe changed $recipe_touched"
+    echo "$out" | grep -E "FAILED|MISSING" | sed 's/^/    /'
+
+    if [ "$diff_touched" != "0" ]; then
+        echo "  unexpected: the diff coped, so this case no longer shows anything"
+        fail=1
+    elif [ "$recipe_touched" -lt 10 ]; then
+        echo "  the recipe managed almost nothing either -- it should land most of the edits"
+        fail=1
+    elif ! echo "$out" | grep -q "no such file upstream"; then
+        echo "  the recipe did not report the file that upstream does not have yet"
+        fail=1
+    elif ! echo "$out" | grep -q "is still there, but the lines this hooks into have changed"; then
+        echo "  the recipe did not say why the surviving hook failed"
+        fail=1
+    fi
+else
+    echo "  (no azahar history deep enough for the real-drift case, skipped)"
 fi
 
 [ "$fail" = 0 ] && echo "PASS" || echo "FAIL"
