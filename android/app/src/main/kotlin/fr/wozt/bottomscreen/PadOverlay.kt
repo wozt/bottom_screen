@@ -153,9 +153,17 @@ class PadOverlay(context: Context) : View(context) {
         layoutControls()
     }
 
+    /*
+     * The widest thing in a side band is the face diamond: two buttons
+     * either side of the centre, so 2 * (spread + r) = 3.64 units across,
+     * plus a margin of 0.45 each side. Dividing the band by 3.2 asked for
+     * a diamond wider than the band it sits in, and the outer button --
+     * Y on the right-hand side -- was drawn over the edge of the picture.
+     * The divisor is what the contents actually need, not a round number.
+     */
     private fun unit(): Float {
         val h = height.toFloat()
-        val base = if (sideBand > 0f) minOf(sideBand / 3.2f, h / 6.5f)
+        val base = if (sideBand > 0f) minOf(sideBand / (FACE_SPAN + 0.9f), h / 6.5f)
                    else minOf(width.toFloat(), h * 0.55f) * 0.13f
         return base * buttonScale
     }
@@ -226,7 +234,10 @@ class PadOverlay(context: Context) : View(context) {
         dpadRect.set(dpadCx - dpadSize / 2f, midY - dpadSize / 2f,
                      dpadCx + dpadSize / 2f, midY + dpadSize / 2f)
 
-        addFaceDiamond(w - band / 2f, midY, u)
+        /* Clamped to the band like every other control here, so raising
+         * the button scale cannot push the diamond over the picture. */
+        addFaceDiamond(w - band / 2f, midY,
+                       minOf(u, (band - margin * 2f) / FACE_SPAN))
 
         val stickR = minOf(u * 1.05f, band / 2f - margin)
         val stickY = (midY + dpadSize / 2f + (h - margin - menuH)) / 2f
@@ -265,6 +276,8 @@ class PadOverlay(context: Context) : View(context) {
 
     /* Y left, A right, X top, B bottom -- the diamond all three machines
      * use. */
+    /* Half-width of the diamond is spread + r; FACE_SPAN is the whole
+     * width in units, and the two must be changed together. */
     private fun addFaceDiamond(cx: Float, cy: Float, u: Float) {
         faceCentre.set(cx, cy)
         val r = u * 0.62f
@@ -637,6 +650,11 @@ class PadOverlay(context: Context) : View(context) {
         /** The face diamond's id. It moves as one, so it saves one
          *  position rather than four. */
         const val FACE = -1
+
+        /** How wide the face diamond is, in units: two buttons either
+         *  side of the centre, so 2 * (spread 1.2 + radius 0.62). Kept
+         *  next to addFaceDiamond, which is where those two come from. */
+        const val FACE_SPAN = 3.64f
         private const val HELD = 0x90FFFFFF.toInt()
     }
 }
