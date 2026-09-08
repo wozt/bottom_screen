@@ -733,6 +733,25 @@ untested.
 - [ ] Reproduce, and find what is kept
 - [ ] Check the web client for the same
 
+### B8. The encoder is told a frame rate it is not fed
+
+Measured while chasing the bitrate: a requested rate is exceeded by
+about 1.4x, and that is the ratio between the frames actually delivered
+(42.5/s at the time) and the rate the encoder was configured with (30).
+Rate control divides a bitrate by a frame count, so a frame count that
+is wrong scales the result by exactly that much.
+
+The number comes from the source: Cemu measures its own output once,
+shortly after starting, and never revisits it. A game whose frame rate
+moves — and they do — leaves the encoder budgeting for the wrong one.
+
+Not urgent: the picture is right, only the ceiling is soft. It matters
+on a phone over Wi-Fi, where asking for 1 Mbit/s and being sent 1.4 is
+the difference between fitting and not.
+
+- [ ] Measure delivered fps in the server and rebuild when it drifts
+      past some margin, rather than trusting a number taken once
+
 ### C6. Android: two faults left open
 
 Both turned up on 2026-09-08 while taking the README screenshots, and

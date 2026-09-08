@@ -115,6 +115,14 @@ struct BsServer {
      */
     volatile int pending_bitrate;
     volatile int quality_dirty;
+    /*
+     * What the encoder is actually on, as opposed to what it was started
+     * with. Every rebuild has to use this: two of them used cfg.bitrate,
+     * so asking for a different size -- or merely turning the emulator's
+     * internal resolution up, which rebuilds on its own -- threw away
+     * whatever quality the client had chosen, without saying so.
+     */
+    volatile int bitrate_now;
 
     /*
      * The size a client asked to receive, 0 meaning "whatever the source
@@ -892,14 +900,17 @@ static void *pump_thread(void *arg)
 
         if (srv->quality_dirty) {
             srv->quality_dirty = 0;
-            if (encoder_rebuild(srv, srv->pending_bitrate) == 0 && !srv->cfg.quiet)
-                fprintf(stderr, "bottom_screen: bitrate now %d bit/s\n",
-                        srv->pending_bitrate);
+            if (encoder_rebuild(srv, srv->pending_bitrate) == 0) {
+                srv->bitrate_now = srv->pending_bitrate;
+                if (!srv->cfg.quiet)
+                    fprintf(stderr, "bottom_screen: bitrate now %d bit/s\n",
+                            srv->pending_bitrate);
+            }
         }
 
         if (srv->size_dirty) {
             srv->size_dirty = 0;
-            encoder_rebuild(srv, srv->cfg.bitrate);
+            encoder_rebuild(srv, srv->bitrate_now);
         }
 
         /*
@@ -928,7 +939,7 @@ static void *pump_thread(void *arg)
         if (now.width != srv->info.width || now.height != srv->info.height) {
             srv->info.width = now.width;
             srv->info.height = now.height;
-            if (encoder_rebuild(srv, srv->cfg.bitrate) == 0) {
+            if (encoder_rebuild(srv, srv->bitrate_now) == 0) {
                 broadcast_stream_info(srv, sc.frame_id);
                 if (!srv->cfg.quiet)
                     fprintf(stderr, "bottom_screen: now %dx%d\n",
@@ -1011,6 +1022,7 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     srv->listen_fd = -1;
     if (cfg)
         srv->cfg = *cfg;
+        srv->bitrate_now = cfg->bitrate;
     source->get_info(source->self, &srv->info);
 
     srv->max_clients = srv->cfg.max_clients > 0 ? srv->cfg.max_clients

@@ -503,7 +503,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         /* The server starts on its own default, so a saved preference
          * has to be re-sent on every connection or it silently does
          * nothing after the first one. */
-        if (quality != Quality.AUTO) client?.setQuality(quality.bitrate)
+        if (quality != Quality.AUTO) client?.sendQuality(quality.bitrate)
         if (ack.console == BsProtocol.CONSOLE_WIIU &&
             audioSource != BsProtocol.AUDIO_BOTH)
             client?.sendAudioSource(audioSource)
