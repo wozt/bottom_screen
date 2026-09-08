@@ -57,10 +57,7 @@ list along.
 
 ### On Android
 
-<img src="docs/screenshots/android-ds.png" width="330" align="left" alt="The Android client">
-<img src="docs/screenshots/android-settings.png" width="330" alt="Its settings panel">
-
-<br clear="both">
+<img src="docs/screenshots/android-settings.png" width="300" align="right" alt="The settings panel">
 
 Hardware decoding through MediaCodec, straight into a Surface. Movable
 on-screen buttons, sticks where the console has them, sound with volume
@@ -69,10 +66,10 @@ twice. A physical pad works too — its presses are merged with the
 on-screen ones rather than replacing them.
 
 Turn the phone and the buttons move to the sides, where the console
-keeps them, so the picture gets the full height rather than sharing it
+keeps them, so the picture gets the full height instead of sharing it
 with a band underneath.
 
-![The Android client held sideways](docs/screenshots/android-ds-landscape.png)
+<br clear="both">
 
 ```sh
 cd android && ./gradlew assembleDebug
@@ -81,12 +78,12 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ### Three consoles, one client
 
-Nothing below is configured for a machine. The server announces which
-console it is serving, how big the screen is and which buttons exist,
-and the interface is built from that — a Wii U brings four triggers, two
-sticks and a HOME button, a DS brings none of them, and the same client
-draws both. The pictures are the built-in test pattern rather than a
-game, so what is being shown is the client and not somebody's cartridge.
+The same build against each machine, upright and sideways on the phone
+and in a browser beside it. A Wii U brings four triggers, two sticks and
+a HOME button; a DS brings none of those.
+
+The test pattern rather than a game, so what is on display is the client
+and not somebody's cartridge.
 
 **Nintendo DS** — 256×192
 
@@ -236,7 +233,8 @@ That is all. The emulator announces where it is listening.
 ## What works, and what does not
 
 Everything above is verified against real games rather than a test
-pattern: a commercial DS title, a commercial 3DS title, a commercial Wii U title.
+pattern: a commercial DS title, a commercial 3DS title, a commercial Wii U title. The
+screenshots use the pattern; the testing did not.
 
 Still open:
 
