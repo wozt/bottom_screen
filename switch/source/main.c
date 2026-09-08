@@ -124,9 +124,30 @@ typedef struct {
 /* The row the cursor is on, by identity. */
 static RowId selected_id(void);
 
-static MenuRow g_rows[12];
+/*
+ * Room for every row any console can ask for, which is fifteen: a Wii U
+ * with the on-screen pad shown adds six of its own to the nine that are
+ * always there. It was twelve, and turning the pad on wrote three rows
+ * past the end -- which quit the application on the spot and crashed it
+ * again on every attempt to reopen the menu.
+ *
+ * The count is not the real fix. add_row is: a row beyond the end goes
+ * to a scratch entry that is never drawn, so adding one later can cost
+ * a missing line but not memory somebody else was using.
+ */
+static MenuRow g_rows[24];
+static MenuRow g_row_overflow;
+
 static int     g_row_count;
 static int     g_selected;
+
+static MenuRow *add_row(void)
+{
+    if (g_row_count >= (int)(sizeof(g_rows) / sizeof(g_rows[0])))
+        return &g_row_overflow;
+    return &g_rows[g_row_count++];
+}
+
 
 /* Settings while playing, reached by holding START and SELECT. */
 static int g_menu_open;
@@ -684,17 +705,17 @@ static void build_connect_rows(void)
     g_row_count = 0;
     MenuRow *r;
 
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_ADDRESS; r->label = "address";
     snprintf(r->value, sizeof(r->value), "%s", g_host);
 
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_PORT; r->label = "port";
     snprintf(r->value, sizeof(r->value), "%u", (unsigned)g_port);
 
     /* Only worth a row once there is a choice to make. */
     if (g_server_count > 1) {
-        r = &g_rows[g_row_count++];
+        r = add_row();
         r->kind = ROW_VALUE; r->id = ROWID_SAVED; r->label = "saved";
         snprintf(r->value, sizeof(r->value), "%d of %d   %s:%u",
                  g_server_at + 1, g_server_count,
@@ -702,7 +723,7 @@ static void build_connect_rows(void)
                  (unsigned)g_servers[g_server_at].port);
     }
 
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_ACTION; r->id = ROWID_CONNECT;
     r->label = "connect"; r->value[0] = '\0';
 
@@ -741,58 +762,58 @@ static void build_play_rows(const StreamInfo *info)
     g_row_count = 0;
     MenuRow *r;
 
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_SIZE; r->label = "size received";
     size_label(info, r->value, sizeof(r->value));
 
     /* The same ladder the other two clients offer, so the same words
      * mean the same thing wherever you are holding it. */
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_QUALITY; r->label = "quality";
     snprintf(r->value, sizeof(r->value), "%s", QUALITY[g_quality].label);
 
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_BUTTONS; r->label = "on-screen buttons";
     snprintf(r->value, sizeof(r->value), "%s", g_show_buttons ? "shown" : "hidden");
 
     /* Only worth offering once there is a pad on screen to arrange. */
     if (g_show_buttons) {
-        r = &g_rows[g_row_count++];
+        r = add_row();
         r->kind = ROW_VALUE; r->id = ROWID_PAD_EDIT; r->label = "move buttons";
         snprintf(r->value, sizeof(r->value), "%s",
                  vpad_editing() ? "dragging" : "no");
 
-        r = &g_rows[g_row_count++];
+        r = add_row();
         r->kind = ROW_VALUE; r->id = ROWID_PAD_COLOUR; r->label = "button colour";
         snprintf(r->value, sizeof(r->value), "%s", vpad_colour_name());
 
-        r = &g_rows[g_row_count++];
+        r = add_row();
         r->kind = ROW_VALUE; r->id = ROWID_PAD_OPACITY; r->label = "button opacity";
         snprintf(r->value, sizeof(r->value), "%d%%", vpad_opacity());
 
         /* Only where there are sticks to place. */
         if (info->console != BS_CONSOLE_DS) {
-            r = &g_rows[g_row_count++];
+            r = add_row();
             r->kind = ROW_VALUE; r->id = ROWID_STICK_L; r->label = "left stick";
             snprintf(r->value, sizeof(r->value), "%s",
                      vpad_stick_below(0) ? "below the d-pad" : "above the d-pad");
 
-            r = &g_rows[g_row_count++];
+            r = add_row();
             r->kind = ROW_VALUE; r->id = ROWID_STICK_R; r->label = "right stick";
             snprintf(r->value, sizeof(r->value), "%s",
                      vpad_stick_below(1) ? "below the buttons" : "above the buttons");
         }
 
-        r = &g_rows[g_row_count++];
+        r = add_row();
         r->kind = ROW_ACTION; r->id = ROWID_PAD_RESET;
         r->label = "reset button positions"; r->value[0] = '\0';
     }
 
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_STATS; r->label = "counters";
     snprintf(r->value, sizeof(r->value), "%s", g_show_stats ? "shown" : "hidden");
 
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_VOLUME; r->label = "volume";
     snprintf(r->value, sizeof(r->value), "%d%%%s", g_volume,
              g_muted ? "   muted" : "");
@@ -802,22 +823,22 @@ static void build_play_rows(const StreamInfo *info)
     if (info->console == BS_CONSOLE_WIIU) {
         static const char *const names[3] = { "both, summed", "television",
                                               "GamePad" };
-        r = &g_rows[g_row_count++];
+        r = add_row();
         r->kind = ROW_VALUE; r->id = ROWID_AUDIO_SOURCE; r->label = "sound from";
         snprintf(r->value, sizeof(r->value), "%s", names[g_audio_source]);
 
         /* A Wii U GamePad has a HOME button and a Switch has none to
          * spare, so it lives here rather than being unreachable. */
-        r = &g_rows[g_row_count++];
+        r = add_row();
         r->kind = ROW_ACTION; r->id = ROWID_HOME;
         r->label = "press HOME"; r->value[0] = '\0';
     }
 
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_ACTION; r->id = ROWID_DISCONNECT;
     r->label = "disconnect"; r->value[0] = '\0';
 
-    r = &g_rows[g_row_count++];
+    r = add_row();
     r->kind = ROW_INFO; r->id = ROWID_DECODER; r->label = "decoder";
     snprintf(r->value, sizeof(r->value), "%s", stream_decoder_name());
 

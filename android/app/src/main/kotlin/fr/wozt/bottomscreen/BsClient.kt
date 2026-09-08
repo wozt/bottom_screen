@@ -77,14 +77,6 @@ class BsClient(
         if (running) outQueue.offer(BsProtocol.sizeMessage(width, height))
     }
 
-    /**
-     * Asks for a keyframe. Worth doing whenever the decoder is new: a
-     * fresh decoder has no reference picture and draws nothing until one
-     * arrives, which after a rotation is a second of black screen.
-     */
-    fun requestKeyframe() {
-        if (running) outQueue.offer(BsProtocol.emptyMessage(BsProtocol.MSG_REQUEST_KEYFRAME))
-    }
 
     /** Picks which of a Wii U's two audio outputs to receive. */
     fun sendAudioSource(source: Int) {

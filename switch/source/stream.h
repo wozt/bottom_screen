@@ -51,7 +51,6 @@ int stream_take_audio(int16_t *out, int max_frames);
 void stream_send_touch(int type, int x, int y);
 void stream_send_button(int code, int pressed);
 void stream_send_axis(int code, int value);
-void stream_request_keyframe(void);
 
 /*
  * Asks for a picture of this size rather than whatever the emulator

@@ -212,9 +212,11 @@ static void client_send(BsClient *cl, uint8_t type, int keyframe,
 
     if (cl->queued + body_len > BS_QUEUE_MAX_BYTES) {
         client_purge(cl);
+        /* Waits for the next keyframe rather than asking for one: the
+         * client that fell behind is not a reason to make everybody
+         * else pay for a new one. */
         cl->want_key = 1;
         pthread_mutex_unlock(&cl->lock);
-        bs_encoder_request_keyframe(cl->srv->enc);
         if (!cl->srv->cfg.quiet)
             fprintf(stderr, "bottom_screen: %s fell behind, resynchronising\n",
                     bs_conn_peer(cl->conn));
@@ -438,12 +440,12 @@ static void *client_recv_thread(void *arg)
         return NULL;
     }
 
-    /* A client that has just connected has no reference picture and
-     * decodes nothing until the next keyframe -- up to a second of blank
-     * window at gop=fps. Ask for one now. */
+    /* A client that has just connected has no reference picture, so it
+     * is sent nothing until the next keyframe -- a second at most, and
+     * a blank window rather than a corrupt one. It used to ask for one,
+     * which made every arrival cost every other client a keyframe. */
     cl->want_key = 1;
     cl->ready = 1;
-    bs_encoder_request_keyframe(srv->enc);
 
     /* Someone is watching, so the pump has work to do. */
     pthread_mutex_lock(&srv->roster);
@@ -508,7 +510,21 @@ static void *client_recv_thread(void *arg)
         } else if (type == BS_MSG_PING) {
             client_send(cl, BS_MSG_PONG, 0, NULL, 0, NULL, 0);
         } else if (type == BS_MSG_REQUEST_KEYFRAME) {
-            bs_encoder_request_keyframe(srv->enc);
+            /*
+             * Ignored, deliberately.
+             *
+             * There is one encoder for everyone, so a keyframe asked for
+             * by one client is paid for by all of them -- and a client
+             * that is struggling asks constantly, which is exactly when
+             * the others can least afford it. Three clients turned into
+             * a stream that was mostly keyframes.
+             *
+             * A client that has nothing to decode waits for the next one
+             * instead, which is a second away at most. The message is
+             * still accepted and dropped rather than treated as an
+             * error, because clients built before this went on sending
+             * it.
+             */
         } else if (type == BS_MSG_SET_SIZE && n >= sizeof(BsSize)) {
             BsSize sz;
             memcpy(&sz, buf, sizeof(sz));

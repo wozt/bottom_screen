@@ -67,8 +67,6 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private var volume = 1f
     private var muted = false
     @Volatile private var surfaceReady = false
-    /* When a keyframe was last asked for to repair a dropped frame. */
-    private var lastRepairAsk = 0L
     private var profile = ConsoleProfile.DS
     private var panel: View? = null
     private var settingsGear: TextView? = null
@@ -545,22 +543,15 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
          * nothing for the UI thread to do, and a hop through its queue
          * would only add the wait for whatever it is already doing. */
         val d = decoder ?: return
-        val droppedBefore = d.starved
-        if (!d.decode(data, offset, length, keyframe)) return
         /*
-         * A dropped frame leaves the picture wrong until something
-         * repaints it, and the next scheduled keyframe can be most of a
-         * second away. Ask for one instead of waiting -- rate-limited,
-         * because a decoder that is behind drops frames in bursts and
-         * one request per burst is enough.
+         * A dropped frame used to ask the server for a new keyframe.
+         * It does not any more: there is one encoder for everyone, so
+         * the repair was billed to every other client -- and a decoder
+         * that is behind drops frames in bursts, which is exactly when
+         * the others can least afford it. The next scheduled keyframe
+         * is a second away at worst.
          */
-        if (d.starved != droppedBefore) {
-            val now = System.currentTimeMillis()
-            if (now - lastRepairAsk > 500) {
-                lastRepairAsk = now
-                client?.requestKeyframe()
-            }
-        }
+        if (!d.decode(data, offset, length, keyframe)) return
 
         frames++
         val now = System.currentTimeMillis()
@@ -1162,10 +1153,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             decoder = d
             decoderHolder = h
             surfaceReady = true
-            /* A new decoder has no reference picture, so it draws
-             * nothing until a keyframe arrives -- a second of black
-             * after every rotation if we just wait for the next one. */
-            client?.requestKeyframe()
+            /* A new decoder has no reference picture and draws nothing
+             * until a keyframe arrives. It waits for the stream's own,
+             * rather than asking: one client's rotation is not a reason
+             * to spend everybody's bandwidth. */
         } else {
             runOnUiThread { status.text = "The decoder would not start" }
         }

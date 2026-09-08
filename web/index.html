@@ -1368,7 +1368,6 @@ function connect() {
       if (console_id === 3 && audioSourceEl.value !== "0")
         audioSourceEl.dispatchEvent(new Event("change"));
       say(consoleName() + "  " + width + "×" + height + ", waiting for a keyframe");
-      send(MSG.REQUEST_KEYFRAME);
       return;
     }
 
@@ -1407,7 +1406,6 @@ function connect() {
        * beside one that never did says nothing about either. */
       frames = 0;
       decoded = 0;
-      send(MSG.REQUEST_KEYFRAME);
     } else if (type === MSG.PING) {
       send(MSG.PONG);
     }

@@ -271,9 +271,9 @@ int stream_connect(const char *host, uint16_t port, char *err, size_t errlen)
     }
     g_reader_started = 1;
 
-    /* Nothing decodes until a keyframe, and at a one-second interval
-     * that is a second of black. Asking costs one packet. */
-    stream_request_keyframe();
+    /* Nothing decodes until a keyframe. It waits for the stream's own
+     * rather than asking for one: there is a single encoder behind all
+     * the clients, so a request is billed to every one of them. */
     return 0;
 
 fail:
@@ -386,8 +386,3 @@ void stream_send_quality(int bitrate)
     bs_send_msg(g_conn, BS_MSG_SET_QUALITY, &q, sizeof(q), NULL, 0);
 }
 
-void stream_request_keyframe(void)
-{
-    if (g_conn && g_connected)
-        bs_send_msg(g_conn, BS_MSG_REQUEST_KEYFRAME, NULL, 0, NULL, 0);
-}
