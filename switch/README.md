@@ -17,35 +17,22 @@ menu.
 
 ## Status
 
-**The menu works and looks right**, checked in Citron: rows in
-capture2cloud's own palette, a blue accent on whatever is selected,
-driven with the pad. It builds, reads its configuration off the SD card,
-and connects to a server, which then counts a client and sends frames.
+**Verified on a real Switch on 2026-09-08**, and it worked first time:
+picture, sound, latency, buttons and touch. Everything had been written
+against an emulator that would not run it, so this was a leap rather
+than a step.
 
-**The playing screen draws nothing under Citron**, and I did not find
-out why. What is established:
+It also carries an on-screen pad, off by default -- a Switch has every
+button a DS or a 3DS has, so it is there for the ones it has not got (a
+Wii U's HOME) and for playing with the tablet in two hands and the
+Joy-Cons off. The pad came from capture2cloud's own homebrew rather than
+being written again here.
 
-- rendering works — the menu draws, and Citron reports a steady 60 fps;
-- the connection works — the server sees a client and streams to it;
-- the drawing loop is never reached once connected. A marker painted as
-  the very first thing in that function never appears, so it is not the
-  YUV texture or the decoder failing quietly further down.
-
-Ruled out along the way: the hardware decoder (forcing the software one
-changes nothing), opening the audio device, and the picture's own
-format. What is left is somewhere between the connection returning and
-the loop body, which is a short stretch I could not narrow further from
-outside.
-
-Citron is a poor instrument for this in any case. It refuses to load the
-NRO about half the time with "Could not determine title ID", and it
-silently discards writes to the SD card — which cost an afternoon,
-because the obvious way to trace a console with no console is to leave
-breadcrumbs on its card.
-
-So: the menu is verified, the stream reaches the console, and the
-picture needs real hardware. Touch, the Joy-Cons and sound are untested
-for the same reason.
+The playing screen never drew anything under Citron and the reason is
+still unknown. It no longer matters: Citron refuses the NRO about half
+the time and silently discards writes to the SD card, which is the only
+way to leave a trace on a console you do not have, so it was never going
+to answer. The console did, immediately.
 
 ## What is shared
 

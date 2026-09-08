@@ -17,14 +17,12 @@ sections and easy to lose. Each line says where the detail is.
 
 | | Where |
 |---|---|
-| Run the homebrew on a real Switch — the picture, then touch, Joy-Cons, sound | [C1](#c1-switch-homebrew-nro--written-unverified) |
-| Check the two Android faults on a real phone, which has a hardware decoder | [C6](#c6-android-two-faults-left-open) |
-| Play with a physical pad plugged into the host, on each of the three emulators | [B5](#b5-host-controls) |
-| Try the other 3DS against the Artic Setup Tool crash | [A3bis](#a3bis-3ds-system-setup-crashes--parked) |
-| Hear the sound — there are no speakers behind a virtual display | [C2](#c2-web-app-in-js) |
+| Try the on-screen pad on the Switch in the hand — a layout is not something arithmetic settles | [C1](#c1-switch-homebrew-nro--working) |
+| A pad with no controller plugged in anywhere, on each of the three emulators | [B7](#b7-a-clients-buttons-must-not-need-a-pad-on-the-host) |
 
-The first two are the ones that unblock other work; the rest confirm
-things that are written and read correct but have never been exercised.
+Most of what was here on the morning of 2026-09-08 has since been done:
+the homebrew runs on a real Switch, a physical pad drives a game
+alongside a phone, and the sound has been heard on both clients.
 
 ---
 
@@ -124,74 +122,6 @@ configuration, and not something this project touches.
 
 The distorted sound was on **both** renderers and is fixed above. Touch
 works on both.
-
-### A3bis. 3DS: system setup crashes — parked
-
-Session of 2026-09-05. The Artic Setup Tool is the only route Azahar
-supports for installing the system titles, and it crashes every time.
-Everything configurable has been eliminated:
-
-| Checked | State |
-|---|---|
-| Luma3DS | v13.4, past the v13.3.1 required |
-| Artic Setup Tool | v1.0.3, the latest released (April 2025) |
-| Confirmation with A on the console | done |
-| Partial NAND state | cleaned before the attempt |
-| Route in | the dialog **and** the `articinio://` URL |
-| Azahar version | `2126.1-rc3` **and** stable `2126.0` |
-| Network | never a byte above the noise floor |
-
-So it is neither the network, nor the bandwidth, nor a mistake at the
-console.
-
-**What is known about the crash.** A reproducible SIGSEGV. On the
-`master` build the stack was:
-
-```
-Service::HTTP::InstallInterfaces
- └─ HTTP_C::DecryptClCertA
-     └─ NCCHContainer::AutoOpenNCCHNCSD
-         └─ UniqueData::GetUniqueCryptoFileKeyIV   (unique_data.cpp:287)
-             └─ Certificate::GetPublicKeyECC       ← SIGSEGV
-```
-
-`ct_cert` is not read from a file: it is **derived from the OTP** by
-`BuildECC()` (unique_data.cpp:180), checked against the root key on line
-184, and invalidated if that check fails. The guard on line 292 tests
-`IsValid()`. So the certificate passes the check and then breaks when
-its public key is read — an inconsistency between what the check accepts
-and what the read assumes.
-
-On `2126.0` the crash comes earlier still, before the unique data is
-even written. The stack above belongs to the other binary; a fresh `gdb`
-pass on the stable one is needed before fixing anything.
-
-**A trap worth knowing.** Every attempt rewrites the unique data
-(`otp.bin`, `movable.sed`, `SecureInfo_A`, `LocalFriendCodeSeed_B`)
-before crashing. A manual cleanup is therefore undone on the next go,
-and starting again without cleaning brings the crash back. Azahar's own
-dialog calls `UninstallSystemFiles()` for this reason.
-
-**Leads, cheapest first:**
-
-- [ ] **Try the other 3DS.** If the crash comes from deriving the
-      certificate from this particular OTP, another console settles it
-      immediately. The most discriminating test and the cheapest.
-- [ ] See whether the tool can be used without going through the system
-      update — that path, with ClCertA and the NIM module, is the one
-      that breaks.
-- [ ] Open a ticket with Azahar: there is a clean reproduction and a
-      call stack.
-- [ ] As a last resort, patch the fork. Not before having the exact
-      stack from the binary in question: a guard added blindly would
-      move the failure rather than produce the HOME menu.
-
-None of this blocks the project: the Azahar backend can be written
-against `FrameDumperOpenGL` and validated later.
-
-**Version note.** The Azahar checkout stayed on tag `2126.0` (detached
-HEAD). A dedicated branch is needed before writing the backend, like
-`bottom-screen` on melonDS.
 
 ### A3. BIOS and system files — blocked
 
@@ -448,34 +378,28 @@ exactly so an overrun cannot hide in slack.
 
 ## C. Clients
 
-### C1. Switch homebrew (NRO) — written, unverified
+### C1. Switch homebrew (NRO) — working
 
-Every line below is written and builds. None of it past the menu has
-been seen working, so the boxes say so: **w** for written, **v** for
-verified on hardware.
+**Verified on a real Switch on 2026-09-08**, and it worked first time:
+picture, sound, latency, buttons and touch. Everything below had been
+written against an emulator that would not run it, so this was a leap
+rather than a step.
 
-| | Written | Verified |
-|---|---|---|
-| Menu, rows, saved address | x | x (Citron) |
-| Connecting, receiving a stream | x | x (Citron) |
-| Hardware decoding (`h264_nvtegra`, software fallback) | x | |
-| Drawing the picture | x | |
-| Touch as the stylus | x | |
-| Joy-Con for the ordinary buttons | x | |
-| Sound (Opus, SDL audio) | x | |
-| Address entry with the system keyboard | x | x (Citron) |
+| | Verified on hardware |
+|---|---|
+| Menu, rows, saved address | x |
+| Connecting, receiving a stream | x |
+| Hardware decoding (`h264_nvtegra`, software fallback) | x |
+| Drawing the picture | x |
+| Touch as the stylus | x |
+| Joy-Con for the ordinary buttons | x |
+| Sound (Opus, SDL audio) | x |
+| Address entry with the system keyboard | x |
 
-**The playing screen draws nothing under Citron.** A marker painted as
-the very first statement of that function never appears, so the loop is
-not reached and it is not the texture or the decoder failing quietly
-further down. Ruled out: the hardware decoder (forcing software changes
-nothing), opening the audio device, and the picture's format. What is
-left is between the connection returning and the loop body.
-
-Citron cannot narrow it further: it refuses the NRO about half the time
-and silently discards writes to the SD card, which is the only way to
-leave a trace on a console you do not have. **This needs real
-hardware**, and everything under it is waiting on the same thing.
+The playing screen never drew anything under Citron and the reason is
+still unknown, which no longer matters: Citron refuses the NRO about
+half the time and silently discards writes to the SD card, so it was
+never going to answer. The console did, immediately.
 
 Brought level with the other two on 2026-09-08, by reading them side by
 side rather than by testing, which is not possible here: quality, the

@@ -112,14 +112,13 @@ and not somebody's cartridge.
 
 ![A Wii U on Android, sideways](docs/screenshots/android-wiiu-landscape.png)
 
-### On a Switch — not finished
+### On a Switch
 
 Built with devkitA64 and libnx. The console's own video block decodes the
 stream, its touchscreen is the stylus, and the Joy-Cons are the buttons.
 
-**This one is not done yet.** It builds, shows its menu, connects and
-receives a stream — and then draws nothing once the picture starts. It
-needs testing on real hardware, which is where it is going next; see
+Verified on a real console: picture, sound, touch and the Joy-Cons, with
+on-screen buttons for what a Switch has not got. See
 [switch/README.md](switch/README.md).
 
 ### On Linux
@@ -238,17 +237,14 @@ screenshots use the pattern; the testing did not.
 
 Still open:
 
-- **The Switch homebrew**, which is unfinished: it connects but does not
-  yet draw the picture.
-- **The 3DS system menu** — Azahar crashes when the Artic Setup Tool
-  connects, so the system files are not installed. Games and homebrew
-  run.
-- **Input merging with a physical pad**, which is written into all three
-  bridges but has never been tried with a hand actually on one.
-- **Two faults on Android** — an occasional black picture on connecting,
-  and a picture that sometimes drifts until it is repainted. Both seen
-  only on the Android emulator's software decoder, never in a browser on
-  the same stream; whether a real phone is affected is untested.
+- **A black picture on Android when connecting**, about one start in
+  eight on a real phone. Two causes were found and fixed and at least
+  one remains.
+- **A requested bitrate is exceeded by about half again**, because the
+  encoder is told a frame rate measured once at startup and never
+  revisited.
+- **The 3DS system titles**, which are not installed: the only route
+  Azahar supports needs a second console, and there is not one to hand.
 
 [ROADMAP.md](ROADMAP.md) has the detail, including the mistakes worth
 remembering.
