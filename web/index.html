@@ -13,10 +13,45 @@
  */
 html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
              color: #ddd; font: 11px monospace; }
-body { display: flex; flex-direction: column; }
+/*
+ * The picture takes what the buttons do not, and the buttons move
+ * rather than the picture shrinking.
+ *
+ * Stacked, a 4:3 screen in a wide window used a quarter of it: the pad
+ * claimed a full-width band underneath, and the picture was left with
+ * whatever height remained. Beside the picture, the same buttons cost
+ * only their own width and the picture gets the whole height.
+ *
+ * This is a grid rather than a flex row because the track sizes have to
+ * be DEFINITE. The canvas asks for height:100%, and a percentage height
+ * against a parent whose own height is content-derived resolves to auto:
+ * the canvas then fell back to its intrinsic 4:3, sat at the top of the
+ * stage, and overflowed the window once the pad was hidden. A 1fr track
+ * is measured from the window, so height:100% has something real to
+ * resolve against.
+ */
+body { display: grid; }
 
-#stage { flex: 1 1 auto; display: flex; align-items: center;
-         justify-content: center; min-height: 0; }
+/* Landscape: buttons either side, the picture keeps the full height. */
+body { grid-template-columns: auto minmax(0, 1fr) auto;
+       grid-template-rows: minmax(0, 1fr);
+       grid-template-areas: "padl stage padr"; }
+
+/* Portrait: the picture across the top, the two halves of the pad side
+   by side underneath, which is how a phone is held. */
+@media (max-aspect-ratio: 1/1) {
+  body { grid-template-columns: 1fr 1fr;
+         grid-template-rows: minmax(0, 1fr) auto;
+         grid-template-areas: "stage stage" "padl padr"; }
+}
+
+#stage { grid-area: stage; display: flex; align-items: center;
+         justify-content: center; min-width: 0; min-height: 0; }
+
+.padside { display: flex; align-items: flex-end; padding: 10px 12px 18px; }
+#padLeft  { grid-area: padl; justify-content: flex-start; }
+#padRight { grid-area: padr; justify-content: flex-end; }
+
 /*
  * Sized by the browser, not by script.
  *
@@ -80,10 +115,9 @@ label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
 .srv a:hover { background: #ffffff22; }
 
 /* The on-screen buttons, in capture2cloud's own values. */
-#pad { flex: 0 0 auto; display: none; align-items: flex-end;
-       justify-content: space-between; padding: 10px 14px 18px; gap: 14px;
-       --btn-bg: rgba(255,255,255,.14); --btn-border: rgba(255,255,255,.4);
+body { --btn-bg: rgba(255,255,255,.14); --btn-border: rgba(255,255,255,.4);
        --btn-pressed: rgba(255,255,255,.45); }
+.padside:empty { display: none; }
 .cluster { display: grid; gap: 10px; justify-items: center; }
 button.b { width: 58px; height: 58px; border-radius: 50%;
            border: 2px solid var(--btn-border); background: var(--btn-bg);
@@ -148,8 +182,9 @@ button.b:active { background: var(--btn-pressed); }
   </div>
 </div>
 
+<div id="padLeft" class="padside"></div>
 <div id="stage"><canvas id="screen" width="256" height="192"></canvas></div>
-<div id="pad"></div>
+<div id="padRight" class="padside"></div>
 
 <script>
 "use strict";
@@ -184,7 +219,8 @@ const canvas = document.getElementById("screen");
 const ctx = canvas.getContext("2d", { alpha: false });
 const statusEl = document.getElementById("info");
 const warnEl = document.getElementById("warn");
-const padEl = document.getElementById("pad");
+const padLeftEl = document.getElementById("padLeft");
+const padRightEl = document.getElementById("padRight");
 const barEl = document.getElementById("bar");
 
 let socket = null, decoder = null;
@@ -520,7 +556,8 @@ function addButton(parent, label, code) {
 }
 
 function buildPad(id) {
-  padEl.innerHTML = "";
+  padLeftEl.innerHTML = "";
+  padRightEl.innerHTML = "";
   const profile = CONSOLES[id] || CONSOLES[1];
 
   const left = document.createElement("div");
@@ -556,8 +593,9 @@ function buildPad(id) {
   addButton(menu, "STA", BTN.START);
   right.append(shoulders, face, menu);
 
-  padEl.append(left, right);
-  padEl.style.display = showPadEl.checked ? "flex" : "none";
+  padLeftEl.appendChild(left);
+  padRightEl.appendChild(right);
+  setPadShown(showPadEl.checked);
   /* The stage only knows its height once the pad has taken its own, so
    * the picture is sized after the layout has settled. */
   requestAnimationFrame(fit);
@@ -632,10 +670,11 @@ volumeEl.addEventListener("input", applyVolume);
 muteEl.addEventListener("change", applyVolume);
 
 const showPadEl = document.getElementById("show-pad");
-showPadEl.addEventListener("change", () => {
-  padEl.style.display = showPadEl.checked && console_id ? "flex" : "none";
-  requestAnimationFrame(fit);
-});
+function setPadShown(shown) {
+  for (const el of [padLeftEl, padRightEl])
+    el.style.display = shown && console_id ? "flex" : "none";
+}
+showPadEl.addEventListener("change", () => setPadShown(showPadEl.checked));
 
 document.getElementById("fullscreen-toggle").addEventListener("click", () => {
   if (document.fullscreenElement) document.exitFullscreen();

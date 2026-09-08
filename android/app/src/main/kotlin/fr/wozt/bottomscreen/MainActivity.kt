@@ -665,14 +665,15 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             }
             title = "${profile.label}  ${ack.width}x${ack.height} \u2192 ${videoW}x${videoH}"
         } else {
-            /* Picture on top, controls below. The ceiling on height
-             * leaves the buttons somewhere to live. */
-            val maxVideoH = (availH * 0.55f).toInt()
+            /* Picture on top, controls below. The band under it is
+             * kept for the buttons, and only while there are buttons --
+             * the same rule as the side bands above. */
+            val minBand = if (showPadOverlay()) (availH * 0.30f).toInt() else 0
             var videoW = availW
             var videoH = availW * ack.height / ack.width
-            if (videoH > maxVideoH) {
-                videoH = maxVideoH
-                videoW = maxVideoH * ack.width / ack.height
+            if (availH - videoH < minBand) {
+                videoH = availH - minBand
+                videoW = videoH * ack.width / ack.height
             }
             overlay.sideBand = 0f
 
@@ -789,12 +790,24 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             }
             overlay.sideBand = ((w - videoW) / 2f)
         } else {
-            val maxVideoH = (h * 0.55f).toInt()
+            /*
+             * Across the width is already the largest a picture can be
+             * drawn without stretching it, so the only reason to make it
+             * smaller is to leave the buttons somewhere to go -- and that
+             * is a reason only while the buttons are actually shown.
+             *
+             * This used to be a flat cap at 55% of the height, applied
+             * whether or not there were any buttons: hiding them gave
+             * nothing back, and the picture sat in the top half with an
+             * empty half underneath it. The band is now conditional, the
+             * same rule the side bands already follow in landscape.
+             */
+            val minBand = if (showPadOverlay()) (h * 0.30f).toInt() else 0
             videoW = w
             videoH = w * ack.height / ack.width
-            if (videoH > maxVideoH) {
-                videoH = maxVideoH
-                videoW = maxVideoH * ack.width / ack.height
+            if (h - videoH < minBand) {
+                videoH = h - minBand
+                videoW = videoH * ack.width / ack.height
             }
             overlay.sideBand = 0f
             (view.parent as? View)?.let { holder ->
