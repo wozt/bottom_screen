@@ -40,6 +40,18 @@
  * recognises rather than rejected whole.
  */
 #define LAYOUT_PATH_FMT CONFIG_DIR "/layout_%d.txt"
+/*
+ * Stamped on every saved arrangement.
+ *
+ * Positions are meaningful only against the layout that produced them.
+ * The first version of this pad borrowed a full-screen arrangement and
+ * squeezed it into the side bands, which piled every control on one
+ * spot -- and a file written then would go on doing that for ever,
+ * because a loaded arrangement is somebody's own and the defaults do
+ * not touch it. A file without the current stamp is ignored, so the
+ * fix arrives without anyone having to know a file exists.
+ */
+#define LAYOUT_VERSION "v2"
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
@@ -265,7 +277,7 @@ static void save_layout(int console)
         return;
     char text[1024];
     vpad_layout_to_string(text, sizeof(text));
-    fprintf(f, "%s\n", text);
+    fprintf(f, "%s %s\n", LAYOUT_VERSION, text);
     fclose(f);
 }
 
@@ -277,8 +289,14 @@ static void load_layout(int console)
     if (!f)
         return;
     char text[1024] = "";
-    if (fgets(text, sizeof(text), f))
-        vpad_layout_from_string(text);
+    if (fgets(text, sizeof(text), f)) {
+        const size_t n = strlen(LAYOUT_VERSION);
+        if (strncmp(text, LAYOUT_VERSION, n) == 0 && text[n] == ' ')
+            vpad_layout_from_string(text + n + 1);
+        /* Anything else was written by a build whose positions meant
+         * something different. Left alone rather than deleted: it costs
+         * nothing, and the next save replaces it. */
+    }
     fclose(f);
 }
 
