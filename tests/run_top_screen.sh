@@ -105,6 +105,31 @@ else
     fail=1
 fi
 
+# --- joining a screen that is already running -------------------------
+#
+# The size is announced when it changes, which says nothing to somebody
+# arriving. With one client already on the top screen, a second one
+# switching to it was told nothing at all and kept the size from its
+# handshake -- the bottom screen's -- so it decoded a 5:3 picture as
+# though it were 4:3. Whether that happened depended on whether anybody
+# else was watching, which is what made it look intermittent.
+( "$DIR/tests/smoke_client" --port "$P" --frames 400 --screen top \
+    >"$OUT/holder.txt" 2>&1 || true ) &
+HOLDER=$!
+sleep 3
+"$DIR/tests/smoke_client" --port "$P" --frames 40 --screen top \
+    >"$OUT/joiner.txt" 2>&1 || true
+kill $HOLDER 2>/dev/null || true
+wait $HOLDER 2>/dev/null || true
+
+if grep -q "ecran demande 1, recu 400x240" "$OUT/joiner.txt"; then
+    note "a client joining a stream already running is told its shape"
+else
+    note "a client joining a running stream was not told its size:"
+    grep -E "ecran demande|handshake" "$OUT/joiner.txt" | sed 's/^/    /'
+    fail=1
+fi
+
 # --- and the same thing through a browser's transport -----------------
 #
 # The page reaches the server over a WebSocket, which is its own framing

@@ -295,9 +295,31 @@ class PadOverlay(context: Context) : View(context) {
          * diamond, which is taller, and the right stick's label landed
          * across the B button.
          */
-        val stickR = minOf(u * STICK_R, band / 2f - margin)
+        var stickR = minOf(u * STICK_R, band / 2f - margin)
         val armHalf = maxOf(dpadSize / 2f, faceU * (FACE_SPAN / 2f))
         val labelH = u * STICK_LABEL
+
+        /*
+         * A stick placed above has to fit between the shoulders and the
+         * arm, and nothing was checking that it did.
+         *
+         * The unit is capped by the room below the middle, which is
+         * where a stick usually goes. Above the middle the only floor
+         * was the top of the view -- so with a short picture and wide
+         * bands, which is what a 5:3 top screen on a phone that is still
+         * showing its system bars produces, the buttons grew, the
+         * shoulder stack reached further down, and the stick was drawn
+         * straight through the L button.
+         *
+         * The slot is measured and the stick shrinks into it rather than
+         * moving to the other side: which side it sits on is a setting
+         * somebody chose, and quietly overriding it is worse than a
+         * smaller circle.
+         */
+        val shouldersBottom = margin + topReserve + shoulderH * 2f + margin
+        val aboveSlot = (midY - armHalf - margin) - (shouldersBottom + labelH)
+        if (stickR * 2f > aboveSlot && (!stickBelow[0] || !stickBelow[1]))
+            stickR = maxOf(aboveSlot / 2f, u * 0.5f)
 
         /* Below the arm, or above it. Above, the label still sits over
          * the stick, so the room it needs comes off the top rather than
@@ -306,7 +328,7 @@ class PadOverlay(context: Context) : View(context) {
                           midY + armHalf + labelH + stickR)
             .coerceAtMost(menuTop - margin - stickR)
         val above = (midY - armHalf - margin - stickR)
-            .coerceAtLeast(labelH + stickR + margin)
+            .coerceAtLeast(shouldersBottom + labelH + stickR)
         placeSticksPerSide(w, band / 2f, w - band / 2f, stickR,
                            if (stickBelow[0]) below else above,
                            if (stickBelow[1]) below else above)

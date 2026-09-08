@@ -403,6 +403,31 @@ static void client_send_screens(BsClient *cl)
  * woken to build an encoder; the one it left may now have nobody on it,
  * and that same wake-up is what lets that loop notice and stop.
  */
+/*
+ * Tells one client the shape of one stream.
+ *
+ * Separate from broadcast_stream_info because that only fires when the
+ * size changes, which is the wrong rule for somebody arriving. A client
+ * moving to a screen that is already running -- because another client
+ * is watching it -- was never told anything at all: it kept the size
+ * from its handshake, which is the bottom screen's, and decoded a 5:3
+ * picture as though it were 4:3. That is one client's setting being
+ * decided by whether a different client happened to be watching, which
+ * is exactly the kind of fault that looks intermittent.
+ */
+static void client_send_stream_info(BsClient *cl, BsStream *st)
+{
+    if (st->out_w <= 0 || st->out_h <= 0)
+        return;   /* not running yet; the pump announces when it starts */
+
+    BsStreamInfo si;
+    si.from_frame_id = st->frame_id;
+    si.width  = (uint16_t)st->out_w;
+    si.height = (uint16_t)st->out_h;
+    si.fps    = (uint16_t)st->info.fps;
+    client_send(cl, BS_MSG_STREAM_INFO, 0, &si, sizeof(si), NULL, 0);
+}
+
 static void client_set_screen(BsClient *cl, int screen)
 {
     BsServer *srv = cl->srv;
@@ -433,6 +458,14 @@ static void client_set_screen(BsClient *cl, int screen)
     pthread_mutex_lock(&srv->roster);
     pthread_cond_broadcast(&srv->roster_cond);
     pthread_mutex_unlock(&srv->roster);
+
+    /*
+     * What it is about to receive, said to it alone. If that stream is
+     * not running yet the pump says it when it starts; if it is already
+     * running, this is the only chance there will be, because nothing is
+     * about to change size.
+     */
+    client_send_stream_info(cl, &srv->video[screen]);
 
     if (!srv->cfg.quiet)
         fprintf(stderr, "bottom_screen: client %s moved to the %s screen\n",

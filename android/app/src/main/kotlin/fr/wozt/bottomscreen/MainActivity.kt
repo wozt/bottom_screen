@@ -505,6 +505,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             play?.let { root.removeView(it) }
             play = null
             buildPlayUi(updated)
+            /* The new layout was just added over everything, including
+             * the settings if they are open -- and they usually are,
+             * since changing screens from in there is what caused this. */
+            panel?.bringToFront()
         }
     }
 
@@ -1020,7 +1024,22 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
      * screen to suggest it was there.
      */
     private fun showSettings() {
-        if (panel != null) return
+        /*
+         * Already open: bring it back rather than doing nothing.
+         *
+         * Changing screens changes the size, which rebuilds the whole
+         * playing layout -- and that layout went in on top of the open
+         * panel. The panel was still there and still counted as open, so
+         * the settings button refused to act and the picture could not
+         * be changed back. There was no way out of the top screen except
+         * closing the application, which is the worst kind of fault: one
+         * introduced by the feature it makes unreachable.
+         */
+        if (panel != null) {
+            panel?.bringToFront()
+            panel?.requestLayout()
+            return
+        }
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
 
         val state = object : SettingsPanel.PanelState {
