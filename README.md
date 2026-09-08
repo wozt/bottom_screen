@@ -68,6 +68,12 @@ and mute, and a list of saved servers so an address is never typed
 twice. A physical pad works too — its presses are merged with the
 on-screen ones rather than replacing them.
 
+Turn the phone and the buttons move to the sides, where the console
+keeps them, so the picture gets the full height rather than sharing it
+with a band underneath.
+
+![The Android client held sideways](docs/screenshots/android-landscape.png)
+
 ```sh
 cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
