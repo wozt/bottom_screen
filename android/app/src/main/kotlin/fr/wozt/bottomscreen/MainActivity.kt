@@ -107,6 +107,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     /* Which of a Wii U's two outputs to hear; ignored elsewhere. */
     private var audioSource = BsProtocol.AUDIO_BOTH
     private var padColour = 0
+    private var stickBelow = booleanArrayOf(false, true)
     private var startInEdit = false
 
     private var frames = 0
@@ -128,6 +129,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         fullscreen = prefs0.getBoolean("fullscreen", false)
         audioSource = prefs0.getInt("audio_source", BsProtocol.AUDIO_BOTH)
         padColour = prefs0.getInt("pad_colour", 0)
+        stickBelow = booleanArrayOf(prefs0.getBoolean("stick_l_below", false),
+                                    prefs0.getBoolean("stick_r_below", true))
         padVisibility = PadVisibility.byName(prefs0.getString("pad_visibility", null))
         receiveScale = prefs0.getInt("receive_scale", 0)
         gamepadPresent = Gamepad.anyConnected()
@@ -668,6 +671,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 client?.sendInput(BsProtocol.INPUT_AXIS, code, value, 0)
             }
             colourIndex = padColour
+            stickBelow = this@MainActivity.stickBelow
             onMoved = { code, fx, fy -> savePosition(code, fx, fy, landscape) }
         }
         loadPositions(overlay, landscape)
@@ -1028,6 +1032,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             override val hasAudio: Boolean get() = ack?.hasAudio == true
             override val isWiiU: Boolean
                 get() = ack?.console == BsProtocol.CONSOLE_WIIU
+            override var stickBelow: BooleanArray
+                get() = this@MainActivity.stickBelow
+                set(v) { this@MainActivity.stickBelow = v }
+            override val hasSticks: Boolean get() = profile.sticks.isNotEmpty()
             override var padColour: Int
                 get() = this@MainActivity.padColour
                 set(v) { this@MainActivity.padColour = v }
@@ -1101,6 +1109,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             .putBoolean("fullscreen", fullscreen)
             .putInt("audio_source", audioSource)
             .putInt("pad_colour", padColour)
+            .putBoolean("stick_l_below", stickBelow[0])
+            .putBoolean("stick_r_below", stickBelow[1])
             .putString("pad_visibility", padVisibility.name)
             .putString("quality", quality.name)
             .putInt("receive_scale", receiveScale)
@@ -1109,6 +1119,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         audio?.volume = if (muted) 0f else volume
         pad?.buttonScale = buttonScale
         pad?.colourIndex = padColour
+        pad?.stickBelow = stickBelow
         applyFullscreen()
         applyPadVisibility()
 

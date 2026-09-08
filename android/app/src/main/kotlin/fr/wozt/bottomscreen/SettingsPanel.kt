@@ -60,6 +60,9 @@ class SettingsPanel(
          *  has two outputs, so only there is it offered. */
         /** Index into PadOverlay.PALETTE. */
         var padColour: Int
+        /** Per side: is the stick below its thumb control? 0 is the left. */
+        var stickBelow: BooleanArray
+        val hasSticks: Boolean
         var audioSource: Int
         val hasAudio: Boolean
         val isWiiU: Boolean
@@ -358,6 +361,22 @@ class SettingsPanel(
             PadOverlay.PALETTE_NAMES.mapIndexed { i, n -> n to i },
             settings.padColour
         ) { settings.padColour = it; actions.onApply() }
+
+        /* Only a console with sticks has anywhere to put them. */
+        if (settings.hasSticks) {
+            group("left stick")
+            choice(listOf("above the d-pad" to 0, "below the d-pad" to 1),
+                   if (settings.stickBelow[0]) 1 else 0) {
+                settings.stickBelow = booleanArrayOf(it == 1, settings.stickBelow[1])
+                actions.onApply()
+            }
+            group("right stick")
+            choice(listOf("above the buttons" to 0, "below the buttons" to 1),
+                   if (settings.stickBelow[1]) 1 else 0) {
+                settings.stickBelow = booleanArrayOf(settings.stickBelow[0], it == 1)
+                actions.onApply()
+            }
+        }
 
     }
 

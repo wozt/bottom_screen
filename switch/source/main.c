@@ -99,7 +99,7 @@ typedef enum {
     ROWID_AUDIO_SOURCE, ROWID_HOME, ROWID_DISCONNECT, ROWID_DECODER,
     ROWID_ADDRESS, ROWID_PORT, ROWID_SAVED, ROWID_CONNECT, ROWID_BUTTONS,
     ROWID_STATS, ROWID_PAD_EDIT, ROWID_PAD_RESET, ROWID_PAD_COLOUR,
-    ROWID_PAD_OPACITY
+    ROWID_PAD_OPACITY, ROWID_STICK_L, ROWID_STICK_R
 } RowId;
 
 typedef struct {
@@ -135,6 +135,9 @@ static const struct { const char *label; int bitrate; } QUALITY[] = {
     { "maximum  ~6 Mbit/s", 6000000 },
 };
 static int g_quality;
+/* The pad's own settings, held here because they are read before the pad
+ * exists and applied once it does. */
+static int g_pad_colour, g_pad_opacity = 100, g_stick_l, g_stick_r = 1;
 
 static void native_size(int console, int *w, int *h);
 
@@ -213,6 +216,11 @@ static void save_settings(void)
     fprintf(f, "receive_scale %d\n", g_receive_scale);
     fprintf(f, "buttons %d\n",      g_show_buttons);
     fprintf(f, "stats %d\n",        g_show_stats);
+    fprintf(f, "pad_colour %d\n",   vpad_colour());
+    fprintf(f, "pad_opacity %d\n",  vpad_opacity());
+    fprintf(f, "stick_left %d\n",   vpad_stick_below(0));
+    fprintf(f, "stick_right %d\n",  vpad_stick_below(1));
+    (void)g_pad_colour; (void)g_pad_opacity;
     fclose(f);
 }
 
@@ -231,6 +239,10 @@ static void load_settings(void)
         else if (!strcmp(key, "receive_scale")) g_receive_scale = value;
         else if (!strcmp(key, "buttons"))       g_show_buttons = value;
         else if (!strcmp(key, "stats"))         g_show_stats = value;
+        else if (!strcmp(key, "pad_colour"))    g_pad_colour = value;
+        else if (!strcmp(key, "pad_opacity"))   g_pad_opacity = value;
+        else if (!strcmp(key, "stick_left"))    g_stick_l = value;
+        else if (!strcmp(key, "stick_right"))   g_stick_r = value;
     }
     fclose(f);
 
@@ -740,6 +752,19 @@ static void build_play_rows(const StreamInfo *info)
         r->kind = ROW_VALUE; r->id = ROWID_PAD_OPACITY; r->label = "button opacity";
         snprintf(r->value, sizeof(r->value), "%d%%", vpad_opacity());
 
+        /* Only where there are sticks to place. */
+        if (info->console != BS_CONSOLE_DS) {
+            r = &g_rows[g_row_count++];
+            r->kind = ROW_VALUE; r->id = ROWID_STICK_L; r->label = "left stick";
+            snprintf(r->value, sizeof(r->value), "%s",
+                     vpad_stick_below(0) ? "below the d-pad" : "above the d-pad");
+
+            r = &g_rows[g_row_count++];
+            r->kind = ROW_VALUE; r->id = ROWID_STICK_R; r->label = "right stick";
+            snprintf(r->value, sizeof(r->value), "%s",
+                     vpad_stick_below(1) ? "below the buttons" : "above the buttons");
+        }
+
         r = &g_rows[g_row_count++];
         r->kind = ROW_ACTION; r->id = ROWID_PAD_RESET;
         r->label = "reset button positions"; r->value[0] = '\0';
@@ -835,6 +860,12 @@ static void adjust_row(const StreamInfo *info, int delta)
         break;
     case ROWID_PAD_OPACITY:
         vpad_set_opacity(vpad_opacity() + delta * 10);
+        break;
+    case ROWID_STICK_L:
+        vpad_set_stick_below(0, !vpad_stick_below(0));
+        break;
+    case ROWID_STICK_R:
+        vpad_set_stick_below(1, !vpad_stick_below(1));
         break;
     case ROWID_VOLUME:
         g_volume += delta * 10;
@@ -1024,6 +1055,13 @@ int main(int argc, char **argv)
     }
     ui_bind(g_small, g_font);
     vpad_init();
+    /* Applied after the pad exists: load_settings runs before it, so
+     * anything handed straight to vpad there would be overwritten by
+     * its own initialisation. */
+    vpad_set_colour(g_pad_colour);
+    vpad_set_opacity(g_pad_opacity);
+    vpad_set_stick_below(0, g_stick_l);
+    vpad_set_stick_below(1, g_stick_r);
 
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     PadState pad;

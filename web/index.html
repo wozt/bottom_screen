@@ -222,6 +222,16 @@ button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
       <div class="menu-items">
         <label><input id="show-pad" type="checkbox" checked> on-screen buttons</label>
         <label>colour <select id="pad-colour"></select></label>
+        <label id="stick-l-row" hidden>left stick
+          <select id="stick-l">
+            <option value="0">above the d-pad</option>
+            <option value="1">below the d-pad</option>
+          </select></label>
+        <label id="stick-r-row" hidden>right stick
+          <select id="stick-r">
+            <option value="0">above the buttons</option>
+            <option value="1">below the buttons</option>
+          </select></label>
         <div class="hint">A pad plugged into this machine works either way; its presses are merged with these, not swapped for them.</div>
       </div>
     </details>
@@ -772,7 +782,8 @@ function buildPad(id) {
     addButton(i % 2 ? rMenu : lMenu, MENU_LABEL[n] || n, BTN[n])
       .classList.add("wide");
   });
-  left.append(lShoulders, dpad, lStick, lMenu);
+  if (stickBelow(0)) left.append(lShoulders, dpad, lStick, lMenu);
+  else               left.append(lShoulders, lStick, dpad, lMenu);
 
   const right = document.createElement("div");
   right.className = "cluster";
@@ -790,7 +801,8 @@ function buildPad(id) {
   addButton(face, "A", BTN.A).classList.add("right");
   addButton(face, "B", BTN.B).classList.add("bottom");
 
-  right.append(shoulders, face, rStick, rMenu);
+  if (stickBelow(1)) right.append(shoulders, face, rStick, rMenu);
+  else               right.append(shoulders, rStick, face, rMenu);
 
   padLeftEl.appendChild(left);
   padRightEl.appendChild(right);
@@ -911,6 +923,13 @@ muteEl.addEventListener("change", applyVolume);
  * only there rather than offering a choice with one answer.
  */
 const audioSourceEl = document.getElementById("audioSource");
+/* Only a console with sticks has anywhere to put them. */
+function showStickRows(id) {
+  const has = id === 2 || id === 3;
+  document.getElementById("stick-l-row").hidden = !has;
+  document.getElementById("stick-r-row").hidden = !has;
+}
+
 function showAudioSource(id) {
   const wiiu = id === 3;
   document.getElementById("audioSourceRow").hidden = !wiiu;
@@ -963,6 +982,31 @@ padColourEl.addEventListener("change",
   if (saved < 0 || saved >= PAD_COLOURS.length) saved = 0;
   padColourEl.value = saved;
   applyPadColour(saved);
+}
+
+/*
+ * Where each side's stick sits relative to its thumb control.
+ *
+ * A Switch is asymmetric -- stick above the d-pad on the left, face
+ * buttons above the stick on the right -- and a PlayStation is not.
+ * Which one a hand expects is not something this can know, so it is a
+ * choice, one per side, with the same defaults the Switch client uses.
+ */
+const stickLEl = document.getElementById("stick-l");
+const stickREl = document.getElementById("stick-r");
+function stickBelow(side) {
+  const el = side ? stickREl : stickLEl;
+  return el.value === "1";
+}
+for (const [el, key, dflt] of [[stickLEl, "bs_stick_l", "0"],
+                               [stickREl, "bs_stick_r", "1"]]) {
+  let v = dflt;
+  try { v = localStorage.getItem(key) ?? dflt; } catch (e) {}
+  el.value = v;
+  el.addEventListener("change", () => {
+    try { localStorage.setItem(key, el.value); } catch (e) {}
+    if (console_id) buildPad(console_id);
+  });
 }
 
 const showPadEl = document.getElementById("show-pad");
@@ -1169,6 +1213,7 @@ function connect() {
       if (!fullW) { fullW = width; fullH = height; }
       buildPad(console_id);
       showAudioSource(console_id);
+      showStickRows(console_id);
       /* The server starts on its own default, so a choice already made
        * has to be re-sent on every connection. */
       if (console_id === 3 && audioSourceEl.value !== "0")

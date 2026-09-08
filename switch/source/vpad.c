@@ -256,11 +256,57 @@ void vpad_set_opacity(int percent) {
 }
 int vpad_opacity(void) { return g_opacity; }
 
+/*
+ * Where each side's stick sits relative to its thumb control.
+ *
+ * A Switch is asymmetric -- stick above the d-pad on the left, face
+ * buttons above the stick on the right -- and a PlayStation is not. Both
+ * are things people are used to, and which one a hand expects is not
+ * something this can know, so it is a choice. One per side, because the
+ * two hands are not obliged to agree.
+ *
+ * It rearranges the default layout and nothing else. Once somebody has
+ * dragged their own arrangement, moving their controls out from under
+ * them because a menu changed would be the wrong kind of helpful.
+ */
+static int g_stick_below[2] = {0, 1};   /* left above, right below */
+static int g_custom = 0;                /* a layout of somebody's own */
+
+void vpad_set_stick_below(int side, int below)
+{
+    if (side < 0 || side > 1)
+        return;
+    g_stick_below[side] = below ? 1 : 0;
+    if (!g_custom)
+        vpad_reset_layout();
+}
+
+int vpad_stick_below(int side)
+{
+    return (side < 0 || side > 1) ? 0 : g_stick_below[side];
+}
+
 void vpad_reset_layout(void) {
     for (int i = 0; i < VPAD_COUNT; i++) {
         g_pos[i].x = DEFAULT_POS[i].x / VPAD_W;
         g_pos[i].y = DEFAULT_POS[i].y / VPAD_H;
     }
+
+    /* The defaults have the left stick above its d-pad and the right one
+     * below its face buttons. Either side that wants the other
+     * arrangement swaps the two. */
+    if (g_stick_below[0] != 0) {
+        const SDL_FPoint t = g_pos[VPAD_LSTICK];
+        g_pos[VPAD_LSTICK] = g_pos[VPAD_DPAD];
+        g_pos[VPAD_DPAD] = t;
+    }
+    if (g_stick_below[1] != 1) {
+        const SDL_FPoint t = g_pos[VPAD_RSTICK];
+        g_pos[VPAD_RSTICK] = g_pos[VPAD_FACE];
+        g_pos[VPAD_FACE] = t;
+    }
+
+    g_custom = 0;
     g_revision++;
 }
 
@@ -298,6 +344,7 @@ static void move_finger(VpadFinger *f, float px, float py) {
         if (g_pos[f->anchor].x != cx / VPAD_W || g_pos[f->anchor].y != cy / VPAD_H) {
             g_pos[f->anchor].x = cx / VPAD_W;
             g_pos[f->anchor].y = cy / VPAD_H;
+            g_custom = 1;
             g_revision++;
         }
     }
@@ -763,6 +810,7 @@ void vpad_layout_from_string(const char *text) {
     if (!text || !*text) {
         return;
     }
+    g_custom = 1;
     const char *p = text;
     while (*p) {
         int a = 0;

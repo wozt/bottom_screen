@@ -47,6 +47,12 @@ void vpad_set_present(unsigned mask);
  * towards it stops at the edge. */
 void vpad_set_forbidden(SDL_Rect picture);
 
+/* Where each side's stick sits relative to its thumb control: 0 above,
+ * 1 below. Side 0 is the left. Rearranges the default layout only --
+ * somebody's own arrangement is left alone. */
+void vpad_set_stick_below(int side, int below);
+int  vpad_stick_below(int side);
+
 /* Whether the overlay is shown and read at all. */
 void vpad_set_enabled(int on);
 int  vpad_enabled(void);

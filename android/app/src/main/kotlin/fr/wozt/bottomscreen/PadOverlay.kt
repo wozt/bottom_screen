@@ -296,11 +296,20 @@ class PadOverlay(context: Context) : View(context) {
          * across the B button.
          */
         val stickR = minOf(u * STICK_R, band / 2f - margin)
-        val armBottom = midY + maxOf(dpadSize / 2f, faceU * (FACE_SPAN / 2f))
+        val armHalf = maxOf(dpadSize / 2f, faceU * (FACE_SPAN / 2f))
         val labelH = u * STICK_LABEL
-        val stickY = maxOf((armBottom + menuTop) / 2f, armBottom + labelH + stickR)
+
+        /* Below the arm, or above it. Above, the label still sits over
+         * the stick, so the room it needs comes off the top rather than
+         * being taken out of the arm. */
+        val below = maxOf((midY + armHalf + menuTop) / 2f,
+                          midY + armHalf + labelH + stickR)
             .coerceAtMost(menuTop - margin - stickR)
-        placeSticks(w, stickY, band / 2f, w - band / 2f, stickR)
+        val above = (midY - armHalf - margin - stickR)
+            .coerceAtLeast(labelH + stickR + margin)
+        placeSticksPerSide(w, band / 2f, w - band / 2f, stickR,
+                           if (stickBelow[0]) below else above,
+                           if (stickBelow[1]) below else above)
     }
 
     private fun addShoulders(
@@ -360,6 +369,17 @@ class PadOverlay(context: Context) : View(context) {
                 BsProtocol.BTN_X -> face(b.code, b.label, 0f, -spread)
                 BsProtocol.BTN_Y -> face(b.code, b.label, -spread, 0f)
             }
+        }
+    }
+
+    /* One height per side, since the two are chosen independently. */
+    private fun placeSticksPerSide(w: Float, leftX: Float, rightX: Float, r: Float,
+                                   leftY: Float, rightY: Float) {
+        for (st in sticks) {
+            st.radius = r
+            val cx = if (st.spec.left) leftX else rightX
+            st.centre.set(cx, if (st.spec.left) leftY else rightY)
+            st.knob.set(st.centre)
         }
     }
 
@@ -492,6 +512,17 @@ class PadOverlay(context: Context) : View(context) {
      * The label takes the colour too: what separates a label from its
      * button is the strength, not the hue.
      */
+    /*
+     * Where each side's stick sits relative to its thumb control.
+     *
+     * A Switch is asymmetric -- stick above the d-pad on the left, face
+     * buttons above the stick on the right -- and a PlayStation is not.
+     * Which one a hand expects is not something this can know, so it is
+     * a choice, one per side. Index 0 is the left.
+     */
+    var stickBelow = booleanArrayOf(false, true)
+        set(v) { field = v; layoutControls(); invalidate() }
+
     var colourIndex: Int = 0
         set(v) { field = v.coerceIn(0, PALETTE.size - 1); text.color = tint(0xEA); invalidate() }
 
