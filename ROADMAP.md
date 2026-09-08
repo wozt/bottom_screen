@@ -577,7 +577,7 @@ There are no speakers behind a virtual display. Every link in the chain
 is confirmed — the packets decode, they are not silence, and the context
 is running — but the last inch is yours.
 
-- [ ] Hear it, on the web client and on the phone
+- [x] Heard, on both, 2026-09-08
 
 **A column of pixels down the right-hand edge breaks up** on the web
 client, watching Cemu at 854x480. Not on Android, on the same stream at
@@ -717,9 +717,24 @@ Look at how capture2cloud handles this before changing anything here —
 it is the same author solving the same problem, and it does not have
 this.
 
-- [ ] Measure where the delay accumulates: encoder, queue, or the
-      client's own buffering ahead
-- [ ] The browser first, since it is the worse of the two
+**Largely fixed on 2026-09-08.** Three separate things were wrong.
+
+The sound was drained inside the video loop, so it left in clumps one
+video frame apart: 39% of packets under a millisecond after the one
+before, median gap 33ms at 30fps. It has its own thread now — 0%
+clumped, median 20.7ms, the Opus cadence.
+
+The browser's schedule was corrected only when it fell behind, never
+when it ran ahead, so a stall followed by a rush became a permanent
+lead. Bounded both ways.
+
+The stutter that remained was the USB transport: the phone was reached
+through `adb reverse`, which is not how anyone uses it. Over Wi-Fi it is
+occasional rather than constant.
+
+- [ ] The crackle that is left, which the tester puts down to the
+      emulation itself rather than the stream. Worth confirming before
+      believing it.
 
 ### C8. A client outliving its emulator
 
@@ -782,11 +797,16 @@ and nothing is drawn. Two real causes were found and fixed:
 Six cold starts passed afterwards where the same case had failed twice
 out of two — but it came back later, so a third cause remains.
 
-- [ ] Does it happen on a real phone at all?
-- [ ] If it does: find the remaining cause
+- [x] **Yes.** One black start in eight on the real phone, so it is not
+      an emulator artefact and the remaining cause is real
+- [ ] Find it
 
-**A drifted picture.** The test pattern's one moving vertical line
-leaves a trail of several, for seconds at a time. What it is not, each
+**A drifted picture.** Not seen on the real phone, in any of the runs
+made there — only on the emulator's software decoder, which is where the
+suspicion already was.
+
+The test pattern's one moving vertical line leaves a trail of several,
+for seconds at a time. What it is not, each
 established rather than assumed: not the server (no queue ever
 overflowed, in any run), not missing keyframes (11 IDRs measured off the
 wire in five seconds, each carrying its SPS), and not the Wii U or the
