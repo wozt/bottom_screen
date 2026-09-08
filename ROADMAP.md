@@ -83,15 +83,30 @@ OpenGL renderer, a commercial Wii U title, GamePad at 854x480.
 
 **Touch works.** That is the one thing here that does.
 
-**No sound on the host, and the streamed sound is badly distorted** —
-"Canal+ scrambled on match night". Those two together are the lead: if
-the emulator itself is silent, whatever is being encoded is not the
-game's audio, and encoding a buffer nobody filled would sound exactly
-like that. Check what the tap is actually reading before touching the
-encoder.
+**The streamed sound was badly distorted** — "Canal+ scrambled on match
+night" — while the host stayed silent. **Fixed the same day.**
 
-- [ ] Does Cemu make a sound at all on the host?
-- [ ] What is in the buffer the bridge takes — is it ever written?
+The tap was on `tempTVChannelData`, the group of four DMA blocks, and
+that buffer is laid out with a stride taken from the output device:
+
+```cpp
+const uint32 channels = g_tvAudio ? g_tvAudio->GetChannels() : AX_TV_CHANNEL_COUNT;
+```
+
+With no output device configured — which is this machine, and why the
+host is silent — `g_tvAudio` is null and the stride falls back to six
+channels while a stereo title writes two. The group is then real audio
+separated by samples nobody ever wrote, and we were reading it whole.
+Hence a sound that was neither silence nor noise but both, alternating.
+
+The tap moved to the DMA block itself, immediately after the endianness
+conversion, where it is contiguous and carries its own channel count.
+It no longer depends on the emulator having an output at all, which was
+always the intent — muting the PC is not supposed to silence the phone.
+It also reaches the stream every 3ms rather than every 12ms.
+
+The host being silent is a Cemu setting (`<TVDevice>` empty,
+`<PadVolume>` 0), not a fault here.
 
 **Cemu does not list an Xbox pad plugged into the host** in its
 controller configuration — and yet that pad drives the game. So it is a
