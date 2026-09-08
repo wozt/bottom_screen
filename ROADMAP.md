@@ -48,24 +48,30 @@ makes the stored value be **ignored** in favour of the default, so
 writing `graphics_api=2` alone silently runs OpenGL again. Write the
 flag too, and check what the process actually loaded.
 
-**No sound at all — and none on the host either.** That last part is the
-important half: if Azahar itself is silent, the bridge has nothing to
-take. Check the emulator's own audio sink before looking at anything
-here.
+**No sound at all — fixed.** The tap was in `DspInterface::OutputCallback`,
+which is not a producer: it is the callback a *sink* invokes to ask for
+samples. With no output device configured nothing ever called it, so the
+stream was silent on every renderer — which is why changing renderer
+made no difference. It moved to `OutputFrame` and `OutputSample`, where
+the DSP produces, and above their `if (!sink) return`.
 
-- [ ] Does Azahar make a sound at all, on its own, with no client?
+The same move fixed a second fault nobody had been able to hear: the
+bridge announces 32728Hz, the DSP's own rate, while OutputCallback
+delivers at the sink's, usually 48000. Had it ever run, the sound would
+have come out a fifth too low and slow.
 
-**Touch does nothing in the game.** Not a case of the taps going
-missing: the server logged `first touch from a client at 1158,1198`,
-which is inside the announced 1920x1440, so they arrive and are
-converted. They are not reaching the title.
+**Touch did nothing in the game — fixed, and Cemuhook was not needed.**
+The taps arrived and were converted correctly, as the server's own log
+said; `EmuWindow::TouchPressed` then threw them away by returning false.
+This Azahar runs `layout_option=4`, SeparateWindows, where the two
+screens live in two windows and `IsWithinTouchscreen` refuses outright
+any touch aimed at the one showing the top screen. All three renderers
+called ApplyInput with that window, which is why the renderer made no
+difference here either.
 
-- [ ] Follow a touch from `TouchPressed` to the game
-- [ ] Try Azahar's **Cemuhook** input instead. It has a UDP server for
-      motion and touch, which is a supported way in rather than a call
-      into the emulator's own state — if the direct call is being
-      overwritten by the frontend each frame, this sidesteps it. The
-      user suggested it after seeing the option in the interface.
+The bridge now picks the window that owns the touchscreen, by the
+emulator's own rule: the secondary one, unless swap_screen moves it to
+the primary. It maps the point through that window's layout too.
 
 **The bottom screen is cut off in the client** — the picture is there
 but not whole.
