@@ -1210,6 +1210,21 @@ int main(int argc, char **argv)
          */
         vpad_set_enabled(g_show_buttons);
         vpad_set_present(present_for(info.console));
+        /*
+         * The pad is sized from the band it has to fit in.
+         *
+         * The widest control is the face cluster, four units across; at
+         * full size that is wider than the band itself, which is how it
+         * came to spill onto the picture. Deriving the scale means it
+         * fits whatever the stream's shape leaves -- narrowest on a Wii
+         * U, whose 16:9 gives back the least.
+         */
+        {
+            const int band = picture_rect.x;
+            if (band > 0)
+                vpad_set_scale((float)(band - 14) / (4.0f * 44.0f));
+        }
+
         /* No control on the picture: on a DS or a 3DS that surface is
          * the stylus, so a button there would swallow taps meant for
          * the game. */

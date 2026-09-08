@@ -50,6 +50,9 @@ void vpad_set_forbidden(SDL_Rect picture);
 /* Where each side's stick sits relative to its thumb control: 0 above,
  * 1 below. Side 0 is the left. Rearranges the default layout only --
  * somebody's own arrangement is left alone. */
+/* Everything scaled together; 1.0 is the size it was drawn at. */
+void vpad_set_scale(float scale);
+
 void vpad_set_stick_below(int side, int below);
 int  vpad_stick_below(int side);
 

@@ -55,7 +55,25 @@ typedef struct {
 } VpadStyle;
 
 /* Sizes only. Where each one sits is in g_pos, which the player moves. */
-static const VpadStyle STYLE[VPAD_COUNT] = {
+/*
+ * Everything scaled together.
+ *
+ * A Wii U's picture is 16:9 and fills the width, so the bands it gives
+ * back are the narrowest of the three -- and the pad drawn at one size
+ * for all of them spilled onto the screen there. One number, because
+ * the controls are laid out in units of each other and scaling them
+ * apart would be a different pad.
+ */
+static float g_scale = 1.0f;
+
+void vpad_set_scale(float scale)
+{
+    if (scale < 0.4f) scale = 0.4f;
+    if (scale > 1.5f) scale = 1.5f;
+    g_scale = scale;
+}
+
+static const VpadStyle STYLE_BASE[VPAD_COUNT] = {
     [VPAD_LSTICK] = {SHAPE_CIRCLE,  1.8f * U, 0, 0, NULL},
     [VPAD_RSTICK] = {SHAPE_CIRCLE,  1.8f * U, 0, 0, NULL},
     [VPAD_DPAD]   = {SHAPE_CIRCLE, 1.65f * U, 0, 0, NULL},
@@ -70,6 +88,16 @@ static const VpadStyle STYLE[VPAD_COUNT] = {
     [VPAD_START]  = {SHAPE_PILL,   0, 1.8f * U, 0.9f * U, "+"},
     [VPAD_GUIDE]  = {SHAPE_CIRCLE, 0.50f * U, 0, 0, "H"},
 };
+
+/* The sizes actually used, which are the ones above scaled. */
+static VpadStyle style_of(int a)
+{
+    VpadStyle st = STYLE_BASE[a];
+    st.radius *= g_scale;
+    st.w *= g_scale;
+    st.h *= g_scale;
+    return st;
+}
 
 /* Where everything starts, taken from the browser overlay's own layout
  * so the two are the same pad.
@@ -190,8 +218,25 @@ static unsigned g_present = 0xFFFFFFFFu;
  * discover afterwards.
  */
 static SDL_Rect g_forbidden = {0, 0, 0, 0};
+static int g_custom;   /* somebody's own arrangement */
 
-void vpad_set_forbidden(SDL_Rect r) { g_forbidden = r; }
+void vpad_reset_layout(void);
+
+/*
+ * The picture moved, so the bands did.
+ *
+ * The default arrangement is computed from them, so it is recomputed
+ * here -- but only while it is still the default. Somebody's own
+ * arrangement stays where they put it, and the wall in anchor_centre
+ * keeps it off the picture whatever shape that turns out to be.
+ */
+void vpad_set_forbidden(SDL_Rect r)
+{
+    const int moved = (r.x != g_forbidden.x || r.w != g_forbidden.w);
+    g_forbidden = r;
+    if (moved && !g_custom)
+        vpad_reset_layout();
+}
 
 /* Pushes a centre out of the picture, to whichever side it is nearer.
  * Vertical is left alone: the bands run the full height, so sliding up
@@ -270,7 +315,6 @@ int vpad_opacity(void) { return g_opacity; }
  * them because a menu changed would be the wrong kind of helpful.
  */
 static int g_stick_below[2] = {0, 1};   /* left above, right below */
-static int g_custom = 0;                /* a layout of somebody's own */
 
 void vpad_set_stick_below(int side, int below)
 {
@@ -286,25 +330,84 @@ int vpad_stick_below(int side)
     return (side < 0 || side > 1) ? 0 : g_stick_below[side];
 }
 
+/*
+ * The default arrangement: two columns, stacked from the bottom.
+ *
+ * capture2cloud's own defaults are spread across a whole screen, because
+ * its overlay sits on top of one. Here the pad lives in the black band
+ * either side of the picture, which is a fifth of that width, and
+ * pushing those positions into it piled every control on the same spot.
+ * So the defaults are computed for the bands instead of borrowed.
+ *
+ * Bottom-up, because that is the end a thumb reaches: menu button,
+ * thumb control and stick in whichever order the side was asked for,
+ * then the shoulder and the trigger above them. HOME is the exception,
+ * pinned to the top of its column and out of the way -- it is the one
+ * that stops the game, and it should take a deliberate reach.
+ */
+static void stack_column(float cx, const int *order, int count, float top_pad)
+{
+    /* Bottom edge upwards, one control at a time. */
+    float y = VPAD_H - 0.6f * U * g_scale;
+    for (int i = 0; i < count; i++) {
+        const int a = order[i];
+        if (a < 0)
+            continue;
+        const VpadStyle st = style_of(a);
+        const float half = (st.shape == SHAPE_PILL) ? st.h / 2 : st.radius;
+        y -= half;
+        g_pos[a].x = cx / VPAD_W;
+        g_pos[a].y = y / VPAD_H;
+        y -= half + 0.35f * U * g_scale;      /* a small gap, not a gulf */
+    }
+    (void)top_pad;
+}
+
 void vpad_reset_layout(void) {
     for (int i = 0; i < VPAD_COUNT; i++) {
         g_pos[i].x = DEFAULT_POS[i].x / VPAD_W;
         g_pos[i].y = DEFAULT_POS[i].y / VPAD_H;
     }
 
-    /* The defaults have the left stick above its d-pad and the right one
-     * below its face buttons. Either side that wants the other
-     * arrangement swaps the two. */
-    if (g_stick_below[0] != 0) {
-        const SDL_FPoint t = g_pos[VPAD_LSTICK];
-        g_pos[VPAD_LSTICK] = g_pos[VPAD_DPAD];
-        g_pos[VPAD_DPAD] = t;
+    /* Where the two columns sit: the middle of each band, or a guess at
+     * one when nobody has said where the picture is yet. */
+    const float lband = (g_forbidden.w > 0) ? (float)g_forbidden.x : VPAD_W * 0.12f;
+    const float rstart = (g_forbidden.w > 0)
+                       ? (float)(g_forbidden.x + g_forbidden.w) : VPAD_W * 0.88f;
+    const float lcx = lband * 0.5f;
+    const float rcx = rstart + (VPAD_W - rstart) * 0.5f;
+
+    /* Left: SELECT at the bottom, then the d-pad and its stick in the
+     * order this side was asked for, then L and ZL above. */
+    int left[5];
+    int n = 0;
+    left[n++] = VPAD_SELECT;
+    if (g_stick_below[0]) { left[n++] = VPAD_LSTICK; left[n++] = VPAD_DPAD; }
+    else                  { left[n++] = VPAD_DPAD;   left[n++] = VPAD_LSTICK; }
+    left[n++] = VPAD_LB;
+    left[n++] = VPAD_LT;
+    stack_column(lcx, left, n, 0);
+
+    int right[5];
+    n = 0;
+    right[n++] = VPAD_START;
+    if (g_stick_below[1]) { right[n++] = VPAD_RSTICK; right[n++] = VPAD_FACE; }
+    else                  { right[n++] = VPAD_FACE;   right[n++] = VPAD_RSTICK; }
+    right[n++] = VPAD_RB;
+    right[n++] = VPAD_RT;
+    stack_column(rcx, right, n, 0);
+
+    /* The one that resists gravity. */
+    {
+        const VpadStyle st = style_of(VPAD_GUIDE);
+        g_pos[VPAD_GUIDE].x = rcx / VPAD_W;
+        g_pos[VPAD_GUIDE].y = (0.9f * U * g_scale + st.radius) / VPAD_H;
     }
-    if (g_stick_below[1] != 1) {
-        const SDL_FPoint t = g_pos[VPAD_RSTICK];
-        g_pos[VPAD_RSTICK] = g_pos[VPAD_FACE];
-        g_pos[VPAD_FACE] = t;
-    }
+
+    /* Stick clicks are not offered by any console here; park them out of
+     * the way rather than leave them where the borrowed defaults put
+     * them. */
+    g_pos[VPAD_L3].x = g_pos[VPAD_R3].x = -1.0f;
 
     g_custom = 0;
     g_revision++;
@@ -331,7 +434,7 @@ static void move_finger(VpadFinger *f, float px, float py) {
     if (g_editing) {
         /* The control follows the finger, kept far enough inside the
          * screen that it can always be grabbed again. */
-        const VpadStyle *st = &STYLE[f->anchor];
+        const VpadStyle sv = style_of(f->anchor); const VpadStyle *st = &sv;
         const float half = (st->shape == SHAPE_PILL) ? st->w / 2 : st->radius;
         float cx = f->x, cy = f->y;
         if (cx < half) cx = half;
@@ -496,7 +599,7 @@ int vpad_editing(void) { return g_editing; }
  * there is no path by which a control ends up on the screen.
  */
 static void anchor_centre(int a, float *x, float *y) {
-    const VpadStyle *st = &STYLE[a];
+    const VpadStyle sv = style_of(a); const VpadStyle *st = &sv;
     const float half = (st->shape == SHAPE_PILL) ? st->w / 2 : st->radius;
     float cx = g_pos[a].x * VPAD_W;
     cx = keep_out(cx, half);
@@ -513,7 +616,7 @@ static int hit_test(float px, float py, int *sub_out) {
         if (!shown(a)) continue;
         float cx, cy;
         anchor_centre(a, &cx, &cy);
-        const VpadStyle *st = &STYLE[a];
+        const VpadStyle sv = style_of(a); const VpadStyle *st = &sv;
 
         if (st->shape == SHAPE_PILL) {
             if (fabsf(px - cx) <= st->w / 2 && fabsf(py - cy) <= st->h / 2) {
@@ -604,7 +707,7 @@ int vpad_near_control(float nx, float ny) {
      * on a missed press, which is the thing being fixed. */
     const float margin = 3.0f;
     for (int i = 0; i < VPAD_COUNT; i++) {
-        const VpadStyle *style = &STYLE[i];
+        const VpadStyle sv = style_of(i); const VpadStyle *style = &sv;
         const SDL_FPoint p = g_pos[i];
         switch (style->shape) {
             case SHAPE_PILL: {
@@ -730,7 +833,7 @@ void vpad_draw(SDL_Renderer *r, const PadState21 pad) {
         if (!shown(a)) continue;
         float cx, cy;
         anchor_centre(a, &cx, &cy);
-        const VpadStyle *st = &STYLE[a];
+        const VpadStyle sv = style_of(a); const VpadStyle *st = &sv;
         const SDL_Color edge = g_editing ? COL_EDIT : COL_EDGE;
         const int on = !g_editing && anchor_pressed(pad, a, -1);
 
