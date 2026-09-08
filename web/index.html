@@ -140,7 +140,8 @@ body { --btn-bg: rgba(255,255,255,.14); --btn-border: rgba(255,255,255,.4);
 .stack { display: flex; flex-direction: column; gap: 8px; }
 button.b { width: var(--btn); height: var(--btn); border-radius: 50%;
            border: 2px solid var(--btn-border); background: var(--btn-bg);
-           color: #fff; font: bold calc(var(--btn) * 0.24) sans-serif;
+           color: var(--btn-label, #fff);
+           font: bold calc(var(--btn) * 0.24) sans-serif;
            touch-action: none;
            user-select: none; box-shadow: 0 0 4px rgba(0,0,0,.5); }
 button.b:active, button.b.held { background: var(--btn-pressed); }
@@ -165,7 +166,7 @@ button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
 .diamond .right  { grid-area: 2 / 3; }
 .diamond .bottom { grid-area: 3 / 2; }
 .stickwrap { display: flex; flex-direction: column; align-items: center; gap: 2px; }
-.sticklabel { font: 10px monospace; color: rgba(255,255,255,.55); }
+.sticklabel { font: 10px monospace; color: var(--btn-label, #fff); opacity: .7; }
 .stick { position: relative; width: calc(var(--btn) * 1.3);
          height: calc(var(--btn) * 1.3); border-radius: 50%;
          border: 2px solid var(--btn-border); background: var(--btn-bg);
@@ -220,6 +221,7 @@ button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
     <details class="menu-group" id="group-buttons"><summary>buttons</summary>
       <div class="menu-items">
         <label><input id="show-pad" type="checkbox" checked> on-screen buttons</label>
+        <label>colour <select id="pad-colour"></select></label>
         <div class="hint">A pad plugged into this machine works either way; its presses are merged with these, not swapped for them.</div>
       </div>
     </details>
@@ -919,6 +921,49 @@ audioSourceEl.addEventListener("change", () => {
   b[0] = parseInt(audioSourceEl.value, 10) || 0;
   send(MSG.SET_AUDIO_SOURCE, b);
 });
+
+/*
+ * The pad's colour, chosen rather than fixed.
+ *
+ * These sit on top of whatever the emulator is showing, and there is no
+ * one colour that works against all of it -- white vanishes on a bright
+ * scene. The same short palette the Switch client offers, so the two
+ * are the same pad. The label takes the colour too: the difference
+ * between a label and its button is the strength, not the hue.
+ */
+const PAD_COLOURS = [
+  ["white",   255, 255, 255], ["black",     0,   0,   0],
+  ["red",     255,  70,  70], ["orange",  255, 150,  40],
+  ["yellow",  255, 225,  60], ["green",    90, 220, 120],
+  ["cyan",     80, 220, 235], ["blue",     90, 150, 255],
+  ["magenta", 240, 100, 230],
+];
+const padColourEl = document.getElementById("pad-colour");
+PAD_COLOURS.forEach(([name], i) => {
+  const o = document.createElement("option");
+  o.value = i; o.textContent = name;
+  padColourEl.appendChild(o);
+});
+
+function applyPadColour(i) {
+  const [, r, g, b] = PAD_COLOURS[i] || PAD_COLOURS[0];
+  const st = document.body.style;
+  st.setProperty("--btn-bg", `rgba(${r},${g},${b},.18)`);
+  st.setProperty("--btn-border", `rgba(${r},${g},${b},.60)`);
+  st.setProperty("--btn-pressed", `rgba(${r},${g},${b},.55)`);
+  st.setProperty("--btn-label", `rgba(${r},${g},${b},.92)`);
+  try { localStorage.setItem("bs_pad_colour", String(i)); } catch (e) {}
+}
+padColourEl.addEventListener("change",
+  () => applyPadColour(parseInt(padColourEl.value, 10) || 0));
+{
+  let saved = 0;
+  try { saved = parseInt(localStorage.getItem("bs_pad_colour"), 10) || 0; }
+  catch (e) { saved = 0; }
+  if (saved < 0 || saved >= PAD_COLOURS.length) saved = 0;
+  padColourEl.value = saved;
+  applyPadColour(saved);
+}
 
 const showPadEl = document.getElementById("show-pad");
 function setPadShown(shown) {

@@ -43,6 +43,10 @@ void vpad_init(void);
  * nowhere is worse than leaving it out. */
 void vpad_set_present(unsigned mask);
 
+/* The picture's rectangle. No control may overlap it, and dragging one
+ * towards it stops at the edge. */
+void vpad_set_forbidden(SDL_Rect picture);
+
 /* Whether the overlay is shown and read at all. */
 void vpad_set_enabled(int on);
 int  vpad_enabled(void);

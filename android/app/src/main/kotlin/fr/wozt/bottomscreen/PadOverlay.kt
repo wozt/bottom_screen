@@ -142,7 +142,7 @@ class PadOverlay(context: Context) : View(context) {
         color = 0xFFFFD400.toInt()
     }
     private val text = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = Color.WHITE
+        color = 0xEAFFFFFF.toInt()
         textAlign = Paint.Align.CENTER
     }
 
@@ -424,7 +424,7 @@ class PadOverlay(context: Context) : View(context) {
         val cx = dpadRect.centerX()
         val cy = dpadRect.centerY()
         val arm = dpadRect.width() / 3f
-        fill.color = if (dpadHeld.isNotEmpty()) HELD else idle()
+        fill.color = if (dpadHeld.isNotEmpty()) tint(HELD_ALPHA) else idle()
         stroke.color = edge()
         canvas.drawRect(cx - arm / 2f, dpadRect.top, cx + arm / 2f, dpadRect.bottom, fill)
         canvas.drawRect(dpadRect.left, cy - arm / 2f, dpadRect.right, cy + arm / 2f, fill)
@@ -432,7 +432,7 @@ class PadOverlay(context: Context) : View(context) {
         canvas.drawRect(dpadRect.left, cy - arm / 2f, dpadRect.right, cy + arm / 2f, stroke)
 
         for (c in controls) {
-            fill.color = if (c.pressed) HELD else idle()
+            fill.color = if (c.pressed) tint(HELD_ALPHA) else idle()
             stroke.color = edge()
             if (c.round) {
                 val r = c.rect.width() / 2f
@@ -448,7 +448,7 @@ class PadOverlay(context: Context) : View(context) {
         }
 
         for (st in sticks) {
-            fill.color = if (st.active) HELD else idle()
+            fill.color = if (st.active) tint(HELD_ALPHA) else idle()
             stroke.color = edge()
             canvas.drawCircle(st.centre.x, st.centre.y, st.radius, stroke)
             canvas.drawCircle(st.knob.x, st.knob.y, st.radius * 0.45f, fill)
@@ -481,10 +481,27 @@ class PadOverlay(context: Context) : View(context) {
         canvas.drawRoundRect(box, pad, pad, frame)
     }
 
+    /*
+     * The pad's colour, chosen rather than fixed.
+     *
+     * These are drawn over whatever the emulator is showing, and there
+     * is no one colour that works against all of it -- white vanishes
+     * on a bright scene. The same short palette the other two clients
+     * offer, so the three are the same pad.
+     *
+     * The label takes the colour too: what separates a label from its
+     * button is the strength, not the hue.
+     */
+    var colourIndex: Int = 0
+        set(v) { field = v.coerceIn(0, PALETTE.size - 1); text.color = tint(0xEA); invalidate() }
+
+    private fun tint(alpha: Int): Int =
+        (alpha shl 24) or (PALETTE[colourIndex.coerceIn(0, PALETTE.size - 1)] and 0xFFFFFF)
+
     /* Edit mode brightens everything, so it is obvious at a glance that a
      * drag will move a button rather than press it. */
-    private fun idle() = if (editMode) 0x55FFFFFF else 0x30FFFFFF
-    private fun edge() = if (editMode) 0xB0FFFFFF.toInt() else 0x60FFFFFF
+    private fun idle() = tint(if (editMode) 0x55 else 0x30)
+    private fun edge() = tint(if (editMode) 0xB0 else 0x60)
 
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (editMode) return editTouch(event)
@@ -731,6 +748,16 @@ class PadOverlay(context: Context) : View(context) {
 
         /** Slack, so the band's contents are not merely touching. */
         const val BREATHE = 0.5f
-        private const val HELD = 0x90FFFFFF.toInt()
+        private const val HELD_ALPHA = 0x90
+
+        /** The same short palette the web and Switch clients offer. */
+        val PALETTE = intArrayOf(
+            0xFFFFFF, 0x000000, 0xFF4646, 0xFF9628, 0xFFE13C,
+            0x5ADC78, 0x50DCEB, 0x5A96FF, 0xF064E6,
+        )
+        val PALETTE_NAMES = arrayOf(
+            "white", "black", "red", "orange", "yellow",
+            "green", "cyan", "blue", "magenta",
+        )
     }
 }

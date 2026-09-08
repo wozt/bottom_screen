@@ -179,6 +179,37 @@ static const struct { const char *name; Uint8 r, g, b; } PALETTE[] = {
  */
 static unsigned g_present = 0xFFFFFFFFu;
 
+/*
+ * The picture, which no control may sit on.
+ *
+ * A button over the streamed screen is a button over the thing being
+ * played on -- and on a DS or a 3DS that screen is the stylus surface,
+ * so a control there would take touches meant for the game. Dragging
+ * one stops at the edge rather than being allowed across and quietly
+ * clamped somewhere else: a wall you can feel, not a correction you
+ * discover afterwards.
+ */
+static SDL_Rect g_forbidden = {0, 0, 0, 0};
+
+void vpad_set_forbidden(SDL_Rect r) { g_forbidden = r; }
+
+/* Pushes a centre out of the picture, to whichever side it is nearer.
+ * Vertical is left alone: the bands run the full height, so sliding up
+ * and down inside one is free. */
+static float keep_out(float cx, float half)
+{
+    if (g_forbidden.w <= 0 || g_forbidden.h <= 0)
+        return cx;
+
+    const float left  = (float)g_forbidden.x;
+    const float right = (float)(g_forbidden.x + g_forbidden.w);
+    if (cx + half <= left || cx - half >= right)
+        return cx;                       /* already clear */
+
+    const float mid = (left + right) * 0.5f;
+    return (cx < mid) ? left - half : right + half;
+}
+
 void vpad_set_present(unsigned mask) { g_present = mask; }
 static int shown(int anchor) { return (g_present >> anchor) & 1u; }
 
@@ -193,14 +224,14 @@ static SDL_Color tint(int alpha) {
     return c;
 }
 
-/* Text on top of the tint, black or white by whichever is readable. A
- * label in the fill's own colour would not be a label. */
+/* The label is the pad's own colour, not a contrasting one.
+ *
+ * Drawn at full strength against a fill drawn at a fifth of it, which is
+ * what keeps it readable: the difference is the alpha, not the hue. A
+ * pad set to green should be green throughout rather than green rings
+ * around white letters. */
 static SDL_Color label_colour(void) {
-    const int luma = (PALETTE[g_colour].r * 30 + PALETTE[g_colour].g * 59 +
-                      PALETTE[g_colour].b * 11) / 100;
-    const Uint8 v = (luma > 140) ? 20 : 245;
-    SDL_Color c = {v, v, v, (Uint8)(220 * g_opacity / 100)};
-    return c;
+    return tint(235);
 }
 
 #define COL_BODY  tint(46)
@@ -261,6 +292,9 @@ static void move_finger(VpadFinger *f, float px, float py) {
         if (cx > VPAD_W - half) cx = VPAD_W - half;
         if (cy < half) cy = half;
         if (cy > VPAD_H - half) cy = VPAD_H - half;
+        cx = keep_out(cx, half);
+        if (cx < half) cx = half;
+        if (cx > VPAD_W - half) cx = VPAD_W - half;
         if (g_pos[f->anchor].x != cx / VPAD_W || g_pos[f->anchor].y != cy / VPAD_H) {
             g_pos[f->anchor].x = cx / VPAD_W;
             g_pos[f->anchor].y = cy / VPAD_H;
@@ -405,8 +439,23 @@ void vpad_set_editing(int on) {
 }
 int vpad_editing(void) { return g_editing; }
 
+/*
+ * Where a control actually is, which is not quite where it is stored.
+ *
+ * The picture is pushed out of here rather than only when something is
+ * dragged, because a stored position predates the picture it now has to
+ * avoid: a layout saved against a 4:3 stream, or the defaults, would
+ * otherwise sit on top of a 16:9 one. Enforcing it on every read means
+ * there is no path by which a control ends up on the screen.
+ */
 static void anchor_centre(int a, float *x, float *y) {
-    *x = g_pos[a].x * VPAD_W;
+    const VpadStyle *st = &STYLE[a];
+    const float half = (st->shape == SHAPE_PILL) ? st->w / 2 : st->radius;
+    float cx = g_pos[a].x * VPAD_W;
+    cx = keep_out(cx, half);
+    if (cx < half) cx = half;
+    if (cx > VPAD_W - half) cx = VPAD_W - half;
+    *x = cx;
     *y = g_pos[a].y * VPAD_H;
 }
 

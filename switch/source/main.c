@@ -1172,6 +1172,10 @@ int main(int argc, char **argv)
          */
         vpad_set_enabled(g_show_buttons);
         vpad_set_present(present_for(info.console));
+        /* No control on the picture: on a DS or a 3DS that surface is
+         * the stylus, so a button there would swallow taps meant for
+         * the game. */
+        vpad_set_forbidden(picture_rect);
         {
             /* vpad counts its own changes, so a dragged button is
              * noticed rather than the saving being told about it. */

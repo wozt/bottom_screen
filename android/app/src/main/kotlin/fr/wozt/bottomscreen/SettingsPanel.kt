@@ -58,6 +58,8 @@ class SettingsPanel(
         var menuColumns: Boolean
         /** BsProtocol.AUDIO_BOTH / AUDIO_TV / AUDIO_PAD. Only a Wii U
          *  has two outputs, so only there is it offered. */
+        /** Index into PadOverlay.PALETTE. */
+        var padColour: Int
         var audioSource: Int
         val hasAudio: Boolean
         val isWiiU: Boolean
@@ -350,6 +352,12 @@ class SettingsPanel(
             actions.onApply()
         }
         button("reset their positions") { actions.onResetLayout() }
+        /* Drawn over whatever the emulator is showing, so no single
+         * colour works against all of it. */
+        choice(
+            PadOverlay.PALETTE_NAMES.mapIndexed { i, n -> n to i },
+            settings.padColour
+        ) { settings.padColour = it; actions.onApply() }
 
     }
 
