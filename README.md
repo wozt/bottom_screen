@@ -4,7 +4,7 @@ Stream a Nintendo console's bottom screen out of an emulator and onto a
 phone, a browser, or a Switch — with touch and buttons travelling back
 the other way.
 
-![The web client showing a commercial DS title](docs/screenshots/web.png)
+![The web client streaming a DS bottom screen](docs/screenshots/web-ds.png)
 
 Three consoles, three emulators, one protocol: **melonDS** for the DS,
 **Azahar** for the 3DS, **Cemu** for the Wii U. A client is not
@@ -57,7 +57,7 @@ list along.
 
 ### On Android
 
-<img src="docs/screenshots/android.png" width="330" align="left" alt="The Android client">
+<img src="docs/screenshots/android-ds.png" width="330" align="left" alt="The Android client">
 <img src="docs/screenshots/android-settings.png" width="330" alt="Its settings panel">
 
 <br clear="both">
@@ -72,12 +72,48 @@ Turn the phone and the buttons move to the sides, where the console
 keeps them, so the picture gets the full height rather than sharing it
 with a band underneath.
 
-![The Android client held sideways](docs/screenshots/android-landscape.png)
+![The Android client held sideways](docs/screenshots/android-ds-landscape.png)
 
 ```sh
 cd android && ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+
+### Three consoles, one client
+
+Nothing below is configured for a machine. The server announces which
+console it is serving, how big the screen is and which buttons exist,
+and the interface is built from that — a Wii U brings four triggers, two
+sticks and a HOME button, a DS brings none of them, and the same client
+draws both. The pictures are the built-in test pattern rather than a
+game, so what is being shown is the client and not somebody's cartridge.
+
+**Nintendo DS** — 256×192
+
+<img src="docs/screenshots/web-ds.png" width="430" align="left" alt="A DS in the browser">
+<img src="docs/screenshots/android-ds.png" width="150" alt="A DS on Android, upright">
+
+<br clear="both">
+
+![A DS on Android, sideways](docs/screenshots/android-ds-landscape.png)
+
+**Nintendo 3DS** — 320×240, with the circle pad and a C-stick
+
+<img src="docs/screenshots/web-3ds.png" width="430" align="left" alt="A 3DS in the browser">
+<img src="docs/screenshots/android-3ds.png" width="150" alt="A 3DS on Android, upright">
+
+<br clear="both">
+
+![A 3DS on Android, sideways](docs/screenshots/android-3ds-landscape.png)
+
+**Wii U** — 854×480, the only one of the three that is 16:9
+
+<img src="docs/screenshots/web-wiiu.png" width="430" align="left" alt="A Wii U in the browser">
+<img src="docs/screenshots/android-wiiu.png" width="150" alt="A Wii U on Android, upright">
+
+<br clear="both">
+
+![A Wii U on Android, sideways](docs/screenshots/android-wiiu-landscape.png)
 
 ### On a Switch — not finished
 

@@ -48,7 +48,14 @@ body { grid-template-columns: auto minmax(0, 1fr) auto;
 #stage { grid-area: stage; display: flex; align-items: center;
          justify-content: center; min-width: 0; min-height: 0; }
 
-.padside { display: flex; align-items: flex-end; padding: 10px 12px 18px; }
+/*
+ * Full height, but the contents sit as a group in the middle of it.
+ * Stacked against the bottom edge they were awkward to reach; held
+ * apart at the extremes they ran under the bar at the top and touched
+ * the bottom of the window. The top padding keeps the bar clear even
+ * for the tallest side, which is the Wii U's.
+ */
+.padside { display: flex; align-items: stretch; padding: 52px 12px 26px; }
 #padLeft  { grid-area: padl; justify-content: flex-start; }
 #padRight { grid-area: padr; justify-content: flex-end; }
 
@@ -118,7 +125,9 @@ label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
 body { --btn-bg: rgba(255,255,255,.14); --btn-border: rgba(255,255,255,.4);
        --btn-pressed: rgba(255,255,255,.45); }
 .padside:empty { display: none; }
-.cluster { display: grid; gap: 10px; justify-items: center; }
+.cluster { display: flex; flex-direction: column; align-items: center;
+           justify-content: center; gap: 20px; }
+.stack { display: flex; flex-direction: column; gap: 8px; }
 button.b { width: 58px; height: 58px; border-radius: 50%;
            border: 2px solid var(--btn-border); background: var(--btn-bg);
            color: #fff; font: bold 13px sans-serif; touch-action: none;
@@ -560,8 +569,22 @@ function buildPad(id) {
   padRightEl.innerHTML = "";
   const profile = CONSOLES[id] || CONSOLES[1];
 
+  /*
+   * Each side is laid out the way the console holds it: triggers at the
+   * top, the thumb control in the middle, a menu button at the bottom.
+   * Everything used to live in the right-hand column, which made that
+   * column tall enough to be pressed against the bottom edge while the
+   * left one held nothing but the d-pad. This also matches the Android
+   * client, which has always split the two sides.
+   */
+  const shoulderSide = (near, far) =>
+    [far, near].filter((n) => profile.shoulders.includes(n));
+
   const left = document.createElement("div");
   left.className = "cluster";
+  const lShoulders = document.createElement("div");
+  lShoulders.className = "stack";
+  shoulderSide("L", "ZL").forEach((n) => addButton(lShoulders, n, BTN[n]));
   const dpad = document.createElement("div");
   dpad.id = "dpad";
   const cells = [null, BTN.UP, null, BTN.LEFT, null, BTN.RIGHT, null, BTN.DOWN, null];
@@ -570,13 +593,16 @@ function buildPad(id) {
     if (code === null) { dpad.appendChild(document.createElement("div")); return; }
     addButton(dpad, names[i], code);
   });
-  left.appendChild(dpad);
+  const lMenu = document.createElement("div");
+  lMenu.className = "row";
+  addButton(lMenu, "SEL", BTN.SELECT);
+  left.append(lShoulders, dpad, lMenu);
 
   const right = document.createElement("div");
   right.className = "cluster";
   const shoulders = document.createElement("div");
-  shoulders.className = "row";
-  profile.shoulders.forEach((n) => addButton(shoulders, n, BTN[n]));
+  shoulders.className = "stack";
+  shoulderSide("R", "ZR").forEach((n) => addButton(shoulders, n, BTN[n]));
 
   /* X on top, Y left, A right, B bottom -- the layout every console
      here uses, rather than the order they happen to be listed in. */
@@ -589,7 +615,6 @@ function buildPad(id) {
 
   const menu = document.createElement("div");
   menu.className = "row";
-  addButton(menu, "SEL", BTN.SELECT);
   addButton(menu, "STA", BTN.START);
   right.append(shoulders, face, menu);
 

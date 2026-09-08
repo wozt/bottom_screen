@@ -49,14 +49,24 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private var pad: PadOverlay? = null
 
     private var client: BsClient? = null
-    private var decoder: BsVideoDecoder? = null
+    /*
+     * Written on the UI thread in surfaceCreated, read on the network
+     * thread in onFrame. Without @Volatile the reader is entitled never
+     * to see the write: it keeps its cached null, drops every frame at
+     * "val d = decoder ?: return", and the picture stays black for good
+     * -- no decode is even attempted, so nothing is logged and forcing a
+     * keyframe from the server changes nothing. A rotation repaired it
+     * because the rebuild wrote the field again. Intermittent, which is
+     * what a memory-visibility bug looks like from the outside.
+     */
+    @Volatile private var decoder: BsVideoDecoder? = null
     /* Which surface the decoder was built for, so a late callback about
      * an older one cannot tear down the current picture. */
-    private var decoderHolder: SurfaceHolder? = null
+    @Volatile private var decoderHolder: SurfaceHolder? = null
     private var audio: BsAudioPlayer? = null
     private var volume = 1f
     private var muted = false
-    private var surfaceReady = false
+    @Volatile private var surfaceReady = false
     private var profile = ConsoleProfile.DS
     private var panel: View? = null
     private var settingsGear: TextView? = null
