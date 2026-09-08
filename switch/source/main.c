@@ -1203,21 +1203,43 @@ static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
     SDL_RenderClear(g_renderer);
 
 
-    if (info->width > 0 && info->height > 0) {
-        ensure_texture(info->width, info->height);
+    /*
+     * Drawn at the size of the picture that was actually decoded, not
+     * the size the server last announced.
+     *
+     * They disagree for a frame or two around any change of shape, and
+     * they disagree for good if the decoder will not follow one. Sizing
+     * the texture from the announcement meant asking stream_take_frame
+     * for a size it did not have, which it declines -- silently, and
+     * correctly, since the alternative is reading past a buffer. The
+     * visible result was a picture that stopped changing, which reads as
+     * a setting that does nothing rather than as a decoder that did not
+     * keep up. The promise is only used before the first frame, to have
+     * something to lay out.
+     */
+    int pw = 0, ph = 0;
+    if (!stream_picture_size(&pw, &ph)) {
+        pw = info->width;
+        ph = info->height;
+    }
+
+    if (pw > 0 && ph > 0) {
+        ensure_texture(pw, ph);
 
         if (g_picture) {
             void *pixels = NULL;
             int pitch = 0;
             if (SDL_LockTexture(g_picture, NULL, &pixels, &pitch) == 0) {
                 uint8_t *y = pixels;
-                uint8_t *u = y + (size_t)pitch * info->height;
-                uint8_t *v = u + (size_t)(pitch / 2) * (info->height / 2);
-                stream_take_frame(y, u, v, pitch, pitch / 2,
-                                  info->width, info->height);
+                uint8_t *u = y + (size_t)pitch * ph;
+                uint8_t *v = u + (size_t)(pitch / 2) * (ph / 2);
+                stream_take_frame(y, u, v, pitch, pitch / 2, pw, ph);
                 SDL_UnlockTexture(g_picture);
             }
-            SDL_Rect dst = fit(info->width, info->height);
+            /* fit() keeps the aspect and leaves the button bands alone,
+             * so a 5:3 top screen lands correctly without the pad
+             * moving. */
+            SDL_Rect dst = fit(pw, ph);
             SDL_RenderCopy(g_renderer, g_picture, NULL, &dst);
             *dst_out = dst;
 

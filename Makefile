@@ -68,11 +68,27 @@ tests/smoke_client: $(SMOKE_SRC) bs_decoder.h bs_net.h bs_protocol.h
 # it passed while nothing exercised the button merging, the size
 # renegotiation or the multi-client path -- and a stale binary left over
 # from an earlier build could sit there reporting success.
-test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_flip
+# Built only where opus is: it is the console client's dependency, not
+# this tree's, and its absence is a reason to skip that one test rather
+# than to fail the build.
+SWITCH_TEST := $(shell pkg-config --exists opus && echo tests/switch_client)
+
+# The console client's own stream.c, compiled for this machine. It has no
+# libnx in it, so the half of the homebrew that talks to the server can
+# be driven here -- which is the only test that client ever gets.
+tests/switch_client: tests/switch_client.c switch/source/stream.c \
+                     bs_decoder.c bs_net.c bs_protocol.h
+	$(CC) $(CFLAGS) -Iswitch/source $(shell pkg-config --cflags opus) \
+	  -o $@ tests/switch_client.c switch/source/stream.c bs_decoder.c bs_net.c \
+	  $(shell pkg-config --libs opus) -lavcodec -lavutil -lpthread
+
+test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_flip \
+      $(SWITCH_TEST)
 	./tests/run_smoke.sh
 	./tests/run_multiclient.sh
 	./tests/run_receive_size.sh
 	./tests/run_top_screen.sh
+	./tests/run_switch_client.sh
 	./tests/input_merge
 	./tests/resize_flip
 	./tests/run_patches_fresh.sh
@@ -80,6 +96,7 @@ test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_fli
 	./tests/run_recipe_drift.sh
 
 clean:
-	rm -f $(BINARIES) tests/smoke_client tests/input_merge tests/resize_flip web_page.h
+	rm -f $(BINARIES) tests/smoke_client tests/input_merge tests/resize_flip \
+	      tests/switch_client web_page.h
 
 .PHONY: all clean test

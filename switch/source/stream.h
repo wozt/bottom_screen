@@ -42,6 +42,13 @@ void stream_info(StreamInfo *out);
  *
  * The caller passes buffers it owns; the sizes come from stream_info.
  */
+/*
+ * The size of the picture actually decoded, which is what to draw at.
+ * Zero before the first frame arrives; then it is the truth, where
+ * StreamInfo is only the server's latest promise.
+ */
+int stream_picture_size(int *w, int *h);
+
 int stream_take_frame(uint8_t *y, uint8_t *u, uint8_t *v,
                       int y_stride, int uv_stride, int width, int height);
 

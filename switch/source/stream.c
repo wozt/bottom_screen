@@ -82,6 +82,25 @@ static void store_frame(const BsDecodedFrame *f)
     pthread_mutex_unlock(&g_frame_lock);
 }
 
+/*
+ * The size of the picture actually decoded, which is not always the size
+ * the server last announced.
+ *
+ * The two disagree for a frame or two around any change of shape --
+ * frames already in flight carry the old one -- and they disagree for
+ * good if a decoder refuses to follow. Drawing from the announcement
+ * meant that a disagreement showed as a frozen picture rather than as
+ * anything anybody could diagnose. Returns 0 before the first frame.
+ */
+int stream_picture_size(int *w, int *h)
+{
+    pthread_mutex_lock(&g_frame_lock);
+    const int have = g_fw > 0 && g_fh > 0;
+    if (have) { *w = g_fw; *h = g_fh; }
+    pthread_mutex_unlock(&g_frame_lock);
+    return have;
+}
+
 int stream_take_frame(uint8_t *y, uint8_t *u, uint8_t *v,
                       int y_stride, int uv_stride, int width, int height)
 {
@@ -177,10 +196,44 @@ static void *reader(void *arg)
              * us, so the picture simply changes size.
              */
             pthread_mutex_lock(&g_info_lock);
+            const int changed = (si.width != g_info.width ||
+                                 si.height != g_info.height);
             g_info.width = si.width;
             g_info.height = si.height;
             if (si.fps > 0) g_info.fps = si.fps;
             pthread_mutex_unlock(&g_info_lock);
+
+            /*
+             * A new size means a new decoder.
+             *
+             * This client was the only one of the three that did not do
+             * this, and it got away with it for as long as the only
+             * thing that changed the size was somebody moving an
+             * emulator's internal resolution -- rare, and forgiving on
+             * a software decoder, which reconfigures itself. The console
+             * does not use one: h264_nvtegra is the hardware block, set
+             * up from the first stream it was given, and it does not
+             * reconfigure. Switching screens made that a thing people
+             * do on purpose, and the result was a picture that simply
+             * stopped changing -- the request left, the server switched,
+             * the frames arrived, and nothing decoded to a size the
+             * drawing side would accept, so the last good picture stayed
+             * on screen looking exactly like a setting that does
+             * nothing.
+             *
+             * Safe here: this thread is the only one that decodes.
+             * Nothing is needed for the parameter sets either, because
+             * the encoder puts SPS/PPS in front of every keyframe and
+             * the server holds everything back until the next one.
+             */
+            if (changed && g_dec) {
+                bs_decoder_destroy(g_dec);
+                char derr[128] = "";
+                g_dec = bs_decoder_create(derr, sizeof(derr));
+                pthread_mutex_lock(&g_frame_lock);
+                g_frame_pending = 0;
+                pthread_mutex_unlock(&g_frame_lock);
+            }
         } else if (type == BS_MSG_SCREENS && n >= sizeof(BsScreens)) {
             /*
              * Which screens this server has. A bit per BsScreen, and a
