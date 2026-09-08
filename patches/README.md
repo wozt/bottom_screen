@@ -47,25 +47,38 @@ The last three are refusals, deliberately. A patcher that always
 succeeds is worse than one that stops, because the failure moves from a
 message you read to a build you have to debug.
 
-## Neither is maintained by hand
+## The point is the version that has just come out
 
-Both are generated from the forks by `scripts/make_patches.sh`, so
-neither can drift from what the forks actually contain. Two tests keep
-them honest:
+Not the fork. A fork is this project's changes frozen against the
+emulator as it was; the reason to carry them as anchors is to put them
+on whatever upstream has released since and take its work with them.
 
-- `tests/run_recipes.sh` applies each recipe to an untouched copy of the
-  commit it was made against and compares **every file it claims to
-  touch** against the fork. Reporting success is not enough; the result
-  has to be identical.
+Three tests, in the order of how much they claim:
+
+- `tests/run_recipes.sh` applies each recipe to the **newest upstream
+  available locally** and reports how far that is from where the recipe
+  was written. `git fetch upstream` first for a real answer. Where the
+  tip happens to be the commit the recipe was written against, it also
+  compares the result against the fork file by file — the payload can be
+  wrong even when every anchor lands, and that is the one place the two
+  can be held side by side.
 - `tests/run_recipe_drift.sh` reindents the code around a hook and
   checks that the diff refuses it, that the recipe copes and says it had
   to, and — the part that matters more — that a hook whose function has
   genuinely gone is refused rather than landed somewhere plausible.
+- `tests/run_recipe_build.sh <emulator>` takes upstream, applies the
+  recipe and **builds it**. Applying and compiling are different claims:
+  an anchor can land in the right function and still leave the file
+  wrong, and nothing but a compiler will say so. Not part of `make
+  test`; it needs a full toolchain and takes minutes.
 
-## They are still a snapshot
+Both the patches and the recipes are generated from the forks by
+`scripts/make_patches.sh`, so none of the three can drift from the
+others — nobody edits any of them by hand.
 
-Anchors survive more than line numbers do, but not everything. When a
-recipe refuses, the message says what changed and the fork is the answer:
-take it, or rebase its `bottom-screen` branch onto the new upstream. A
-branch survives an upstream that keeps moving; neither of these does,
-and that is why all three exist.
+## Anchors are not magic
+
+They survive more than line numbers do, not everything. When a recipe
+refuses, the message says what changed, and the fork is the answer: take
+it, or rebase its `bottom-screen` branch onto the new upstream. A branch
+survives an upstream that keeps moving. That is why all three exist.
