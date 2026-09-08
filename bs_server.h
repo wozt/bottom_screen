@@ -64,6 +64,20 @@ void bs_server_destroy(BsServer *srv);
 void bs_server_set_top_source(BsServer *srv, BsSource *top);
 
 /*
+ * Says there is a top screen, before there is one to hand over.
+ *
+ * For a backend that only produces the picture while somebody is
+ * watching it -- which is all three of them, because reading a texture
+ * back off the GPU every frame is not free. Without this the two facts
+ * deadlock: no client may choose a screen the server does not admit to,
+ * and the backend will not produce one until a client chooses it.
+ *
+ * Call it once the server is up; call bs_server_set_top_source with the
+ * real thing on the first frame after somebody asks.
+ */
+void bs_server_offer_top(BsServer *srv);
+
+/*
  * Whether anybody is watching the given BsScreen right now.
  *
  * For the backends, which is where the real cost of a second screen

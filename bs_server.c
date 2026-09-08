@@ -107,7 +107,20 @@ typedef struct {
 typedef struct BsStream {
     BsServer    *srv;
     int          which;        /* BsScreen */
-    BsSource    *source;       /* NULL when this screen is not on offer */
+    /*
+     * Whether this screen exists at all, which is not the same as
+     * whether its pixels have started arriving.
+     *
+     * A backend that produces a screen only while somebody is watching
+     * it cannot hand over a source before anybody has asked -- and
+     * nobody can ask for a screen the server says it does not have.
+     * That circle cost an evening: the mask said "bottom only" against a
+     * real emulator, for ever. So a backend says it means to provide the
+     * screen, clients may then choose it, and the source turns up on the
+     * first frame after that.
+     */
+    int          offered;
+    BsSource    *source;       /* NULL until the backend hands one over */
     BsSourceInfo info;
     BsEncoder   *enc;          /* built on demand; see stream_idle */
 
@@ -375,7 +388,7 @@ static void client_send_screens(BsClient *cl)
     BsScreens sc;
     memset(&sc, 0, sizeof(sc));
     for (int i = 0; i < BS_SCREEN_COUNT; i++)
-        if (cl->srv->video[i].source)
+        if (cl->srv->video[i].offered)
             sc.available |= (uint8_t)(1u << i);
     client_send(cl, BS_MSG_SCREENS, 0, &sc, sizeof(sc), NULL, 0);
 }
@@ -395,7 +408,7 @@ static void client_set_screen(BsClient *cl, int screen)
     BsServer *srv = cl->srv;
     if (screen < 0 || screen >= BS_SCREEN_COUNT || screen == cl->screen)
         return;
-    if (!srv->video[screen].source)
+    if (!srv->video[screen].offered)
         return;   /* asked for a screen this backend does not have */
 
     cl->screen = screen;
@@ -1228,6 +1241,7 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
     }
     BsStream *bot = &srv->video[BS_SCREEN_BOTTOM];
     bot->source = source;
+    bot->offered = 1;
     source->get_info(source->self, &bot->info);
 
     srv->max_clients = srv->cfg.max_clients > 0 ? srv->cfg.max_clients
@@ -1415,16 +1429,20 @@ void bs_server_destroy(BsServer *srv)
     free(srv);
 }
 
-void bs_server_set_top_source(BsServer *srv, BsSource *top)
+/*
+ * Says the backend has a top screen, before it has one to hand over.
+ *
+ * Needed because the two facts are separate. A backend that reads its
+ * top screen back off the GPU only while somebody is watching cannot
+ * produce a source until somebody does -- and nobody can, if the server
+ * only admits to screens it already holds a source for. So this
+ * announces the intent; bs_server_set_top_source delivers on it, on the
+ * first frame after a client asks.
+ */
+/* Tells everyone already connected what the screens are now, and wakes
+ * the pumps -- one of them may have been waiting for exactly this. */
+static void announce_screens(BsServer *srv)
 {
-    if (!srv)
-        return;
-    BsStream *st = &srv->video[BS_SCREEN_TOP];
-    st->source = top;
-    if (top)
-        top->get_info(top->self, &st->info);
-
-    /* Anyone already connected was told there was no top screen. */
     pthread_mutex_lock(&srv->roster);
     for (int i = 0; i < srv->max_clients; i++) {
         BsClient *cl = &srv->clients[i];
@@ -1433,6 +1451,27 @@ void bs_server_set_top_source(BsServer *srv, BsSource *top)
     }
     pthread_cond_broadcast(&srv->roster_cond);
     pthread_mutex_unlock(&srv->roster);
+}
+
+void bs_server_offer_top(BsServer *srv)
+{
+    if (!srv || srv->video[BS_SCREEN_TOP].offered)
+        return;
+    srv->video[BS_SCREEN_TOP].offered = 1;
+    announce_screens(srv);
+}
+
+void bs_server_set_top_source(BsServer *srv, BsSource *top)
+{
+    if (!srv)
+        return;
+    BsStream *st = &srv->video[BS_SCREEN_TOP];
+    st->source = top;
+    st->offered = top != NULL;
+    if (top)
+        top->get_info(top->self, &st->info);
+
+    announce_screens(srv);
 }
 
 int bs_server_wants_screen(const BsServer *srv, int screen)
