@@ -50,6 +50,9 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     private var client: BsClient? = null
     private var decoder: BsVideoDecoder? = null
+    /* Which surface the decoder was built for, so a late callback about
+     * an older one cannot tear down the current picture. */
+    private var decoderHolder: SurfaceHolder? = null
     private var audio: BsAudioPlayer? = null
     private var volume = 1f
     private var muted = false
@@ -611,9 +614,16 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                     code, 0, 0
                 )
             }
-            /* A little clearance at the top; the settings button no
-             * longer lives there, so this is only breathing room. */
-            topReserve = resources.displayMetrics.density * 20
+            /*
+             * In landscape the settings button sits in the top-left
+             * corner, which is the top of the left band -- exactly where
+             * the shoulders start. The reserve is the gear's own extent
+             * (8dp inset + 40dp box) plus a little, so the two cannot
+             * meet; a flat 20dp let it sit on top of L. In portrait the
+             * gear is below the picture and 20dp is only breathing room.
+             */
+            topReserve = resources.displayMetrics.density *
+                         (if (landscape) 52f else 20f)
             onAxis = { code, value ->
                 client?.sendInput(BsProtocol.INPUT_AXIS, code, value, 0)
             }
@@ -1062,7 +1072,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         val s = screen ?: return
         val d = BsVideoDecoder(h.surface, s.nativeWidth, s.nativeHeight)
         if (d.start()) {
+            /* Anything still here belongs to a surface being replaced. */
+            decoder?.release()
             decoder = d
+            decoderHolder = h
             surfaceReady = true
             /* A new decoder has no reference picture, so it draws
              * nothing until a keyframe arrives -- a second of black
@@ -1076,9 +1089,19 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     override fun surfaceChanged(h: SurfaceHolder, format: Int, w: Int, height: Int) {}
 
     override fun surfaceDestroyed(h: SurfaceHolder) {
+        /*
+         * Rotation adds the new view before dropping the old one, so
+         * this can arrive for a surface that has already been replaced.
+         * Releasing whatever was current tore down the decoder built for
+         * the NEW surface, and the picture stayed black until something
+         * else happened to rebuild it -- intermittently, which is why it
+         * looked like a capture artefact rather than a bug.
+         */
+        if (h !== decoderHolder) return
         surfaceReady = false
         decoder?.release()
         decoder = null
+        decoderHolder = null
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {

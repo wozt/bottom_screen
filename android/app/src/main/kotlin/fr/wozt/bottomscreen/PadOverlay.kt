@@ -163,9 +163,38 @@ class PadOverlay(context: Context) : View(context) {
      */
     private fun unit(): Float {
         val h = height.toFloat()
-        val base = if (sideBand > 0f) minOf(sideBand / (FACE_SPAN + 0.9f), h / 6.5f)
+        val base = if (sideBand > 0f)
+                       minOf(sideBand / (FACE_SPAN + 0.9f),
+                             h / 6.5f,
+                             h / (2f * bandUnitsBelowMiddle()))
                    else minOf(width.toFloat(), h * 0.55f) * 0.13f
         return base * buttonScale
+    }
+
+    /*
+     * How many units the busier half of a side band has to hold below
+     * its middle: the arm, then the stick with its label above it, then
+     * the menu buttons stacked at the bottom.
+     *
+     * A Wii U puts four shoulders, three menu buttons and two sticks in
+     * the band a DS fills with two and no stick, so one fixed divisor
+     * cannot serve both. It was 6.5, chosen when a DS was the only
+     * profile, and on a Wii U the right stick's label came out on top of
+     * the B button. The numbers here are the same ones layoutBeside
+     * lays out with, and have to be changed with them.
+     */
+    private fun bandUnitsBelowMiddle(): Float {
+        val arm = FACE_SPAN / 2f
+        /* The gap above the menu stack counts as well as the one below
+         * it: layoutBeside keeps a margin between the stick and the
+         * first menu button. Leaving it out of the sum made the answer
+         * a shade too big, the stick was clamped back up into the arm,
+         * and the label landed on the B button anyway. */
+        val stick = if (profile.sticks.isEmpty()) 0f
+                    else STICK_LABEL + 2f * STICK_R + MARGIN
+        val rows = (profile.menuButtons.size + 1) / 2
+        val menu = rows * MENU_H + (rows - 1).coerceAtLeast(0) * MENU_GAP
+        return arm + stick + menu + MARGIN + BREATHE
     }
 
     private fun layoutControls() {
@@ -221,9 +250,9 @@ class PadOverlay(context: Context) : View(context) {
     private fun layoutBeside(w: Float, h: Float) {
         val u = unit()
         val band = sideBand
-        val margin = u * 0.45f
+        val margin = u * MARGIN
         val shoulderH = u * 0.8f
-        val menuH = u * 0.7f
+        val menuH = u * MENU_H
         val midY = h / 2f
 
         addShoulders(w, margin, margin + topReserve,
@@ -236,32 +265,72 @@ class PadOverlay(context: Context) : View(context) {
 
         /* Clamped to the band like every other control here, so raising
          * the button scale cannot push the diamond over the picture. */
-        addFaceDiamond(w - band / 2f, midY,
-                       minOf(u, (band - margin * 2f) / FACE_SPAN))
+        val faceU = minOf(u, (band - margin * 2f) / FACE_SPAN)
+        addFaceDiamond(w - band / 2f, midY, faceU)
 
-        val stickR = minOf(u * 1.05f, band / 2f - margin)
-        val stickY = (midY + dpadSize / 2f + (h - margin - menuH)) / 2f
-        placeSticks(w, stickY, band / 2f, w - band / 2f, stickR)
-
+        /*
+         * A Wii U has three menu buttons and there are only two bands to
+         * put them in: indices 1 and 2 both resolved to the right-hand
+         * centre and were drawn one on top of the other, which read as a
+         * single unusable smudge. They alternate sides and stack upwards
+         * from the bottom of their band instead. A DS, with two, is
+         * unchanged: one each side, as before.
+         */
         val mw = minOf(u * 2.0f, band - margin * 2f)
+        val step = menuH + u * MENU_GAP
+        val rows = intArrayOf(0, 0)
         profile.menuButtons.forEachIndexed { i, b ->
-            val centre = if (i == 0) band / 2f else w - band / 2f
+            val onRight = i % 2 == 1
+            val centre = if (onRight) w - band / 2f else band / 2f
+            val row = rows[if (onRight) 1 else 0]++
+            val bottom = h - margin - row * step
             controls.add(Control(b.code, b.label,
-                RectF(centre - mw / 2f, h - margin - menuH,
-                      centre + mw / 2f, h - margin), false))
+                RectF(centre - mw / 2f, bottom - menuH,
+                      centre + mw / 2f, bottom), false))
         }
+        val menuTop = h - margin - (maxOf(rows[0], rows[1]) - 1).coerceAtLeast(0) * step - menuH
+
+        /*
+         * Sticks go below the arms, and their label is drawn ABOVE the
+         * circle, so the room they need starts below whichever arm
+         * reaches lower. Measuring from the d-pad alone ignored the face
+         * diamond, which is taller, and the right stick's label landed
+         * across the B button.
+         */
+        val stickR = minOf(u * STICK_R, band / 2f - margin)
+        val armBottom = midY + maxOf(dpadSize / 2f, faceU * (FACE_SPAN / 2f))
+        val labelH = u * STICK_LABEL
+        val stickY = maxOf((armBottom + menuTop) / 2f, armBottom + labelH + stickR)
+            .coerceAtMost(menuTop - margin - stickR)
+        placeSticks(w, stickY, band / 2f, w - band / 2f, stickR)
     }
 
     private fun addShoulders(
         w: Float, x0: Float, y0: Float, sw: Float, sh: Float, stacked: Boolean
     ) {
-        val left = profile.shoulders.filter {
+        /*
+         * Stacked, the Z trigger goes ABOVE its shoulder: on the machine
+         * itself ZL and ZR sit behind L and R, so that is the order a
+         * finger reaches them in. Side by side, in portrait, the
+         * profile's own order is already the left-to-right one.
+         */
+        fun ordered(pair: List<PadButton>, z: Int) =
+            if (stacked) pair.sortedBy { if (it.code == z) 0 else 1 } else pair
+
+        val left = ordered(profile.shoulders.filter {
             it.code == BsProtocol.BTN_L || it.code == BsProtocol.BTN_ZL
-        }
-        val right = profile.shoulders.filter {
+        }, BsProtocol.BTN_ZL)
+        val right = ordered(profile.shoulders.filter {
             it.code == BsProtocol.BTN_R || it.code == BsProtocol.BTN_ZR
-        }
-        val step = if (stacked) sh + y0 * 0.7f else sw + x0
+        }, BsProtocol.BTN_ZR)
+
+        /*
+         * A plain gap between the two, not a fraction of how far down
+         * the stack starts. That offset grew when room was reserved for
+         * the settings button, which pushed the second trigger all the
+         * way down onto the d-pad and the face buttons.
+         */
+        val step = if (stacked) sh + x0 else sw + x0
         left.forEachIndexed { i, b ->
             val x = if (stacked) x0 else x0 + i * step
             val y = if (stacked) y0 + i * step else y0
@@ -655,6 +724,18 @@ class PadOverlay(context: Context) : View(context) {
          *  side of the centre, so 2 * (spread 1.2 + radius 0.62). Kept
          *  next to addFaceDiamond, which is where those two come from. */
         const val FACE_SPAN = 3.64f
+
+        /** The rest of the side-band metrics, in units. bandUnitsBelow-
+         *  Middle adds these up to decide how big a unit can be, and
+         *  layoutBeside lays out with them, so they share one source. */
+        const val MARGIN = 0.45f
+        const val MENU_H = 0.7f
+        const val MENU_GAP = 0.27f
+        const val STICK_R = 1.05f
+        const val STICK_LABEL = 0.42f * 1.4f
+
+        /** Slack, so the band's contents are not merely touching. */
+        const val BREATHE = 0.5f
         private const val HELD = 0x90FFFFFF.toInt()
     }
 }
