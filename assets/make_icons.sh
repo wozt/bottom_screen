@@ -22,14 +22,23 @@ done
 # the edge the way the adaptive foreground is.
 for entry in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
     d=${entry%%:*}; px=${entry##*:}
-    rsvg-convert -w "$px" -h "$px" "$SVG" -o "/tmp/bs_icon_$px.png"
-    magick -size "${px}x${px}" "xc:$BG" "/tmp/bs_icon_$px.png" \
+    rsvg-convert -w "$px" -h "$px" "$SVG" -o "/dev/shm/bs_icon_$px.png"
+    magick -size "${px}x${px}" "xc:$BG" "/dev/shm/bs_icon_$px.png" \
         -gravity center -composite \
         "$RES/mipmap-$d/ic_launcher.png"
     cp "$RES/mipmap-$d/ic_launcher.png" "$RES/mipmap-$d/ic_launcher_round.png"
-    rm -f "/tmp/bs_icon_$px.png"
+    rm -f "/dev/shm/bs_icon_$px.png"
 done
 
 # A big one for anything that wants artwork rather than a launcher icon.
 rsvg-convert -w 512 -h 512 "$SVG" -o "$DIR/assets/icon-512.png"
+
+# The Switch homebrew menu, which wants exactly 256x256 JPEG. No alpha
+# in a JPEG, so the same background the launcher icons use is painted
+# behind it rather than left to whatever the menu happens to show.
+rsvg-convert -w 256 -h 256 "$SVG" -o "/dev/shm/bs_icon_switch.png"
+magick -size 256x256 "xc:$BG" "/dev/shm/bs_icon_switch.png" \
+    -gravity center -composite -quality 92 "$DIR/switch/icon.jpg"
+rm -f "/dev/shm/bs_icon_switch.png"
+
 echo "icons regenerated from $SVG"

@@ -15,6 +15,7 @@
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,7 +28,8 @@
 #define SCREEN_H 720
 
 #define CONFIG_DIR  "sdmc:/switch/bottom_screen"
-#define CONFIG_PATH CONFIG_DIR "/server.txt"
+#define CONFIG_PATH   CONFIG_DIR "/server.txt"
+#define SETTINGS_PATH CONFIG_DIR "/settings.txt"
 
 static SDL_Window   *g_window;
 static SDL_Renderer *g_renderer;
@@ -85,7 +87,8 @@ typedef enum { ROW_ACTION, ROW_VALUE, ROW_INFO } RowKind;
 typedef enum {
     ROWID_NONE = 0, ROWID_SIZE, ROWID_VOLUME, ROWID_QUALITY,
     ROWID_AUDIO_SOURCE, ROWID_HOME, ROWID_DISCONNECT, ROWID_DECODER,
-    ROWID_ADDRESS, ROWID_PORT, ROWID_SAVED, ROWID_CONNECT, ROWID_BUTTONS
+    ROWID_ADDRESS, ROWID_PORT, ROWID_SAVED, ROWID_CONNECT, ROWID_BUTTONS,
+    ROWID_STATS
 } RowId;
 
 typedef struct {
@@ -102,11 +105,27 @@ static MenuRow g_rows[12];
 static int     g_row_count;
 static int     g_selected;
 
-/* Settings while playing, reached with Minus, drawn the same way. */
+/* Settings while playing, reached by holding START and SELECT. */
 static int g_menu_open;
 static int g_receive_scale;      /* 0 = as rendered, N = N x native */
 static int g_volume = 100;
 static int g_muted;
+static int g_show_buttons;       /* off until asked for */
+static int g_show_stats;         /* likewise: wanted when something is wrong */
+/* BS_AUDIO_BOTH until somebody says otherwise. */
+static int g_audio_source;
+
+/* The ladder the web and Android clients offer, in the same words. */
+static const struct { const char *label; int bitrate; } QUALITY[] = {
+    { "automatic",         0 },
+    { "low  ~400 kbit/s",  400000 },
+    { "medium  ~1 Mbit/s", 1000000 },
+    { "high  ~2.5 Mbit/s", 2500000 },
+    { "maximum  ~6 Mbit/s", 6000000 },
+};
+static int g_quality;
+
+static void native_size(int console, int *w, int *h);
 
 /* ------------------------------------------------------------ settings */
 
@@ -160,6 +179,56 @@ static void remember_server(void)
     snprintf(g_servers[0].host, sizeof(g_servers[0].host), "%s", g_host);
     g_servers[0].port = g_port;
     g_server_at = 0;
+}
+
+/*
+ * Everything the menu can change, on the card.
+ *
+ * A separate file from the addresses, and one `key value` a line, so a
+ * setting added later is read by an older build as a line it does not
+ * know rather than as a corrupt address.
+ */
+static void save_settings(void)
+{
+    mkdir("sdmc:/switch", 0777);
+    mkdir(CONFIG_DIR, 0777);
+    FILE *f = fopen(SETTINGS_PATH, "w");
+    if (!f)
+        return;
+    fprintf(f, "volume %d\n",       g_volume);
+    fprintf(f, "muted %d\n",        g_muted);
+    fprintf(f, "quality %d\n",      g_quality);
+    fprintf(f, "audio_source %d\n", g_audio_source);
+    fprintf(f, "receive_scale %d\n", g_receive_scale);
+    fprintf(f, "buttons %d\n",      g_show_buttons);
+    fprintf(f, "stats %d\n",        g_show_stats);
+    fclose(f);
+}
+
+static void load_settings(void)
+{
+    FILE *f = fopen(SETTINGS_PATH, "r");
+    if (!f)
+        return;
+    char key[32];
+    int value;
+    while (fscanf(f, "%31s %d", key, &value) == 2) {
+        if      (!strcmp(key, "volume"))        g_volume = value;
+        else if (!strcmp(key, "muted"))         g_muted = value;
+        else if (!strcmp(key, "quality"))       g_quality = value;
+        else if (!strcmp(key, "audio_source"))  g_audio_source = value;
+        else if (!strcmp(key, "receive_scale")) g_receive_scale = value;
+        else if (!strcmp(key, "buttons"))       g_show_buttons = value;
+        else if (!strcmp(key, "stats"))         g_show_stats = value;
+    }
+    fclose(f);
+
+    /* Anything out of range means a file written by something else, or
+     * by hand. Fall back rather than index an array with it. */
+    if (g_volume < 0 || g_volume > 100) g_volume = 100;
+    if (g_quality < 0 ||
+        g_quality >= (int)(sizeof(QUALITY) / sizeof(QUALITY[0]))) g_quality = 0;
+    if (g_audio_source < 0 || g_audio_source > 2) g_audio_source = 0;
 }
 
 static void save_server(void)
@@ -230,7 +299,6 @@ static void draw_text(TTF_Font *font, const char *s, int x, int y, SDL_Color col
  */
 #define BUTTON_BAND 160
 
-static int g_show_buttons;   /* off until asked for */
 
 static SDL_Rect fit(int w, int h)
 {
@@ -338,12 +406,18 @@ static void fill(int x, int y, int w, int h, SDL_Color c);
 
 /*
  * A Switch has every button a DS or a 3DS has, so these are not there to
- * make the console playable -- they are for the ones it has not got
- * (a Wii U's HOME) and for playing with a finger while the Joy-Cons are
- * detached. Off by default for that reason.
+ * make the console playable: they are for the ones it has not got -- a
+ * Wii U's HOME -- and for playing with the tablet held in two hands and
+ * the Joy-Cons off.
  *
- * They live in the black either side of the picture, which on a 4:3
- * stream costs nothing at all.
+ * Which is what decides where they go. Held that way, the thumbs reach
+ * the lower corners and nothing else, so the controls that get used sit
+ * low and the triggers, which are pressed rarely, sit out of the way at
+ * the top. They live in the black either side of the picture, which on a
+ * 4:3 stream costs nothing at all.
+ *
+ * Each console gets what it actually has: no ZL on a DS, no stick on
+ * either handheld that has not got one.
  */
 typedef struct {
     SDL_Rect rect;
@@ -351,80 +425,113 @@ typedef struct {
     const char *label;
 } PadButton;
 
+typedef struct {
+    int cx, cy, radius;
+    int axis_x, axis_y;
+    const char *label;
+    int touch;              /* a finger is on it */
+    int kx, ky;             /* where the knob is drawn */
+} PadStick;
+
 #define MAX_PAD_BUTTONS 20
 static PadButton g_pad_buttons[MAX_PAD_BUTTONS];
 static int       g_pad_button_count;
-/* Which of them a finger is on, one bit each. */
+static PadStick  g_pad_sticks[2];
+static int       g_pad_stick_count;
+/* Which buttons a finger is on, one bit each. */
 static uint32_t  g_pad_touched;
 /* What the Joy-Cons are holding, so the drawing can show it. */
 static u64       g_pad_held;
 
-static void add_pad_button(int x, int y, int w, int h, int code, const char *label)
+static void add_pad_button(int cx, int y, int w, int h, int code, const char *label)
 {
     if (g_pad_button_count >= MAX_PAD_BUTTONS)
         return;
     PadButton *b = &g_pad_buttons[g_pad_button_count++];
-    b->rect = (SDL_Rect){ x, y, w, h };
+    b->rect = (SDL_Rect){ cx - w / 2, y, w, h };
     b->code = code;
     b->label = label;
 }
 
-/*
- * One column each side, in the console's own order: shoulders at the
- * top, the thumb control in the middle, menu buttons at the bottom --
- * the same arrangement the web and Android clients use.
- */
+static void add_pad_stick(int cx, int cy, int r, int ax, int ay, const char *label)
+{
+    if (g_pad_stick_count >= 2)
+        return;
+    PadStick *st = &g_pad_sticks[g_pad_stick_count++];
+    st->cx = cx; st->cy = cy; st->radius = r;
+    st->axis_x = ax; st->axis_y = ay;
+    st->label = label;
+    st->touch = 0;
+    st->kx = cx; st->ky = cy;
+}
+
 static void layout_pad_buttons(const StreamInfo *info, const SDL_Rect *pic)
 {
     g_pad_button_count = 0;
+    g_pad_stick_count = 0;
     if (!g_show_buttons)
         return;
 
-    const int lw = pic->x;                       /* left band  */
-    const int rx = pic->x + pic->w;              /* right band starts */
-    const int rw = SCREEN_W - rx;
-    if (lw < 90 || rw < 90)
-        return;                                  /* no room: draw none */
+    const int lw = pic->x;                   /* left band  */
+    const int rx = pic->x + pic->w;
+    const int rw = SCREEN_W - rx;            /* right band */
+    if (lw < 110 || rw < 110)
+        return;                              /* no room: draw none */
 
-    const int u = 44, gap = 10;
-    const int wide_w = (lw < rw ? lw : rw) - 24, wide_h = 34;
     const int lcx = lw / 2, rcx = rx + rw / 2;
+    const int band = (lw < rw ? lw : rw);
+    const int wide_w = band - 28, wide_h = 34;
+    const int u = 44, gap = 12;
 
     const int wiiu = (info->console == BS_CONSOLE_WIIU);
-    const int has_z = wiiu || info->console == BS_CONSOLE_3DS;
+    const int n3ds = (info->console == BS_CONSOLE_3DS);
+    const int has_z     = wiiu || n3ds;
+    const int has_stick = wiiu || n3ds;
 
-    /* Shoulders, stacked, Z above its shoulder as on the machine. */
-    int ly = 60, ry = 60;
-    if (has_z) {
-        add_pad_button(lcx - wide_w / 2, ly, wide_w, wide_h, BS_BTN_ZL, "ZL");
-        ly += wide_h + gap;
-        add_pad_button(rcx - wide_w / 2, ry, wide_w, wide_h, BS_BTN_ZR, "ZR");
-        ry += wide_h + gap;
-    }
-    add_pad_button(lcx - wide_w / 2, ly, wide_w, wide_h, BS_BTN_L, "L");
-    add_pad_button(rcx - wide_w / 2, ry, wide_w, wide_h, BS_BTN_R, "R");
-
-    /* D-pad on the left, face buttons on the right, both centred. */
-    const int mid = SCREEN_H / 2;
-    add_pad_button(lcx - u / 2,     mid - u * 3 / 2, u, u, BS_BTN_UP,    "\u25B2");
-    add_pad_button(lcx - u * 3 / 2, mid - u / 2,     u, u, BS_BTN_LEFT,  "\u25C0");
-    add_pad_button(lcx + u / 2,     mid - u / 2,     u, u, BS_BTN_RIGHT, "\u25B6");
-    add_pad_button(lcx - u / 2,     mid + u / 2,     u, u, BS_BTN_DOWN,  "\u25BC");
-
-    add_pad_button(rcx - u / 2,     mid - u * 3 / 2, u, u, BS_BTN_X, "X");
-    add_pad_button(rcx - u * 3 / 2, mid - u / 2,     u, u, BS_BTN_Y, "Y");
-    add_pad_button(rcx + u / 2,     mid - u / 2,     u, u, BS_BTN_A, "A");
-    add_pad_button(rcx - u / 2,     mid + u / 2,     u, u, BS_BTN_B, "B");
-
-    /* Menu buttons at the bottom, and a Wii U's HOME, which this console
-     * has no spare button for. */
-    int lb = SCREEN_H - 60 - wide_h, rb = SCREEN_H - 60 - wide_h;
-    add_pad_button(lcx - wide_w / 2, lb, wide_w, wide_h, BS_BTN_SELECT, "SELECT");
-    add_pad_button(rcx - wide_w / 2, rb, wide_w, wide_h, BS_BTN_START, "START");
+    /* Built from the bottom, because that is where the thumbs are. */
+    int lb = SCREEN_H - 24 - wide_h;
+    int rb = lb;
+    add_pad_button(lcx, lb, wide_w, wide_h, BS_BTN_SELECT, "SELECT");
+    add_pad_button(rcx, rb, wide_w, wide_h, BS_BTN_START, "START");
     if (wiiu) {
         lb -= wide_h + gap;
-        add_pad_button(lcx - wide_w / 2, lb, wide_w, wide_h, BS_BTN_HOME, "HOME");
+        add_pad_button(lcx, lb, wide_w, wide_h, BS_BTN_HOME, "HOME");
     }
+
+    int lmid, rmid;
+    if (has_stick) {
+        const int r = (band - 40) / 2;
+        const int sy = lb - gap - r;
+        add_pad_stick(lcx, sy, r, BS_AXIS_LEFT_X, BS_AXIS_LEFT_Y,
+                      n3ds ? "\u25CB" : "L");
+        add_pad_stick(rcx, sy, r, BS_AXIS_RIGHT_X, BS_AXIS_RIGHT_Y,
+                      n3ds ? "C" : "R");
+        lmid = rmid = sy - r - gap - u * 3 / 2;
+    } else {
+        lmid = rmid = lb - gap - u * 3 / 2;
+    }
+
+    /* D-pad on the left, face buttons on the right. */
+    add_pad_button(lcx,         lmid - u,     u, u, BS_BTN_UP,    "\u25B2");
+    add_pad_button(lcx - u,     lmid,         u, u, BS_BTN_LEFT,  "\u25C0");
+    add_pad_button(lcx + u,     lmid,         u, u, BS_BTN_RIGHT, "\u25B6");
+    add_pad_button(lcx,         lmid + u,     u, u, BS_BTN_DOWN,  "\u25BC");
+
+    add_pad_button(rcx,         rmid - u,     u, u, BS_BTN_X, "X");
+    add_pad_button(rcx - u,     rmid,         u, u, BS_BTN_Y, "Y");
+    add_pad_button(rcx + u,     rmid,         u, u, BS_BTN_A, "A");
+    add_pad_button(rcx,         rmid + u,     u, u, BS_BTN_B, "B");
+
+    /* Triggers at the top, where they are out of the way of a thumb
+     * resting in the corner, with Z above its shoulder as on the
+     * machine. */
+    int ly = 40, ry = 40;
+    if (has_z) {
+        add_pad_button(lcx, ly, wide_w, wide_h, BS_BTN_ZL, "ZL"); ly += wide_h + gap;
+        add_pad_button(rcx, ry, wide_w, wide_h, BS_BTN_ZR, "ZR"); ry += wide_h + gap;
+    }
+    add_pad_button(lcx, ly, wide_w, wide_h, BS_BTN_L, "L");
+    add_pad_button(rcx, ry, wide_w, wide_h, BS_BTN_R, "R");
 }
 
 /* The Joy-Con mask that means the same thing as a button code, so a
@@ -437,6 +544,13 @@ static u64 mask_for_code(int code)
     return 0;
 }
 
+static void draw_centred(const char *s, int cx, int cy, SDL_Color colour)
+{
+    int tw = 0, th = 0;
+    TTF_SizeUTF8(g_small, s, &tw, &th);
+    draw_text(g_small, s, cx - tw / 2, cy - th / 2, colour);
+}
+
 static void draw_pad_buttons(u64 held)
 {
     for (int i = 0; i < g_pad_button_count; i++) {
@@ -445,25 +559,21 @@ static void draw_pad_buttons(u64 held)
                        (held & mask_for_code(b->code));
         fill(b->rect.x, b->rect.y, b->rect.w, b->rect.h,
              on ? COL_SELECTED : COL_ROW);
-        int tw = 0, th = 0;
-        TTF_SizeUTF8(g_small, b->label, &tw, &th);
-        draw_text(g_small, b->label,
-                  b->rect.x + (b->rect.w - tw) / 2,
-                  b->rect.y + (b->rect.h - th) / 2,
-                  on ? COL_TEXT : COL_DIM);
+        draw_centred(b->label, b->rect.x + b->rect.w / 2,
+                     b->rect.y + b->rect.h / 2, on ? COL_TEXT : COL_DIM);
+    }
+
+    for (int i = 0; i < g_pad_stick_count; i++) {
+        const PadStick *st = &g_pad_sticks[i];
+        const int r = st->radius;
+        fill(st->cx - r, st->cy - r, r * 2, r * 2, COL_ROW);
+        const int kr = r / 2;
+        fill(st->kx - kr, st->ky - kr, kr * 2, kr * 2,
+             st->touch ? COL_SELECTED : COL_ROW);
+        draw_centred(st->label, st->cx, st->cy - r - 12, COL_DIM);
     }
 }
 
-/*
- * Every finger on the glass, not just the first.
- *
- * One of them may be on the picture, which is the stylus; the others may
- * be on the on-screen buttons, and holding a direction while tapping
- * elsewhere is the whole point of having them. Pressing a button and
- * dragging the pen at the same time has to work, so the two are decided
- * separately rather than by whichever touch happens to be reported
- * first.
- */
 static void send_touch(const SDL_Rect *dst, const StreamInfo *info)
 {
     static int touching;
@@ -475,26 +585,70 @@ static void send_touch(const SDL_Rect *dst, const StreamInfo *info)
     g_pad_touched = 0;
     int stylus = -1;
 
+    int stick_was[2];
+    for (int i = 0; i < g_pad_stick_count; i++) {
+        stick_was[i] = g_pad_sticks[i].touch;
+        g_pad_sticks[i].touch = 0;
+    }
+
     if (have) {
         for (int t = 0; t < (int)st.count; t++) {
             const int tx = (int)st.touches[t].x, ty = (int)st.touches[t].y;
 
-            int on_button = 0;
+            int claimed = 0;
             for (int i = 0; i < g_pad_button_count; i++) {
                 const SDL_Rect *r = &g_pad_buttons[i].rect;
                 if (tx >= r->x && tx < r->x + r->w &&
                     ty >= r->y && ty < r->y + r->h) {
                     g_pad_touched |= 1u << i;
-                    on_button = 1;
+                    claimed = 1;
                     break;
                 }
             }
-            if (on_button)
+            if (claimed)
+                continue;
+
+            /* A stick keeps the finger that started on it even when it
+             * is dragged past the ring, which is how a thumb actually
+             * moves -- releasing at the edge would be a stick that lets
+             * go on its own. */
+            for (int i = 0; i < g_pad_stick_count; i++) {
+                PadStick *st = &g_pad_sticks[i];
+                const int dx = tx - st->cx, dy = ty - st->cy;
+                const int reach = st->touch ? st->radius * 2 : st->radius;
+                if (dx * dx + dy * dy > reach * reach)
+                    continue;
+                st->touch = 1;
+                float fx = (float)dx / st->radius;
+                float fy = (float)dy / st->radius;
+                const float m = sqrtf(fx * fx + fy * fy);
+                if (m > 1.0f) { fx /= m; fy /= m; }
+                st->kx = st->cx + (int)(fx * st->radius * 0.6f);
+                st->ky = st->cy + (int)(fy * st->radius * 0.6f);
+                stream_send_axis(st->axis_x, (int)(fx * 32767.0f));
+                /* Screen y grows downwards, sticks report up as
+                 * positive. */
+                stream_send_axis(st->axis_y, (int)(-fy * 32767.0f));
+                claimed = 1;
+                break;
+            }
+            if (claimed)
                 continue;
 
             if (tx >= dst->x && tx < dst->x + dst->w &&
                 ty >= dst->y && ty < dst->y + dst->h)
                 stylus = t;
+        }
+    }
+
+    /* A stick nobody is holding any more goes back to centre: one left
+     * off-centre keeps walking after the thumb has gone. */
+    for (int i = 0; i < g_pad_stick_count; i++) {
+        PadStick *st = &g_pad_sticks[i];
+        if (stick_was[i] && !st->touch) {
+            st->kx = st->cx; st->ky = st->cy;
+            stream_send_axis(st->axis_x, 0);
+            stream_send_axis(st->axis_y, 0);
         }
     }
 
@@ -581,6 +735,20 @@ static void try_connect(void)
         open_audio();
         StreamInfo info;
         stream_info(&info);
+
+        /* The server starts on its own defaults, so anything remembered
+         * has to be asked for again on every connection or it quietly
+         * does nothing after the first one. */
+        if (QUALITY[g_quality].bitrate)
+            stream_send_quality(QUALITY[g_quality].bitrate);
+        if (g_audio_source)
+            stream_send_audio_source(g_audio_source);
+        if (g_receive_scale) {
+            int nw = 0, nh = 0;
+            native_size(info.console, &nw, &nh);
+            if (g_receive_scale == -2) stream_send_size(nw / 2, nh / 2);
+            else stream_send_size(nw * g_receive_scale, nh * g_receive_scale);
+        }
         snprintf(g_message, sizeof(g_message), "%dx%d, %s",
                  info.width, info.height, stream_decoder_name());
     } else {
@@ -684,19 +852,6 @@ static void size_label(const StreamInfo *info, char *out, size_t outlen)
                  nw * g_receive_scale, nh * g_receive_scale);
 }
 
-/* BS_AUDIO_BOTH until somebody says otherwise. */
-static int g_audio_source = 0;
-
-/* The ladder the web and Android clients offer, in the same words. */
-static const struct { const char *label; int bitrate; } QUALITY[] = {
-    { "automatic",        0 },
-    { "low  ~400 kbit/s", 400000 },
-    { "medium  ~1 Mbit/s", 1000000 },
-    { "high  ~2.5 Mbit/s", 2500000 },
-    { "maximum  ~6 Mbit/s", 6000000 },
-};
-static int g_quality = 0;
-
 static RowId selected_id(void)
 {
     if (g_selected < 0 || g_selected >= g_row_count)
@@ -722,6 +877,10 @@ static void build_play_rows(const StreamInfo *info)
     r = &g_rows[g_row_count++];
     r->kind = ROW_VALUE; r->id = ROWID_BUTTONS; r->label = "on-screen buttons";
     snprintf(r->value, sizeof(r->value), "%s", g_show_buttons ? "shown" : "hidden");
+
+    r = &g_rows[g_row_count++];
+    r->kind = ROW_VALUE; r->id = ROWID_STATS; r->label = "counters";
+    snprintf(r->value, sizeof(r->value), "%s", g_show_stats ? "shown" : "hidden");
 
     r = &g_rows[g_row_count++];
     r->kind = ROW_VALUE; r->id = ROWID_VOLUME; r->label = "volume";
@@ -798,6 +957,9 @@ static void adjust_row(const StreamInfo *info, int delta)
     case ROWID_BUTTONS:
         g_show_buttons = !g_show_buttons;
         break;
+    case ROWID_STATS:
+        g_show_stats = !g_show_stats;
+        break;
     case ROWID_VOLUME:
         g_volume += delta * 10;
         if (g_volume < 0) g_volume = 0;
@@ -813,6 +975,7 @@ static void adjust_row(const StreamInfo *info, int delta)
     default:
         break;
     }
+    save_settings();
 }
 
 static void draw_menu(void)
@@ -861,16 +1024,6 @@ static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
     SDL_RenderClear(g_renderer);
 
-    /* Drawn before the picture, so a failure to build or copy the YUV
-     * texture leaves the counters on screen rather than a blank one. */
-    {
-        char probe[112];
-        snprintf(probe, sizeof(probe),
-                 "%s   %ux%u   %u frames   \u2013   Minus for settings",
-                 stream_decoder_name(), (unsigned)info->width,
-                 (unsigned)info->height, (unsigned)stream_frames());
-        draw_text(g_small, probe, 16, 12, COL_DIM);
-    }
 
     if (info->width > 0 && info->height > 0) {
         ensure_texture(info->width, info->height);
@@ -892,6 +1045,27 @@ static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
             layout_pad_buttons(info, &dst);
             draw_pad_buttons(g_pad_held);
         }
+    }
+
+    /*
+     * The counters, over everything else and in green.
+     *
+     * Over, because a line hidden behind the picture is a line you turn
+     * on and cannot find; green, because it is a diagnostic and should
+     * not be mistaken for part of the game. Off by default: it is
+     * wanted while something is wrong, and in the way the rest of the
+     * time.
+     */
+    if (g_show_stats) {
+        char probe[128];
+        snprintf(probe, sizeof(probe),
+                 "%s   %ux%u   %u frames   \u2013   START+SELECT for settings",
+                 stream_decoder_name(), (unsigned)info->width,
+                 (unsigned)info->height, (unsigned)stream_frames());
+        int tw = 0, th = 0;
+        TTF_SizeUTF8(g_small, probe, &tw, &th);
+        fill(8, 8, tw + 16, th + 8, (SDL_Color){ 0, 0, 0, 170 });
+        draw_text(g_small, probe, 16, 12, COL_GOOD);
     }
 
     if (g_menu_open) {
@@ -921,6 +1095,7 @@ int main(int argc, char **argv)
     plInitialize(PlServiceType_User);
     romfsInit();
     load_server();
+    load_settings();
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO) != 0)
         goto done;
