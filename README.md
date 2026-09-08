@@ -176,9 +176,9 @@ it says nothing about upstream.
 
 ## What is not finished
 
-Verified against real games rather than a test pattern: a commercial title 64
-DS, a commercial 3DS title, a commercial Wii U title. The screenshots use the built-in
-pattern; the testing did not.
+Verified against real games rather than a test pattern — one commercial
+title per console. The screenshots use the built-in pattern; the testing
+did not.
 
 Still open:
 

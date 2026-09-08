@@ -369,7 +369,7 @@ and on a screen you are playing on, late is worse than missing.
 
 ## Phase 6: Cemu
 
-Tested on 2026-09-05 with a commercial Wii U title, a real native Wii U game
+Tested on 2026-09-05 with a real native Wii U game
 in loose files, with no title key at all.
 
 | | |

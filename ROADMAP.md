@@ -367,9 +367,9 @@ a mailbox still sized 512×384, which copies 384 rows of 2048 bytes out
 of a 196 KB framebuffer. Both paths now go through one function that
 resizes first.
 
-Verified per backend with a real game rather than by reading: a commercial Wii U title
-HD on Cemu/Vulkan, a commercial 3DS title on all three Azahar renderers,
-a commercial DS title on melonDS software, OpenGL and compute — the same
+Verified per backend with a real game rather than by reading: a
+commercial title on Cemu/Vulkan, another on all three Azahar renderers,
+and a third on melonDS software, OpenGL and compute — the same
 picture, the same way up, the same colours in each. `tests/resize_flip.c`
 covers the size flipping under the sanitizers, with buffers allocated
 exactly so an overrun cannot hide in slack.
