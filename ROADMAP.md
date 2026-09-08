@@ -35,10 +35,71 @@ things that are written and read correct but have never been exercised.
 - [x] Touch through `TouchPressed` / `TouchMoved` / `TouchReleased`
 - [x] Full 3DS profile: ZL/ZR, circle pad, C-stick
 
+### A1bis. Azahar: three faults found under test — 2026-09-08
+
+Found on a commercial 3DS title, internal resolution 6x (1920x1440
+streamed from a 320x240 screen), on **all three** renderers — OpenGL,
+Vulkan and software — so none of it is renderer-specific. The software
+one is too slow to play on in any case and is not a route out.
+
+A trap that cost a test: Azahar rewrites its configuration on exit and
+sets `graphics_api\default=true`. In Citra's config system that flag
+makes the stored value be **ignored** in favour of the default, so
+writing `graphics_api=2` alone silently runs OpenGL again. Write the
+flag too, and check what the process actually loaded.
+
+**No sound at all — and none on the host either.** That last part is the
+important half: if Azahar itself is silent, the bridge has nothing to
+take. Check the emulator's own audio sink before looking at anything
+here.
+
+- [ ] Does Azahar make a sound at all, on its own, with no client?
+
+**Touch does nothing in the game.** Not a case of the taps going
+missing: the server logged `first touch from a client at 1158,1198`,
+which is inside the announced 1920x1440, so they arrive and are
+converted. They are not reaching the title.
+
+- [ ] Follow a touch from `TouchPressed` to the game
+- [ ] Try Azahar's **Cemuhook** input instead. It has a UDP server for
+      motion and touch, which is a supported way in rather than a call
+      into the emulator's own state — if the direct call is being
+      overwritten by the frontend each frame, this sidesteps it. The
+      user suggested it after seeing the option in the interface.
+
+**The bottom screen is cut off in the client** — the picture is there
+but not whole.
+
+- [ ] Find whether it is cropped on the way out or drawn short
+
 ### A2. Cemu (Wii U)
 - [x] Backend on `LatteRenderTarget_copyToBackbuffer(_, true)`
 - [x] Touch, buttons and sticks wired and verified
 - [x] Wii U button profile, sticks included
+
+### A2bis. Cemu: three faults found under test — 2026-09-08
+
+OpenGL renderer, a commercial Wii U title, GamePad at 854x480.
+
+**Touch works.** That is the one thing here that does.
+
+**No sound on the host, and the streamed sound is badly distorted** —
+"Canal+ scrambled on match night". Those two together are the lead: if
+the emulator itself is silent, whatever is being encoded is not the
+game's audio, and encoding a buffer nobody filled would sound exactly
+like that. Check what the tap is actually reading before touching the
+encoder.
+
+- [ ] Does Cemu make a sound at all on the host?
+- [ ] What is in the buffer the bridge takes — is it ever written?
+
+**Cemu does not list an Xbox pad plugged into the host** in its
+controller configuration — and yet that pad drives the game. So it is a
+gap in what the configuration window shows, not in the input path. Not
+ours, and less alarming than it first looked.
+
+The distorted sound is on **both** renderers, OpenGL and Vulkan. Touch
+works on both.
 
 ### A3bis. 3DS: system setup crashes — parked
 
@@ -271,7 +332,9 @@ lands at 0.248; without it, at 0.123.
 
 ### B5. Host controls
 - [x] Written that way in all three bridges
-- [ ] Actually tried with a pad in someone's hands
+- [x] Actually tried with a pad in someone's hands — melonDS, 2026-09-08:
+      the host's pad and the phone's on-screen buttons driving the same
+      game at once, both acting
 
 Merging rather than replacing is there by construction everywhere:
 melonDS ORs into the local `inputMask`, Cemu into
@@ -283,6 +346,29 @@ But none of that has been exercised with a physical pad plugged into the
 host while a client plays, which is the only thing that would prove it.
 The box above was ticked on the strength of reading the code, which is
 not the same claim.
+
+### B7. A client's buttons must not need a pad on the host
+
+**Required, stated on 2026-09-08.** In all three emulators, a button
+pressed on a client has to reach the game whether or not the host has a
+controller configured. It is the whole point: the phone *is* the
+controller.
+
+**Reported broken once and not reproduced.** On Cemu/OpenGL the
+on-screen buttons appeared to do nothing from either client; on
+Cemu/Vulkan, minutes later, they worked — and so did the host's pad,
+though Cemu still does not list it in its controller configuration. The
+tester's own reading is that the first test was wrong. Input does not
+depend on the renderer, so that is the likely explanation, and the fault
+is recorded as doubtful rather than as fact.
+
+What is worth keeping is the requirement, because nothing proves it
+today: the merging in B5 ORs a client's presses into a controller's
+state, and no test has ever run with no controller present at all.
+
+- [ ] Re-test deliberately: unplug every pad, then press buttons from a
+      client on each of the three emulators
+- [ ] A test that runs with no controller present, so this cannot rot
 
 ### B6. Every render backend
 
@@ -470,6 +556,13 @@ is running — but the last inch is yours.
 
 - [ ] Hear it, on the web client and on the phone
 
+**A column of pixels down the right-hand edge breaks up** on the web
+client, watching Cemu at 854x480. Not on Android, on the same stream at
+the same moment — so it is the browser's own decode or draw, not the
+picture that was sent.
+
+- [ ] Reproduce and find whether it is the canvas or the decoder
+
 ### C3. Menu design
 - [x] capture2cloud's menu design in the web client
 - [x] The same in the Android client
@@ -586,6 +679,42 @@ intent, forgetting a profile, and the old connection being released
 server-side.
 
 ---
+
+### C7. Audio latency — to fix after the test pass
+
+Reported on 2026-09-08 with both clients watching the same emulator at
+once: the sound is **slightly** behind on Android and **badly** behind
+in the browser. The picture is not. The point of this project is that it
+is live, so a sound that arrives late is a fault and not a taste.
+
+Also heard on melonDS/software: the sound crackles a little on top of
+being late.
+
+Look at how capture2cloud handles this before changing anything here —
+it is the same author solving the same problem, and it does not have
+this.
+
+- [ ] Measure where the delay accumulates: encoder, queue, or the
+      client's own buffering ahead
+- [ ] The browser first, since it is the worse of the two
+
+### C8. A client outliving its emulator
+
+Restarting the emulator while the client stays open, then reconnecting,
+leaves the client wrong: the picture is broken and **rotation stops
+working**. Starting the emulator first and the client second is clean,
+every time.
+
+So something from the previous session survives the reconnection —
+first suspicion is the announced size, which the client remembers in
+order to place touches. Reconnecting has to reset everything the
+greeting carries, not merge it with what was there.
+
+Seen on Android against Azahar; whether the web client does the same is
+untested.
+
+- [ ] Reproduce, and find what is kept
+- [ ] Check the web client for the same
 
 ### C6. Android: two faults left open
 

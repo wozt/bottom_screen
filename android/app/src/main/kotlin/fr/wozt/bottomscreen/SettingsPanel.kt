@@ -153,6 +153,24 @@ class SettingsPanel(
             layoutParams = LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f)
             setOnClickListener { actions.onClose() }
         })
+        /*
+         * Fullscreen sits here rather than under "controls", where it
+         * was the last row of the longer column and fell off the bottom
+         * of the screen -- present, and unreachable without scrolling a
+         * menu you opened to press one thing. It is an action on the
+         * screen, like going back to it, so it belongs beside it.
+         */
+        lateinit var fs: Button
+        fs = Button(context).apply {
+            text = fullscreenLabel()
+            textSize = 12f
+            setOnClickListener {
+                settings.fullscreen = !settings.fullscreen
+                fs.text = fullscreenLabel()
+                actions.onApply()
+            }
+        }
+        top.addView(fs)
         top.addView(Button(context).apply {
             text = if (settings.menuColumns) "columns" else "one at a time"
             textSize = 12f
@@ -295,12 +313,16 @@ class SettingsPanel(
         }
         button("reset their positions") { actions.onResetLayout() }
 
-        group("screen")
-        check("fullscreen", settings.fullscreen) {
-            settings.fullscreen = it
-            actions.onApply()
-        }
     }
+
+    /*
+     * A button, not a tick box: a box makes you read its state before
+     * you know what a tap will do. The label says what the tap does, and
+     * changes as soon as it has done it.
+     */
+    private fun fullscreenLabel() =
+        if (settings.fullscreen) "leave fullscreen" else "fullscreen"
+
 
     private fun diagnostics() {
         body.addView(TextView(context).apply {
@@ -368,12 +390,14 @@ class SettingsPanel(
         body.addView(line)
     }
 
-    private fun button(label: String, onClick: () -> Unit) {
-        body.addView(Button(context).apply {
+    private fun button(label: String, onClick: () -> Unit): Button {
+        val b = Button(context).apply {
             text = label
             textSize = 13f
             setOnClickListener { onClick() }
-        })
+        }
+        body.addView(b)
+        return b
     }
 
     private fun check(label: String, value: Boolean, onChange: (Boolean) -> Unit) {
