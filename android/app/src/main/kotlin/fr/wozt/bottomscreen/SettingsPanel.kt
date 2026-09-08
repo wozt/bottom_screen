@@ -64,6 +64,10 @@ class SettingsPanel(
         var stickBelow: BooleanArray
         val hasSticks: Boolean
         var audioSource: Int
+        /** BsProtocol.SCREEN_BOTTOM or SCREEN_TOP. */
+        var screenShown: Int
+        /** Whether this server has a second screen to offer at all. */
+        val hasTopScreen: Boolean
         val hasAudio: Boolean
         val isWiiU: Boolean
         val streamLine: String
@@ -245,6 +249,25 @@ class SettingsPanel(
             }
         }
 
+        /*
+         * The other screen, offered only where there is one.
+         *
+         * Against the point of the application, and useful: the
+         * television picture is usually what is worth watching on a Wii
+         * U. A server built before this existed never says it has one,
+         * and then this row is simply not there.
+         */
+        if (settings.hasTopScreen) {
+            group("screen")
+            choice(
+                listOf("bottom" to BsProtocol.SCREEN_BOTTOM,
+                       "top" to BsProtocol.SCREEN_TOP),
+                settings.screenShown
+            ) { settings.screenShown = it }
+            hint("The top screen has no touch panel, so taps do nothing " +
+                 "there. The buttons still work.")
+        }
+
         group("size received")
         /*
          * Multiples of the console's own screen, never below it.
@@ -422,6 +445,18 @@ class SettingsPanel(
             setOnClickListener { open = if (isOpen) null else title; rebuild() }
         })
         if (isOpen) contents()
+    }
+
+    /* A line of explanation under a control, in the same dim grey the
+     * headings use. Several places built one of these inline; the top
+     * screen needed a third, which is where a helper earns itself. */
+    private fun hint(text: String) {
+        body.addView(TextView(context).apply {
+            this.text = text
+            textSize = 11f
+            setTextColor(DIM)
+            setPadding(0, 0, 0, 6)
+        })
     }
 
     private fun group(title: String) {

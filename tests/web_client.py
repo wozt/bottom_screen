@@ -17,6 +17,11 @@ WANT_FRAMES = int(sys.argv[2]) if len(sys.argv) > 2 else 60
 
 MSG_VIDEO, MSG_AUDIO, MSG_STREAM_INFO = 1, 2, 3
 MSG_INPUT, MSG_PING, MSG_PONG, MSG_REQUEST_KEYFRAME = 16, 17, 18, 19
+MSG_SET_SCREEN, MSG_SCREENS = 23, 24
+
+# "top" asks for the machine's other screen once the stream is running,
+# which is what the page's own control does.
+WANT_SCREEN = 1 if "top" in sys.argv[3:] else 0
 
 
 def message(kind, body=b""):
@@ -49,6 +54,9 @@ async def main():
 
         video = audio = keyframes = 0
         first_is_key = None
+        screens = None
+        switched = False
+        new_size = None
         while video < WANT_FRAMES:
             raw = await asyncio.wait_for(ws.recv(), timeout=10)
             kind, size = struct.unpack_from("<B3xI", raw, 0)
@@ -71,10 +79,32 @@ async def main():
                     await ws.send(message(MSG_INPUT, ev))
             elif kind == MSG_AUDIO:
                 audio += 1
+            elif kind == MSG_SCREENS:
+                screens = body[0]
+            elif kind == MSG_STREAM_INFO:
+                # The picture changed shape. After a screen change that
+                # is the only acknowledgement there is, and it is enough:
+                # the other screen is not the same size.
+                new_size = struct.unpack_from("<HH", body, 4)
             elif kind == MSG_PING:
                 await ws.send(message(MSG_PONG))
 
+            if WANT_SCREEN and not switched and video >= 10:
+                switched = True
+                await ws.send(message(MSG_SET_SCREEN, bytes([WANT_SCREEN, 0, 0, 0])))
+
         print(f"{video} video, {audio} audio, {keyframes} keyframes")
+        if screens is not None:
+            print(f"ecrans annonces: masque {screens}")
+        if WANT_SCREEN:
+            if not screens or not (screens & (1 << WANT_SCREEN)):
+                print("FAIL: the server never said it had that screen")
+                return 1
+            if new_size is None or (new_size[0], new_size[1]) == (w, h):
+                print(f"FAIL: the picture never changed size, so the screen "
+                      f"did not change (still {w}x{h})")
+                return 1
+            print(f"ecran change: {w}x{h} -> {new_size[0]}x{new_size[1]}")
         if not first_is_key:
             print("FAIL: the first frame was not a keyframe, so nothing "
                   "would decode")

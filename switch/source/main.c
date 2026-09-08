@@ -111,7 +111,7 @@ typedef enum {
     ROWID_AUDIO_SOURCE, ROWID_HOME, ROWID_DISCONNECT, ROWID_DECODER,
     ROWID_ADDRESS, ROWID_PORT, ROWID_SAVED, ROWID_CONNECT, ROWID_BUTTONS,
     ROWID_STATS, ROWID_PAD_EDIT, ROWID_PAD_RESET, ROWID_PAD_COLOUR,
-    ROWID_PAD_OPACITY, ROWID_STICK_L, ROWID_STICK_R
+    ROWID_PAD_OPACITY, ROWID_STICK_L, ROWID_STICK_R, ROWID_SCREEN
 } RowId;
 
 typedef struct {
@@ -190,6 +190,18 @@ static int g_show_buttons;       /* off until asked for */
 static int g_show_stats;         /* likewise: wanted when something is wrong */
 /* BS_AUDIO_BOTH until somebody says otherwise. */
 static int g_audio_source;
+
+/*
+ * Which of the machine's two screens is being watched.
+ *
+ * Not saved with the rest of the settings, unlike almost everything
+ * here. The bottom screen is what this is for, and coming back days
+ * later to the television picture because of a choice made once is a
+ * worse surprise than picking it again. It also resets on every
+ * connection, because the server puts a new client on the bottom screen
+ * whatever this one last showed.
+ */
+static int g_screen;
 
 /* The ladder the web and Android clients offer, in the same words. */
 static const struct { const char *label; int bitrate; } QUALITY[] = {
@@ -576,6 +588,21 @@ static void send_touch(const SDL_Rect *dst, const StreamInfo *info)
 {
     static int touching;
 
+    /*
+     * Nothing at all while the top screen is being shown. There is no
+     * touch panel behind that picture, so a stroke here is not one that
+     * missed -- it is one that should never leave. The finger already
+     * down is lifted first, or the emulator would be left holding a
+     * stylus that never came up.
+     */
+    if (g_screen != BS_SCREEN_BOTTOM) {
+        if (touching) {
+            touching = 0;
+            stream_send_touch(BS_INPUT_TOUCH_UP, 0, 0);
+        }
+        return;
+    }
+
     HidTouchScreenState st = {0};
     const int have = hidGetTouchScreenStates(&st, 1) && st.count > 0;
     int stylus = -1;
@@ -673,6 +700,10 @@ static void try_connect(void)
             stream_send_quality(QUALITY[g_quality].bitrate);
         if (g_audio_source)
             stream_send_audio_source(g_audio_source);
+        /* A new connection lands on the bottom screen whatever the last
+         * one showed, so the two are put back in step here rather than
+         * left disagreeing about what is on the wire. */
+        g_screen = BS_SCREEN_BOTTOM;
         if (g_receive_scale) {
             int nw = 0, nh = 0;
             native_size(info.console, &nw, &nh);
@@ -862,6 +893,18 @@ static void build_play_rows(const StreamInfo *info)
     r = add_row();
     r->kind = ROW_HEADING; r->label = "stream"; r->value[0] = '\0';
 
+    /*
+     * The other screen, offered only where there is one. Against the
+     * point of all this, and useful: on a Wii U the television picture
+     * is usually the one worth watching.
+     */
+    if (stream_screens() & (1 << BS_SCREEN_TOP)) {
+        r = add_row();
+        r->kind = ROW_VALUE; r->id = ROWID_SCREEN; r->label = "screen";
+        snprintf(r->value, sizeof(r->value), "%s",
+                 g_screen == BS_SCREEN_TOP ? "top (no touch)" : "bottom");
+    }
+
     r = add_row();
     r->kind = ROW_VALUE; r->id = ROWID_SIZE; r->label = "size received";
     size_label(info, r->value, sizeof(r->value));
@@ -999,6 +1042,17 @@ static void adjust_row(const StreamInfo *info, int delta)
         stream_send_quality(QUALITY[g_quality].bitrate);
         break;
     }
+    case ROWID_SCREEN:
+        /*
+         * Two of them, so either direction is the other one. The size
+         * that comes back is the acknowledgement; nothing here has to
+         * wait for it, because the picture changing shape is already
+         * handled the way an emulator's internal resolution moving is.
+         */
+        g_screen = (g_screen == BS_SCREEN_TOP) ? BS_SCREEN_BOTTOM
+                                               : BS_SCREEN_TOP;
+        stream_send_screen(g_screen);
+        break;
     case ROWID_BUTTONS:
         g_show_buttons = !g_show_buttons;
         break;

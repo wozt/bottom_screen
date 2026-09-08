@@ -105,6 +105,25 @@ else
     fail=1
 fi
 
+# --- and the same thing through a browser's transport -----------------
+#
+# The page reaches the server over a WebSocket, which is its own framing
+# and its own send path. A switch that works for the native client and
+# not for the browser is exactly the kind of gap that only shows up when
+# somebody opens the page.
+if python3 -c "import websockets" 2>/dev/null; then
+    if timeout 90 python3 "$DIR/tests/web_client.py" "$P" 40 top \
+            >"$OUT/web.txt" 2>&1; then
+        note "$(grep 'ecran change' "$OUT/web.txt")"
+    else
+        note "the browser transport could not change screen:"
+        tail -4 "$OUT/web.txt" | sed 's/^/    /'
+        fail=1
+    fi
+else
+    note "python websockets missing, browser transport not checked"
+fi
+
 kill "$SERVER_PID" 2>/dev/null
 wait "$SERVER_PID" 2>/dev/null || true
 SERVER_PID=""

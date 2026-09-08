@@ -62,6 +62,11 @@ void stream_send_size(int width, int height);
 /* Which of a Wii U's two audio outputs to receive; see BsAudioSource. */
 void stream_send_audio_source(int source);
 
+/* Which of the machine's two screens to receive, as a BsScreen, and
+ * which ones this server has (a bit per BsScreen). */
+void stream_send_screen(int screen);
+int  stream_screens(void);
+
 /* Re-encode at this bitrate; zero lets the server choose. */
 void stream_send_quality(int bitrate);
 

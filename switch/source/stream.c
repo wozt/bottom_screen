@@ -20,6 +20,10 @@ static pthread_t  g_reader;
 static int        g_reader_started;
 static volatile int g_stop;
 static volatile int g_connected;
+/* Which screens the server has, as a bit per BsScreen. Bottom only
+ * until it says otherwise, which is also what an older server means by
+ * saying nothing. */
+static volatile int g_screens = 1 << BS_SCREEN_BOTTOM;
 
 static StreamInfo g_info;
 static pthread_mutex_t g_info_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -177,6 +181,16 @@ static void *reader(void *arg)
             g_info.height = si.height;
             if (si.fps > 0) g_info.fps = si.fps;
             pthread_mutex_unlock(&g_info_lock);
+        } else if (type == BS_MSG_SCREENS && n >= sizeof(BsScreens)) {
+            /*
+             * Which screens this server has. A bit per BsScreen, and a
+             * server built before the top screen existed sends nothing
+             * -- so the mask stays at "bottom only" and the menu never
+             * offers a choice that would do nothing.
+             */
+            BsScreens sc;
+            memcpy(&sc, buf, sizeof(sc));
+            g_screens = sc.available;
         } else if (type == BS_MSG_PING) {
             bs_send_msg(g_conn, BS_MSG_PONG, NULL, 0, NULL, 0);
         }
@@ -349,6 +363,31 @@ void stream_send_button(int code, int pressed)
 void stream_send_axis(int code, int value)
 {
     send_event(BS_INPUT_AXIS, (uint8_t)code, (int16_t)value, 0);
+}
+
+/*
+ * Asks for the machine's other screen: the top one on a DS or a 3DS, the
+ * television picture on a Wii U.
+ *
+ * There is no acknowledgement to wait for. The other screen is a
+ * different size, and that arrives as a stream info message like any
+ * other change of shape -- which is the same path the picture already
+ * takes when somebody moves an emulator's internal resolution.
+ */
+void stream_send_screen(int screen)
+{
+    if (!g_conn || !g_connected)
+        return;
+    BsScreenChoice ch;
+    memset(&ch, 0, sizeof(ch));
+    ch.screen = (uint8_t)screen;
+    bs_send_msg(g_conn, BS_MSG_SET_SCREEN, &ch, sizeof(ch), NULL, 0);
+}
+
+/* A bit per BsScreen. Bottom only until a server says otherwise. */
+int stream_screens(void)
+{
+    return g_screens;
 }
 
 void stream_send_size(int width, int height)

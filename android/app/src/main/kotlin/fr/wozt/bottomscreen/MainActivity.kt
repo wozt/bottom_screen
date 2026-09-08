@@ -104,6 +104,19 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private var fullscreen = false
     /* Which of a Wii U's two outputs to hear; ignored elsewhere. */
     private var audioSource = BsProtocol.AUDIO_BOTH
+
+    /*
+     * Which screen is being watched, and which ones this server has.
+     *
+     * Deliberately not remembered between sessions. The bottom screen is
+     * what this is for, and coming back to find the television picture
+     * because of something chosen days ago is a worse surprise than
+     * having to pick it again. The mask starts empty so the choice stays
+     * hidden until a server says it has one -- an older server never
+     * says anything, and then there is nothing to offer.
+     */
+    @Volatile private var shownScreen = BsProtocol.SCREEN_BOTTOM
+    @Volatile private var screensMask = 1 shl BsProtocol.SCREEN_BOTTOM
     private var padColour = 0
     private var stickBelow = booleanArrayOf(false, true)
     private var startInEdit = false
@@ -495,6 +508,15 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         }
     }
 
+    override fun onScreens(mask: Int) {
+        screensMask = mask
+        /* The settings may be open on the very row this adds. */
+        runOnUiThread {
+            (panel as? android.widget.ScrollView)
+                ?.getChildAt(0)?.let { (it as? SettingsPanel)?.rebuild() }
+        }
+    }
+
     override fun onAudio(data: ByteArray, offset: Int, length: Int) {
         audio?.decode(data, offset, length)
     }
@@ -518,6 +540,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         if (ack.console == BsProtocol.CONSOLE_WIIU &&
             audioSource != BsProtocol.AUDIO_BOTH)
             client?.sendAudioSource(audioSource)
+        /* A fresh connection is on the bottom screen whatever this
+         * activity last showed, so the two are put back in step rather
+         * than left disagreeing. */
+        shownScreen = BsProtocol.SCREEN_BOTTOM
         runOnUiThread { buildPlayUi(ack) }
     }
 
@@ -644,6 +670,9 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
              * instead of the decoder scaling first. */
             holder.setFixedSize(ack.width, ack.height)
             onTouch = { type, x, y -> client?.sendInput(type, 0, x, y) }
+            /* Rebuilt on every change of shape, and a change of screen
+             * is one, so this has to be set here rather than once. */
+            touchEnabled = shownScreen == BsProtocol.SCREEN_BOTTOM
         }
         screen = view
 
@@ -1041,6 +1070,15 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             override var audioSource: Int
                 get() = this@MainActivity.audioSource
                 set(v) { this@MainActivity.audioSource = v }
+            override var screenShown: Int
+                get() = this@MainActivity.shownScreen
+                set(v) {
+                    this@MainActivity.shownScreen = v
+                    screen?.touchEnabled = v == BsProtocol.SCREEN_BOTTOM
+                    client?.sendScreen(v)
+                }
+            override val hasTopScreen: Boolean
+                get() = (screensMask and (1 shl BsProtocol.SCREEN_TOP)) != 0
             override val streamLine: String get() = statusLine()
             override val savedServers: List<Profile> get() = Profiles.load(prefs)
             override val nativeWidth: Int get() = profile.width

@@ -225,6 +225,18 @@ button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
       </div>
     </details>
 
+    <details class="menu-group" id="group-screen" hidden><summary>screen</summary>
+      <div class="menu-items">
+        <label>show
+          <select id="screenPick">
+            <option value="0">bottom screen</option>
+            <option value="1">top screen</option>
+          </select>
+        </label>
+        <div class="hint">The top screen has no touch panel, so taps do nothing there. The buttons still do.</div>
+      </div>
+    </details>
+
     <details class="menu-group" id="group-sound"><summary>sound</summary>
       <div class="menu-items" id="soundItems">
         <label>volume <input id="volume" type="range" min="0" max="100" value="100"><span id="volume-v">100%</span></label>
@@ -298,9 +310,10 @@ button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
  * never changed because nothing was ever asked. Adding a name here and
  * using it there are two edits, and only one of them was made.
  */
-const MSG = { VIDEO: 1, AUDIO: 2, STREAM_INFO: 3,
+const MSG = { VIDEO: 1, AUDIO: 2, STREAM_INFO: 3, SCREENS: 24,
               INPUT: 16, PING: 17, PONG: 18, REQUEST_KEYFRAME: 19,
-              SET_QUALITY: 20, SET_SIZE: 21, SET_AUDIO_SOURCE: 22 };
+              SET_QUALITY: 20, SET_SIZE: 21, SET_AUDIO_SOURCE: 22,
+              SET_SCREEN: 23 };
 const INPUT = { TOUCH_DOWN: 1, TOUCH_MOVE: 2, TOUCH_UP: 3,
                 BUTTON_DOWN: 4, BUTTON_UP: 5, AXIS: 6 };
 const BTN = { A:1, B:2, X:3, Y:4, L:5, R:6, ZL:7, ZR:8,
@@ -729,8 +742,17 @@ function pointTo(ev) {
           Math.max(0, Math.min(height - 1, y))];
 }
 
+/*
+ * Which picture is on the wire. Only the bottom one has a touch panel
+ * behind it, so this gates every tap below -- the server drops them
+ * anyway, and sending them regardless would put a press into the game
+ * from a screen that cannot be pressed.
+ */
+let screenShown = 0;
+
 let touching = false;
 canvas.addEventListener("pointerdown", (e) => {
+  if (screenShown !== 0) return;
   canvas.setPointerCapture(e.pointerId);
   touching = true;
   const [x, y] = pointTo(e);
@@ -738,7 +760,7 @@ canvas.addEventListener("pointerdown", (e) => {
   e.preventDefault();
 });
 canvas.addEventListener("pointermove", (e) => {
-  if (!touching) return;
+  if (!touching || screenShown !== 0) return;
   const [x, y] = pointTo(e);
   sendInput(INPUT.TOUCH_MOVE, 0, x, y);
 });
@@ -1167,6 +1189,28 @@ audioSourceEl.addEventListener("change", () => {
 });
 
 /*
+ * The other screen.
+ *
+ * The whole group stays hidden until the server says it has one, rather
+ * than offering a choice that would do nothing -- a backend that only
+ * hands over the bottom screen is a normal thing to be talking to, and
+ * an older server says nothing at all and is treated the same way.
+ *
+ * Nothing is drawn differently on arrival: the picture changes size,
+ * which comes through STREAM_INFO like any other change of shape and
+ * goes through the same path. What does change is the touch layer,
+ * which stops sending.
+ */
+const screenPickEl = document.getElementById("screenPick");
+screenPickEl.addEventListener("change", () => {
+  screenShown = parseInt(screenPickEl.value, 10) || 0;
+  if (touching) { touching = false; sendInput(INPUT.TOUCH_UP, 0, 0, 0); }
+  const b = new Uint8Array(4);
+  b[0] = screenShown;
+  send(MSG.SET_SCREEN, b);
+});
+
+/*
  * The pad's colour, chosen rather than fixed.
  *
  * These sit on top of whatever the emulator is showing, and there is no
@@ -1533,6 +1577,11 @@ function connect() {
        * beside one that never did says nothing about either. */
       frames = 0;
       decoded = 0;
+    } else if (type === MSG.SCREENS) {
+      /* A bit per screen. The row appears only if there is a second
+       * one to switch to; a server that never sends this leaves it
+       * hidden, which is right -- it has nothing to offer. */
+      document.getElementById("group-screen").hidden = !(payload[0] & 2);
     } else if (type === MSG.PING) {
       send(MSG.PONG);
     }

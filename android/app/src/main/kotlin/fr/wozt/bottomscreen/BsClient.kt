@@ -27,6 +27,14 @@ class BsClient(
         fun onFrame(data: ByteArray, offset: Int, length: Int, keyframe: Boolean, timestampUs: Int)
         fun onAudio(data: ByteArray, offset: Int, length: Int)
         fun onStreamInfo(info: BsProtocol.StreamInfo)
+        /**
+         * Which screens this server has, as a bit per BsProtocol.SCREEN_*.
+         *
+         * Never called by a server built before the top screen existed,
+         * which is why the choice starts hidden rather than starting
+         * shown and being taken away.
+         */
+        fun onScreens(mask: Int)
         fun onDisconnected(reason: String)
     }
 
@@ -81,6 +89,11 @@ class BsClient(
     /** Picks which of a Wii U's two audio outputs to receive. */
     fun sendAudioSource(source: Int) {
         if (running) outQueue.offer(BsProtocol.audioSourceMessage(source))
+    }
+
+    /** Picks which of the machine's two screens to receive. */
+    fun sendScreen(screen: Int) {
+        if (running) outQueue.offer(BsProtocol.screenMessage(screen))
     }
 
     private fun readLoop() {
@@ -156,6 +169,9 @@ class BsClient(
                                 h.payloadSize - BsProtocol.AUDIO_HEADER_SIZE
                             )
                         }
+                    }
+                    BsProtocol.MSG_SCREENS -> {
+                        if (h.payloadSize >= 1) listener.onScreens(payload[0].toInt() and 0xFF)
                     }
                     BsProtocol.MSG_PING -> outQueue.offer(BsProtocol.emptyMessage(BsProtocol.MSG_PONG))
                 }

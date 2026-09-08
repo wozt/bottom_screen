@@ -29,7 +29,24 @@ class ScreenView(context: Context) : SurfaceView(context) {
      * across the screen mid-drag. */
     private var activePointer = -1
 
+    /**
+     * False while the top screen is being shown.
+     *
+     * There is no touch panel up there, so a tap is not a tap that
+     * missed -- it is one that should never have been sent. The server
+     * drops them as well, but a press arriving from a screen that
+     * cannot be pressed is worth stopping at both ends.
+     */
+    var touchEnabled = true
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
+        if (!touchEnabled) {
+            if (activePointer != -1) {
+                activePointer = -1
+                onTouch?.invoke(BsProtocol.INPUT_TOUCH_UP, 0, 0)
+            }
+            return true
+        }
         when (event.actionMasked) {
             MotionEvent.ACTION_DOWN, MotionEvent.ACTION_POINTER_DOWN -> {
                 if (activePointer == -1) {

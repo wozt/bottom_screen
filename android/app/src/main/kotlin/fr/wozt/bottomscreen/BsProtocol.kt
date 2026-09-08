@@ -55,6 +55,21 @@ object BsProtocol {
     const val MSG_SET_SIZE = 21
     const val MSG_SET_AUDIO_SOURCE = 22
 
+    /*
+     * Which of the machine's two screens to receive, and which ones it
+     * has to offer.
+     *
+     * Per client rather than shared with everyone watching, unlike the
+     * size and the bitrate: two people looking at two different screens
+     * is the point, and it is why this one costs a second encoder on
+     * the server where those two do not.
+     */
+    const val MSG_SET_SCREEN = 23
+    const val MSG_SCREENS = 24
+
+    const val SCREEN_BOTTOM = 0
+    const val SCREEN_TOP = 1
+
     /** Which of a Wii U's two outputs to hear. */
     const val AUDIO_BOTH = 0
     const val AUDIO_TV = 1
@@ -233,6 +248,25 @@ object BsProtocol {
         b.putInt(bitrate)
         b.putShort(fps.toShort())
         b.putShort(0)
+        return b.array()
+    }
+
+    /**
+     * Asks for the machine's other screen: the top one on a DS or a 3DS,
+     * the television picture on a Wii U.
+     *
+     * There is no reply. What comes back is a stream info message with
+     * the other screen's size, which is the same path any change of
+     * shape takes -- and a size that is not the one we had is the only
+     * acknowledgement worth having.
+     */
+    fun screenMessage(screen: Int): ByteArray {
+        val b = buffer(MSG_HEADER_SIZE + 4)
+        b.put(MSG_SET_SCREEN.toByte())
+        b.put(0); b.put(0); b.put(0)
+        b.putInt(4)
+        b.put(screen.toByte())
+        b.put(0); b.put(0); b.put(0)
         return b.array()
     }
 
