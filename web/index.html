@@ -438,7 +438,19 @@ function sendInput(type, code, x, y) {
 const MAX_STREAM_HEIGHT = 1440;
 const sizeEl = document.getElementById("size");
 
-function nativeSize(id) {
+/*
+ * The screen on the wire, at its own native size.
+ *
+ * Not the console's, which means the bottom screen's and is the wrong
+ * answer for a 3DS: 320x240 below, 400x240 above -- 4:3 against 5:3.
+ * Offering multiples of the bottom screen while the top one is being
+ * sent asks the server to squeeze a 5:3 picture into a 4:3 box, and it
+ * obliges. A DS has two screens the same size and a Wii U's are both
+ * 16:9, so the 3DS is the one where it shows.
+ */
+function nativeSize(id, screen) {
+  if ((screen !== undefined ? screen : screenShown) === 1)
+    return id === 3 ? [1280, 720] : id === 2 ? [400, 240] : [256, 192];
   return id === 3 ? [854, 480] : id === 2 ? [320, 240] : [256, 192];
 }
 
@@ -491,7 +503,7 @@ function buildSizes(id) {
 
 sizeEl.addEventListener("change", () => {
   const factor = parseInt(sizeEl.value, 10);
-  const [nw, nh] = nativeSize(console_id);
+  const [nw, nh] = nativeSize(console_id);   /* the screen now shown */
   const b = new Uint8Array(4);
   const v = new DataView(b.buffer);
   if (factor === -2) {
@@ -1147,13 +1159,17 @@ barEl.addEventListener("toggle", (e) => {
 /* ---------------------------------------------------------- controls */
 
 const qualityEl = document.getElementById("quality");
-qualityEl.addEventListener("change", () => {
+/* Its own function because a screen change has to say it again: the
+ * encoder behind each screen is separate, and the new one was built on
+ * the server's defaults. */
+function applyQuality() {
   const b = new Uint8Array(8);
   new DataView(b.buffer).setUint32(0, parseInt(qualityEl.value, 10) || 0, true);
   /* Zero lets the server derive one from the size, which is what it
    * does when nobody has asked. */
   send(MSG.SET_QUALITY, b);
-});
+}
+qualityEl.addEventListener("change", applyQuality);
 
 const volumeEl = document.getElementById("volume");
 const volumeVal = document.getElementById("volume-v");
@@ -1208,6 +1224,24 @@ screenPickEl.addEventListener("change", () => {
   const b = new Uint8Array(4);
   b[0] = screenShown;
   send(MSG.SET_SCREEN, b);
+
+  /*
+   * The screen just joined has its own encoder, built on the server's
+   * defaults: it has never heard of the quality or the size chosen
+   * here. Both are said again, or a stream asked for at a low bitrate
+   * arrives at full quality on the other screen with nothing in the
+   * menu to explain it.
+   *
+   * The ladder is rebuilt first, because its rungs are multiples of the
+   * screen that is now on the wire and a 3DS changes shape between the
+   * two. fullW is cleared so the "whatever is rendered" rung stops
+   * quoting the old screen's size until the first STREAM_INFO says what
+   * the new one is.
+   */
+  fullW = 0; fullH = 0;
+  buildSizes(console_id);
+  applyQuality();
+  sizeEl.dispatchEvent(new Event("change"));
 });
 
 /*

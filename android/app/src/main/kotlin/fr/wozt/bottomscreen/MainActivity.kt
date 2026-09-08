@@ -1076,13 +1076,23 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                     this@MainActivity.shownScreen = v
                     screen?.touchEnabled = v == BsProtocol.SCREEN_BOTTOM
                     client?.sendScreen(v)
+                    /*
+                     * The screen just joined has its own encoder, built
+                     * on the server's defaults: it has never heard of
+                     * the quality or the size chosen here. onApply says
+                     * both again, and its size is now derived from the
+                     * screen on the wire rather than from the console.
+                     */
+                    applySettings()
                 }
             override val hasTopScreen: Boolean
                 get() = (screensMask and (1 shl BsProtocol.SCREEN_TOP)) != 0
             override val streamLine: String get() = statusLine()
             override val savedServers: List<Profile> get() = Profiles.load(prefs)
-            override val nativeWidth: Int get() = profile.width
-            override val nativeHeight: Int get() = profile.height
+            override val nativeWidth: Int
+                get() = ConsoleProfile.nativeFor(profile, shownScreen).first
+            override val nativeHeight: Int
+                get() = ConsoleProfile.nativeFor(profile, shownScreen).second
             override val sourceWidth: Int get() = fullWidth
             override val sourceHeight: Int get() = fullHeight
         }
@@ -1169,12 +1179,13 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
          * or -- for the Wii U alone -- half of it.
          */
         if (ack != null) {
+            /* Multiples of the screen now on the wire, not of the
+             * console -- a 3DS changes shape between its two. */
+            val (nw, nh) = ConsoleProfile.nativeFor(profile, shownScreen)
             when {
                 receiveScale == 0 -> client?.sendSize(0, 0)
-                receiveScale == -2 -> client?.sendSize(profile.width / 2,
-                                                       profile.height / 2)
-                else -> client?.sendSize(profile.width * receiveScale,
-                                         profile.height * receiveScale)
+                receiveScale == -2 -> client?.sendSize(nw / 2, nh / 2)
+                else -> client?.sendSize(nw * receiveScale, nh * receiveScale)
             }
         }
     }

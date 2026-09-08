@@ -13,6 +13,19 @@ data class ConsoleProfile(
     val label: String,
     val width: Int,
     val height: Int,
+    /*
+     * The other screen, at its own size.
+     *
+     * Not the same shape as the first one on a 3DS: the touch screen is
+     * 320x240 and the top screen is 400x240, 4:3 against 5:3. Every size
+     * offered here is a whole multiple of one of these, so using the
+     * bottom screen's numbers while the top one is on the wire asks the
+     * server to squeeze a 5:3 picture into a 4:3 box -- and it obliges.
+     * The DS's two screens are identical and a Wii U's are both 16:9, so
+     * the 3DS is the one where it shows.
+     */
+    val topWidth: Int,
+    val topHeight: Int,
     val faceButtons: List<PadButton>,
     val shoulders: List<PadButton>,
     val menuButtons: List<PadButton>,
@@ -44,7 +57,7 @@ data class ConsoleProfile(
         /* The DS has no analog stick at all, so it gets none -- drawing
          * one would offer a control that goes nowhere. */
         val DS = ConsoleProfile(
-            BsProtocol.CONSOLE_DS, "Nintendo DS", 256, 192,
+            BsProtocol.CONSOLE_DS, "Nintendo DS", 256, 192, 256, 192,
             faceButtons = listOf(A, B, X, Y),
             shoulders = listOf(L, R),
             menuButtons = listOf(SELECT, START)
@@ -54,7 +67,7 @@ data class ConsoleProfile(
          * a nub on real hardware rather than a full stick, but it
          * reports the same two axes, so it is drawn the same. */
         val N3DS = ConsoleProfile(
-            BsProtocol.CONSOLE_3DS, "Nintendo 3DS", 320, 240,
+            BsProtocol.CONSOLE_3DS, "Nintendo 3DS", 320, 240, 400, 240,
             faceButtons = listOf(A, B, X, Y),
             shoulders = listOf(L, R, ZL, ZR),
             menuButtons = listOf(SELECT, START),
@@ -62,7 +75,7 @@ data class ConsoleProfile(
         )
 
         val WIIU = ConsoleProfile(
-            BsProtocol.CONSOLE_WIIU, "Wii U GamePad", 854, 480,
+            BsProtocol.CONSOLE_WIIU, "Wii U GamePad", 854, 480, 1280, 720,
             faceButtons = listOf(A, B, X, Y),
             shoulders = listOf(L, R, ZL, ZR),
             menuButtons = listOf(SELECT, START, HOME),
@@ -72,6 +85,11 @@ data class ConsoleProfile(
         /* The server announces which console it is serving, so the
          * interface follows the stream rather than a setting the person
          * has to keep in step with it. */
+        /* The screen actually on the wire, at its own native size. */
+        fun nativeFor(p: ConsoleProfile, screen: Int): Pair<Int, Int> =
+            if (screen == BsProtocol.SCREEN_TOP) p.topWidth to p.topHeight
+            else p.width to p.height
+
         fun forConsole(console: Int): ConsoleProfile = when (console) {
             BsProtocol.CONSOLE_3DS -> N3DS
             BsProtocol.CONSOLE_WIIU -> WIIU

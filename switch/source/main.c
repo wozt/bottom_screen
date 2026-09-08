@@ -217,6 +217,7 @@ static int g_quality;
 static int g_pad_colour, g_pad_opacity = 100, g_stick_l, g_stick_r = 1;
 
 static void native_size(int console, int *w, int *h);
+static void screen_native_size(int console, int screen, int *w, int *h);
 
 /* ------------------------------------------------------------ settings */
 
@@ -817,6 +818,33 @@ static void draw_rows(int top)
 }
 
 /* The console's own screen, which every offered size is a multiple of. */
+/*
+ * The screen being watched, at its own native size.
+ *
+ * Not the console's, which is the bottom screen's and is the wrong
+ * answer for a 3DS: its touch screen is 320x240 and its top screen is
+ * 400x240, which is 5:3 rather than 4:3. Offering multiples of the
+ * bottom screen while the top one is on the wire asks the server to
+ * squeeze a 5:3 picture into a 4:3 box, and it obliges. The DS's two
+ * screens are the same size and a Wii U's are both 16:9, so the 3DS is
+ * the one that shows it.
+ */
+static void screen_native_size(int console, int screen, int *w, int *h)
+{
+    if (screen == BS_SCREEN_TOP) {
+        switch (console) {
+        case BS_CONSOLE_3DS:
+            *w = BS_3DS_TOP_WIDTH;  *h = BS_3DS_TOP_HEIGHT;  break;
+        case BS_CONSOLE_WIIU:
+            *w = BS_WIIU_TOP_WIDTH; *h = BS_WIIU_TOP_HEIGHT; break;
+        default:
+            *w = BS_DS_TOP_WIDTH;   *h = BS_DS_TOP_HEIGHT;   break;
+        }
+        return;
+    }
+    native_size(console, w, h);
+}
+
 static void native_size(int console, int *w, int *h)
 {
     switch (console) {
@@ -868,7 +896,7 @@ static void build_connect_rows(void)
 static void size_label(const StreamInfo *info, char *out, size_t outlen)
 {
     int nw = 0, nh = 0;
-    native_size(info->console, &nw, &nh);
+    screen_native_size(info->console, g_screen, &nw, &nh);
     if (g_receive_scale == 0)
         snprintf(out, outlen, "as rendered  %dx%d", info->width, info->height);
     else if (g_receive_scale == -2)
@@ -1005,7 +1033,7 @@ static void build_play_rows(const StreamInfo *info)
 static void adjust_row(const StreamInfo *info, int delta)
 {
     int nw = 0, nh = 0;
-    native_size(info->console, &nw, &nh);
+    screen_native_size(info->console, g_screen, &nw, &nh);
 
     switch (selected_id()) {
     case ROWID_SIZE: {
@@ -1052,6 +1080,24 @@ static void adjust_row(const StreamInfo *info, int delta)
         g_screen = (g_screen == BS_SCREEN_TOP) ? BS_SCREEN_BOTTOM
                                                : BS_SCREEN_TOP;
         stream_send_screen(g_screen);
+        /*
+         * The screen that has just been joined has its own encoder, and
+         * that encoder was built on the server's defaults -- it has
+         * never heard of anything chosen here. Both settings are said
+         * again, or a picture asked for at a low bitrate arrives at full
+         * quality on the other screen and nothing in the menu explains
+         * why. The size is re-derived from the screen now on the wire,
+         * which for a 3DS is a different shape.
+         */
+        if (QUALITY[g_quality].bitrate)
+            stream_send_quality(QUALITY[g_quality].bitrate);
+        {
+            int sw = 0, sh = 0;
+            screen_native_size(info->console, g_screen, &sw, &sh);
+            if (g_receive_scale == 0)       stream_send_size(0, 0);
+            else if (g_receive_scale == -2) stream_send_size(sw / 2, sh / 2);
+            else stream_send_size(sw * g_receive_scale, sh * g_receive_scale);
+        }
         break;
     case ROWID_BUTTONS:
         g_show_buttons = !g_show_buttons;
