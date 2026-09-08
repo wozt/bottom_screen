@@ -143,7 +143,7 @@ button.b { width: var(--btn); height: var(--btn); border-radius: 50%;
            color: #fff; font: bold calc(var(--btn) * 0.24) sans-serif;
            touch-action: none;
            user-select: none; box-shadow: 0 0 4px rgba(0,0,0,.5); }
-button.b:active { background: var(--btn-pressed); }
+button.b:active, button.b.held { background: var(--btn-pressed); }
 .row { display: flex; gap: 8px; }
 .cluster > .row { flex-direction: column; }
 #dpad { display: grid; grid-template-columns: repeat(3, calc(var(--btn) * 0.86));
@@ -640,6 +640,16 @@ canvas.addEventListener("pointercancel", liftTouch);
 
 /* ------------------------------------------------------------- buttons */
 
+/*
+ * Every control is registered as it is built, so a physical pad can be
+ * shown on the on-screen ones. Pressing a button on a controller and
+ * seeing nothing move is how you end up unsure whether it is connected
+ * at all -- the Android client has always reflected it, and this did
+ * not.
+ */
+const padButtons = new Map();
+const padSticks = [];
+
 function addButton(parent, label, code) {
   const b = document.createElement("button");
   b.className = "b";
@@ -651,6 +661,7 @@ function addButton(parent, label, code) {
   b.addEventListener("pointerleave", up);
   b.addEventListener("pointercancel", up);
   parent.appendChild(b);
+  padButtons.set(code, b);
   return b;
 }
 
@@ -675,6 +686,10 @@ function addStick(parent, spec) {
   el.appendChild(knob);
   wrap.append(label, el);
   parent.appendChild(wrap);
+  /* Kept so the gamepad poll can leave this one alone while a finger
+   * is on it: two things moving one knob would fight. */
+  const entry = { spec, el, knob, dragging: false };
+  padSticks.push(entry);
 
   let held = null;
   const move = (ev) => {
@@ -686,16 +701,19 @@ function addStick(parent, spec) {
     if (m > 1) { dx /= m; dy /= m; }
     knob.style.transform = `translate(${dx * radius * 0.6}px, ${dy * radius * 0.6}px)`;
     sendInput(INPUT.AXIS, spec.x, Math.round(dx * 32767), 0);
-    sendInput(INPUT.AXIS, spec.y, Math.round(dy * 32767), 0);
+    /* Screen y grows downwards, sticks report up as positive. */
+    sendInput(INPUT.AXIS, spec.y, Math.round(-dy * 32767), 0);
   };
   const release = () => {
     held = null;
+    entry.dragging = false;
     knob.style.transform = "";
     sendInput(INPUT.AXIS, spec.x, 0, 0);
     sendInput(INPUT.AXIS, spec.y, 0, 0);
   };
   el.addEventListener("pointerdown", (ev) => {
     held = ev.pointerId;
+    entry.dragging = true;
     el.setPointerCapture(ev.pointerId);
     move(ev);
     ev.preventDefault();
@@ -709,6 +727,8 @@ function addStick(parent, spec) {
 function buildPad(id) {
   padLeftEl.innerHTML = "";
   padRightEl.innerHTML = "";
+  padButtons.clear();
+  padSticks.length = 0;
   const profile = CONSOLES[id] || CONSOLES[1];
 
   /*
@@ -784,6 +804,13 @@ const GAMEPAD_MAP = [BTN.B, BTN.A, BTN.Y, BTN.X, BTN.L, BTN.R, BTN.ZL, BTN.ZR,
                      BTN.SELECT, BTN.START, 0, 0,
                      BTN.UP, BTN.DOWN, BTN.LEFT, BTN.RIGHT];
 let padState = [];
+let axisState = [0, 0, 0, 0];
+
+/* Below this a stick is at rest. Analogue sticks do not return exactly
+ * to centre, and forwarding that would walk the character slowly into a
+ * wall while nobody is touching anything. */
+const DEADZONE = 0.12;
+
 function pollGamepad() {
   const gp = navigator.getGamepads && navigator.getGamepads()[0];
   if (gp) {
@@ -794,7 +821,38 @@ function pollGamepad() {
       if (now !== padState[i]) {
         padState[i] = now;
         sendInput(now ? INPUT.BUTTON_DOWN : INPUT.BUTTON_UP, code, 0, 0);
+        const el = padButtons.get(code);
+        if (el) el.classList.toggle("held", now);
       }
+    }
+
+    /*
+     * The sticks, which were not forwarded at all: a pad drove every
+     * button and nothing that moved. Axes 0 and 1 are the left stick,
+     * 2 and 3 the right, which is what the standard mapping says and
+     * what the profiles here already call LEFT and RIGHT.
+     */
+    for (let a = 0; a < 4 && a < gp.axes.length; a++) {
+      let v = gp.axes[a];
+      if (Math.abs(v) < DEADZONE) v = 0;
+      const q = Math.round(v * 32767);
+      if (q !== axisState[a]) {
+        axisState[a] = q;
+        /* Odd indices are the vertical ones. A pad reports down as
+         * positive, like a screen; the protocol reports up as positive,
+         * like a stick. Without the flip, forward walks backwards. */
+        sendInput(INPUT.AXIS, a + 1, a % 2 ? -q : q, 0);
+      }
+    }
+    for (const st of padSticks) {
+      const ax = st.spec.x - 1, ay = st.spec.y - 1;
+      const r = st.el.getBoundingClientRect().width / 2;
+      const dx = axisState[ax] / 32767, dy = axisState[ay] / 32767;
+      if (dx || dy)
+        st.knob.style.transform =
+          `translate(${dx * r * 0.6}px, ${dy * r * 0.6}px)`;
+      else if (!st.dragging)
+        st.knob.style.transform = "";
     }
   }
   requestAnimationFrame(pollGamepad);
