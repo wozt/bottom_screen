@@ -42,6 +42,21 @@ static char     g_message[192] = "";
 static int      g_have_saved_server;
 
 /*
+ * The addresses used before, most recent first.
+ *
+ * The other two clients both keep a list, because each emulator serves
+ * its own page on its own port and moving between them by retyping an
+ * address on a console keyboard is a punishment. One line each, in the
+ * same file, so an older build reading it still finds its address on
+ * the first line.
+ */
+#define MAX_SERVERS 8
+typedef struct { char host[64]; uint16_t port; } SavedServer;
+static SavedServer g_servers[MAX_SERVERS];
+static int         g_server_count;
+static int         g_server_at;
+
+/*
  * The same palette as capture2cloud's own Switch client: a blue accent
  * for whatever is selected, dim grey for values, green for a stream
  * that is running. Two programs that live on the same console should
@@ -59,11 +74,29 @@ static const SDL_Color COL_ROW      = { 38,  40,  48, 170};
  * A to act. A pointer would be the wrong shape entirely. */
 typedef enum { ROW_ACTION, ROW_VALUE, ROW_INFO } RowKind;
 
+/*
+ * What a row is, rather than where it sits.
+ *
+ * The menu used to act on `g_selected == 2`, which was the disconnect
+ * row until a Wii U gained a "sound from" row above it -- and then
+ * choosing the sound output disconnected instead. Rows are added per
+ * console, so their positions are not something to hard-code.
+ */
+typedef enum {
+    ROWID_NONE = 0, ROWID_SIZE, ROWID_VOLUME, ROWID_QUALITY,
+    ROWID_AUDIO_SOURCE, ROWID_HOME, ROWID_DISCONNECT, ROWID_DECODER,
+    ROWID_ADDRESS, ROWID_PORT, ROWID_SAVED, ROWID_CONNECT
+} RowId;
+
 typedef struct {
     RowKind kind;
+    RowId   id;
     const char *label;
     char value[64];
 } MenuRow;
+
+/* The row the cursor is on, by identity. */
+static RowId selected_id(void);
 
 static MenuRow g_rows[12];
 static int     g_row_count;
@@ -88,24 +121,57 @@ static void load_server(void)
     FILE *f = fopen(CONFIG_PATH, "r");
     if (!f)
         return;
-    char host[64] = "";
-    unsigned port = 0;
-    if (fscanf(f, "%63s %u", host, &port) == 2 && host[0] && port > 0 && port < 65536) {
-        snprintf(g_host, sizeof(g_host), "%s", host);
-        g_port = (uint16_t)port;
-        g_have_saved_server = 1;
+    char host[64];
+    unsigned port;
+    while (g_server_count < MAX_SERVERS &&
+           fscanf(f, "%63s %u", host, &port) == 2 &&
+           host[0] && port > 0 && port < 65536) {
+        snprintf(g_servers[g_server_count].host,
+                 sizeof(g_servers[g_server_count].host), "%s", host);
+        g_servers[g_server_count].port = (uint16_t)port;
+        g_server_count++;
     }
     fclose(f);
+
+    /* The first line is the one used last, which is the one to offer. */
+    if (g_server_count > 0) {
+        snprintf(g_host, sizeof(g_host), "%s", g_servers[0].host);
+        g_port = g_servers[0].port;
+        g_have_saved_server = 1;
+    }
+}
+
+/* Moves the current address to the front, without duplicating it. */
+static void remember_server(void)
+{
+    int at = -1;
+    for (int i = 0; i < g_server_count; i++)
+        if (strcmp(g_servers[i].host, g_host) == 0 && g_servers[i].port == g_port)
+            at = i;
+
+    if (at < 0) {
+        if (g_server_count < MAX_SERVERS)
+            g_server_count++;
+        at = g_server_count - 1;
+    }
+    for (int i = at; i > 0; i--)
+        g_servers[i] = g_servers[i - 1];
+
+    snprintf(g_servers[0].host, sizeof(g_servers[0].host), "%s", g_host);
+    g_servers[0].port = g_port;
+    g_server_at = 0;
 }
 
 static void save_server(void)
 {
+    remember_server();
     mkdir("sdmc:/switch", 0777);
     mkdir(CONFIG_DIR, 0777);
     FILE *f = fopen(CONFIG_PATH, "w");
     if (!f)
         return;
-    fprintf(f, "%s %u\n", g_host, (unsigned)g_port);
+    for (int i = 0; i < g_server_count; i++)
+        fprintf(f, "%s %u\n", g_servers[i].host, (unsigned)g_servers[i].port);
     fclose(f);
 }
 
@@ -215,16 +281,31 @@ static void send_pad(u64 down, u64 up)
     }
 }
 
+/*
+ * Below this a stick counts as centred. A Joy-Con does not return to
+ * exactly zero, and forwarding that residue walks the character slowly
+ * into a wall while nobody is touching anything -- the web client uses
+ * the same 12%, and this had none at all.
+ */
+#define STICK_DEADZONE 3900
+
+static int deadzoned(int v)
+{
+    return (v > -STICK_DEADZONE && v < STICK_DEADZONE) ? 0 : v;
+}
+
 static void send_sticks(const HidAnalogStickState *left,
                         const HidAnalogStickState *right)
 {
     static int lx, ly, rx, ry;
+    const int nlx = deadzoned(left->x),  nly = deadzoned(left->y);
+    const int nrx = deadzoned(right->x), nry = deadzoned(right->y);
     /* Only on change: a stick at rest would otherwise fill the link with
      * events saying nothing happened. */
-    if (left->x != lx)  { lx = left->x;  stream_send_axis(BS_AXIS_LEFT_X, lx); }
-    if (left->y != ly)  { ly = left->y;  stream_send_axis(BS_AXIS_LEFT_Y, ly); }
-    if (right->x != rx) { rx = right->x; stream_send_axis(BS_AXIS_RIGHT_X, rx); }
-    if (right->y != ry) { ry = right->y; stream_send_axis(BS_AXIS_RIGHT_Y, ry); }
+    if (nlx != lx) { lx = nlx; stream_send_axis(BS_AXIS_LEFT_X, lx); }
+    if (nly != ly) { ly = nly; stream_send_axis(BS_AXIS_LEFT_Y, ly); }
+    if (nrx != rx) { rx = nrx; stream_send_axis(BS_AXIS_RIGHT_X, rx); }
+    if (nry != ry) { ry = nry; stream_send_axis(BS_AXIS_RIGHT_Y, ry); }
 }
 
 /*
@@ -383,15 +464,26 @@ static void build_connect_rows(void)
     MenuRow *r;
 
     r = &g_rows[g_row_count++];
-    r->kind = ROW_VALUE; r->label = "address";
+    r->kind = ROW_VALUE; r->id = ROWID_ADDRESS; r->label = "address";
     snprintf(r->value, sizeof(r->value), "%s", g_host);
 
     r = &g_rows[g_row_count++];
-    r->kind = ROW_VALUE; r->label = "port";
+    r->kind = ROW_VALUE; r->id = ROWID_PORT; r->label = "port";
     snprintf(r->value, sizeof(r->value), "%u", (unsigned)g_port);
 
+    /* Only worth a row once there is a choice to make. */
+    if (g_server_count > 1) {
+        r = &g_rows[g_row_count++];
+        r->kind = ROW_VALUE; r->id = ROWID_SAVED; r->label = "saved";
+        snprintf(r->value, sizeof(r->value), "%d of %d   %s:%u",
+                 g_server_at + 1, g_server_count,
+                 g_servers[g_server_at].host,
+                 (unsigned)g_servers[g_server_at].port);
+    }
+
     r = &g_rows[g_row_count++];
-    r->kind = ROW_ACTION; r->label = "connect"; r->value[0] = '\0';
+    r->kind = ROW_ACTION; r->id = ROWID_CONNECT;
+    r->label = "connect"; r->value[0] = '\0';
 
     if (g_selected >= g_row_count)
         g_selected = g_row_count - 1;
@@ -419,17 +511,40 @@ static void size_label(const StreamInfo *info, char *out, size_t outlen)
 /* BS_AUDIO_BOTH until somebody says otherwise. */
 static int g_audio_source = 0;
 
+/* The ladder the web and Android clients offer, in the same words. */
+static const struct { const char *label; int bitrate; } QUALITY[] = {
+    { "automatic",        0 },
+    { "low  ~400 kbit/s", 400000 },
+    { "medium  ~1 Mbit/s", 1000000 },
+    { "high  ~2.5 Mbit/s", 2500000 },
+    { "maximum  ~6 Mbit/s", 6000000 },
+};
+static int g_quality = 0;
+
+static RowId selected_id(void)
+{
+    if (g_selected < 0 || g_selected >= g_row_count)
+        return ROWID_NONE;
+    return g_rows[g_selected].id;
+}
+
 static void build_play_rows(const StreamInfo *info)
 {
     g_row_count = 0;
     MenuRow *r;
 
     r = &g_rows[g_row_count++];
-    r->kind = ROW_VALUE; r->label = "size received";
+    r->kind = ROW_VALUE; r->id = ROWID_SIZE; r->label = "size received";
     size_label(info, r->value, sizeof(r->value));
 
+    /* The same ladder the other two clients offer, so the same words
+     * mean the same thing wherever you are holding it. */
     r = &g_rows[g_row_count++];
-    r->kind = ROW_VALUE; r->label = "volume";
+    r->kind = ROW_VALUE; r->id = ROWID_QUALITY; r->label = "quality";
+    snprintf(r->value, sizeof(r->value), "%s", QUALITY[g_quality].label);
+
+    r = &g_rows[g_row_count++];
+    r->kind = ROW_VALUE; r->id = ROWID_VOLUME; r->label = "volume";
     snprintf(r->value, sizeof(r->value), "%d%%%s", g_volume,
              g_muted ? "   muted" : "");
 
@@ -439,15 +554,22 @@ static void build_play_rows(const StreamInfo *info)
         static const char *const names[3] = { "both, summed", "television",
                                               "GamePad" };
         r = &g_rows[g_row_count++];
-        r->kind = ROW_VALUE; r->label = "sound from";
+        r->kind = ROW_VALUE; r->id = ROWID_AUDIO_SOURCE; r->label = "sound from";
         snprintf(r->value, sizeof(r->value), "%s", names[g_audio_source]);
+
+        /* A Wii U GamePad has a HOME button and a Switch has none to
+         * spare, so it lives here rather than being unreachable. */
+        r = &g_rows[g_row_count++];
+        r->kind = ROW_ACTION; r->id = ROWID_HOME;
+        r->label = "press HOME"; r->value[0] = '\0';
     }
 
     r = &g_rows[g_row_count++];
-    r->kind = ROW_ACTION; r->label = "disconnect"; r->value[0] = '\0';
+    r->kind = ROW_ACTION; r->id = ROWID_DISCONNECT;
+    r->label = "disconnect"; r->value[0] = '\0';
 
     r = &g_rows[g_row_count++];
-    r->kind = ROW_INFO; r->label = "decoder";
+    r->kind = ROW_INFO; r->id = ROWID_DECODER; r->label = "decoder";
     snprintf(r->value, sizeof(r->value), "%s", stream_decoder_name());
 
     if (g_selected >= g_row_count)
@@ -464,7 +586,8 @@ static void adjust_row(const StreamInfo *info, int delta)
     int nw = 0, nh = 0;
     native_size(info->console, &nw, &nh);
 
-    if (g_selected == 0) {
+    switch (selected_id()) {
+    case ROWID_SIZE: {
         /* The order is: half (Wii U only), native, 2x, 3x..., then
          * whatever is rendered. */
         int steps[8], n = 0;
@@ -482,16 +605,30 @@ static void adjust_row(const StreamInfo *info, int delta)
         if (g_receive_scale == 0)      stream_send_size(0, 0);
         else if (g_receive_scale == -2) stream_send_size(nw / 2, nh / 2);
         else stream_send_size(nw * g_receive_scale, nh * g_receive_scale);
-    } else if (g_selected == 1) {
+        break;
+    }
+    case ROWID_QUALITY: {
+        const int n = (int)(sizeof(QUALITY) / sizeof(QUALITY[0]));
+        g_quality += delta;
+        if (g_quality < 0) g_quality = 0;
+        if (g_quality >= n) g_quality = n - 1;
+        stream_send_quality(QUALITY[g_quality].bitrate);
+        break;
+    }
+    case ROWID_VOLUME:
         g_volume += delta * 10;
         if (g_volume < 0) g_volume = 0;
         if (g_volume > 100) g_volume = 100;
         g_muted = (g_volume == 0);
-    } else if (g_selected == 2 && info->console == BS_CONSOLE_WIIU) {
+        break;
+    case ROWID_AUDIO_SOURCE:
         g_audio_source += delta;
         if (g_audio_source < 0) g_audio_source = 0;
         if (g_audio_source > 2) g_audio_source = 2;
         stream_send_audio_source(g_audio_source);
+        break;
+    default:
+        break;
     }
 }
 
@@ -503,7 +640,7 @@ static void draw_menu(void)
     draw_text(g_font, "Bottom Screen", 90, 60, COL_TEXT);
     draw_rows(150);
 
-    draw_text(g_small, "\u2191\u2193  choose      A  use      +  quit",
+    draw_text(g_small, "\u2191\u2193  choose   \u2190\u2192  change   A  use   +  quit",
               90, 150 + g_row_count * 66 + 24, COL_DIM);
     if (g_message[0])
         draw_text(g_small, g_message, 90, 150 + g_row_count * 66 + 70,
@@ -657,14 +794,28 @@ int main(int argc, char **argv)
             if (down & HidNpadButton_Up)
                 g_selected = (g_selected + g_row_count - 1) % g_row_count;
 
+            /* Left and right walk the saved list, and choosing one fills
+             * the address and port above rather than making you retype
+             * them on a console keyboard. */
+            if (selected_id() == ROWID_SAVED && g_server_count > 0 &&
+                (down & (HidNpadButton_Left | HidNpadButton_Right))) {
+                g_server_at += (down & HidNpadButton_Right) ? 1 : -1;
+                if (g_server_at < 0) g_server_at = g_server_count - 1;
+                if (g_server_at >= g_server_count) g_server_at = 0;
+                snprintf(g_host, sizeof(g_host), "%s", g_servers[g_server_at].host);
+                g_port = g_servers[g_server_at].port;
+            }
+
             if (down & HidNpadButton_A) {
                 char typed[64];
-                if (g_selected == 0) {
+                switch (selected_id()) {
+                case ROWID_ADDRESS:
                     if (ask_text("Server address", g_host, typed, sizeof(typed))) {
                         snprintf(g_host, sizeof(g_host), "%s", typed);
                         save_server();
                     }
-                } else if (g_selected == 1) {
+                    break;
+                case ROWID_PORT: {
                     char current[16];
                     snprintf(current, sizeof(current), "%u", (unsigned)g_port);
                     if (ask_text("Port", current, typed, sizeof(typed))) {
@@ -674,8 +825,11 @@ int main(int argc, char **argv)
                             save_server();
                         }
                     }
-                } else {
+                    break;
+                }
+                default:
                     try_connect();
+                    break;
                 }
             }
             draw_menu();
@@ -704,10 +858,19 @@ int main(int argc, char **argv)
             if (down & (HidNpadButton_Left | HidNpadButton_Right))
                 adjust_row(&info, (down & HidNpadButton_Right) ? 1 : -1);
             if (down & HidNpadButton_A) {
-                if (g_selected == 2) {          /* disconnect */
+                switch (selected_id()) {
+                case ROWID_DISCONNECT:
                     stream_disconnect();
                     g_menu_open = 0;
                     snprintf(g_message, sizeof(g_message), "%s", "");
+                    break;
+                case ROWID_HOME:
+                    /* Down and up together: there is nothing to hold. */
+                    stream_send_button(BS_BTN_HOME, 1);
+                    stream_send_button(BS_BTN_HOME, 0);
+                    break;
+                default:
+                    break;
                 }
             }
             draw_playing(&info, &picture_rect);

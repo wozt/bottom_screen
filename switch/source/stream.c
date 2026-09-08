@@ -374,6 +374,18 @@ void stream_send_audio_source(int source)
     bs_send_msg(g_conn, BS_MSG_SET_AUDIO_SOURCE, &ac, sizeof(ac), NULL, 0);
 }
 
+/* The bitrate to re-encode at; zero lets the server derive one. Shared
+ * between clients, like the size. */
+void stream_send_quality(int bitrate)
+{
+    if (!g_conn)
+        return;
+    BsQuality q;
+    memset(&q, 0, sizeof(q));
+    q.bitrate = (uint32_t)bitrate;
+    bs_send_msg(g_conn, BS_MSG_SET_QUALITY, &q, sizeof(q), NULL, 0);
+}
+
 void stream_request_keyframe(void)
 {
     if (g_conn && g_connected)

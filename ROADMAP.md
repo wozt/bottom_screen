@@ -477,8 +477,23 @@ and silently discards writes to the SD card, which is the only way to
 leave a trace on a console you do not have. **This needs real
 hardware**, and everything under it is waiting on the same thing.
 
+Brought level with the other two on 2026-09-08, by reading them side by
+side rather than by testing, which is not possible here: quality, the
+saved server list, the Wii U's HOME button and its choice of audio
+output, and a deadzone on the sticks that was missing entirely — a
+Joy-Con does not rest at zero, so every stick was drifting. All three
+clients now send the same set of messages.
+
+A bug found while doing it, and mine: the menu acted on row *positions*
+(`g_selected == 2` was disconnect), and the Wii U audio row added
+earlier that day shifted everything below it — so choosing the sound
+output disconnected instead. Rows carry an identity now, on both
+screens, because rows are added per console and their positions are not
+something to hard-code.
+
 - [ ] Run it on a real Switch and find out where the loop stops
 - [ ] Then confirm, in order: picture, touch, Joy-Cons, sound
+- [ ] And the parity above, none of which has ever run
 
 Starting point: `switch_homebrew/` and `switch_stream.c` from
 capture2cloud.
