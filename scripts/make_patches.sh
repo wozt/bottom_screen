@@ -61,5 +61,10 @@ for pair in $emulators; do
     printf '%s: %s\n' "$name" "$(git -C "$repo" diff --shortstat "$base" HEAD)"
 done
 
+# The recipes are the same changes described by what they are rather
+# than where they sit, and they are generated here so the two cannot
+# disagree: nobody edits either by hand.
+python3 "$DIR/tools/bs_patch.py" --generate
+
 echo
 echo "written to $OUT"

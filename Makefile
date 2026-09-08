@@ -75,6 +75,8 @@ test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_fli
 	./tests/input_merge
 	./tests/resize_flip
 	./tests/run_patches_fresh.sh
+	./tests/run_recipes.sh
+	./tests/run_recipe_drift.sh
 
 clean:
 	rm -f $(BINARIES) tests/smoke_client tests/input_merge tests/resize_flip web_page.h

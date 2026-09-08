@@ -147,28 +147,35 @@ bridge on by itself. Without it, the fork builds exactly like upstream.
 Then start an emulator: it announces where it is listening.
 
 <details>
-<summary>Or apply the patch, and why it will not last</summary>
+<summary>Or carry the changes into a checkout of your own</summary>
 
 <br>
 
 ```sh
-git -C melonDS apply patches/melonDS.patch
+git -C melonDS apply patches/melonDS.patch        # a plain diff
+python3 tools/bs_patch.py melonDS ../melonDS      # or anchored
 ```
 
-Each patch names, in its header, the exact upstream commit it was made
-against, and it hooks into specific places in specific files. When an
-emulator moves on, a hunk that no longer matches is refused and `git
-apply` says so. That is the good case. The worse one is a hunk that
-still applies to code which has changed meaning around it.
+A diff says "at line 175, between these three lines", which stops being
+true the moment anybody edits above it — and `git apply` then refuses
+everything, saying only that it does not apply.
 
-So the patches are a snapshot, not a supported upgrade path. If an
-emulator has moved and the patch will not go on, take the fork instead,
-or rebase its `bottom-screen` branch onto the new upstream — a branch is
-what survives an upstream that keeps moving, which is why both exist.
+The second describes the same edits by what they are: find this text,
+inside this function, put that in its place. An unrelated change above a
+hook costs nothing, upstream reindenting is coped with and said out
+loud, and a hook whose function has been renamed is refused with the
+name it was looking for. Each edit is judged on its own, so one failing
+does not stop the rest.
 
-The patches here are regenerated from the forks, never edited, and a
-test fails if they fall behind. That keeps them honest about the forks;
-it says nothing about upstream.
+Both are generated from the forks, never edited, and two tests keep them
+honest: one applies each recipe to an untouched upstream and compares
+every file against the fork, the other breaks a hook on purpose to check
+that the right thing is refused. See
+[patches/README.md](patches/README.md).
+
+Neither is an upgrade path. When a recipe refuses, the fork is the
+answer — a branch survives an upstream that keeps moving, which is why
+all three exist.
 
 </details>
 
