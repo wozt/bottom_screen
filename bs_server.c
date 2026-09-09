@@ -1005,6 +1005,7 @@ static int encoder_rebuild(BsStream *st, int bitrate)
         .gop        = srv->cfg.gop,
         .pixfmt     = st->info.pixfmt,
         .encoder    = srv->cfg.encoder,
+        .device     = srv->cfg.device,
     };
 
     char err[128] = "";
@@ -1378,6 +1379,31 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
         srv->cfg = *cfg;
     }
 
+    /*
+     * The encoder, from the environment when the caller did not say.
+     *
+     * The three emulators build their own config and none of them offers
+     * a field for this, so without it choosing a hardware encoder would
+     * mean editing three programs. One variable covers all of them, and
+     * a person who wants the card can set it once:
+     *
+     *     BOTTOM_SCREEN_ENCODER=auto
+     *     BOTTOM_SCREEN_DEVICE=/dev/dri/renderD128
+     *
+     * The caller wins where it did say, because a program that asked for
+     * something specific meant it.
+     */
+    if (!srv->cfg.encoder) {
+        const char *e = getenv("BOTTOM_SCREEN_ENCODER");
+        if (e && *e)
+            srv->cfg.encoder = e;
+    }
+    if (!srv->cfg.device) {
+        const char *d = getenv("BOTTOM_SCREEN_DEVICE");
+        if (d && *d)
+            srv->cfg.device = d;
+    }
+
     for (int i = 0; i < BS_SCREEN_COUNT; i++) {
         srv->video[i].srv   = srv;
         srv->video[i].which = i;
@@ -1408,6 +1434,7 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
         .gop     = srv->cfg.gop,
         .pixfmt  = bot->info.pixfmt,
         .encoder = srv->cfg.encoder,
+        .device  = srv->cfg.device,
     };
     bot->enc = bs_encoder_create(&ecfg, err, errlen);
     if (!bot->enc)

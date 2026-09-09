@@ -39,6 +39,8 @@ static void usage(void)
 "  --fps N                 frames per second (default 60)\n"
 "  --bitrate N             bits/s; 0 derives one from the resolution\n"
 "  --encoder NAME          libx264 (default), h264_vaapi, h264_nvenc\n"
+"  --device PATH           which card, for a hardware encoder\n"
+"                          (VAAPI: /dev/dri/renderD128)\n"
 "  --no-top                do not offer the machine's other screen\n"
 "  --prompt                ask the clients a question, then a choice\n"
 "  --help\n"
@@ -71,6 +73,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--fps") && next)     { fps = atoi(next); i++; }
         else if (!strcmp(a, "--bitrate") && next) { cfg.bitrate = atoi(next); i++; }
         else if (!strcmp(a, "--encoder") && next) { cfg.encoder = next; i++; }
+        else if (!strcmp(a, "--device") && next)  { cfg.device = next; i++; }
         else if (!strcmp(a, "--no-top"))          { offer_top = 0; }
         else if (!strcmp(a, "--prompt"))          { demo_prompt = 1; }
         else { fprintf(stderr, "unknown argument: %s\n", a); usage(); return 1; }

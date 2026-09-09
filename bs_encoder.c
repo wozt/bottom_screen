@@ -9,6 +9,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/hwcontext.h>
 #include <libswscale/swscale.h>
 
 struct BsEncoder {
@@ -22,7 +23,53 @@ struct BsEncoder {
     int64_t pts;
     int   force_keyframe;
     char  name[64];
+
+    /*
+     * The hardware path, when one was asked for and worked.
+     *
+     * A GPU encoder does not take a picture out of ordinary memory: it
+     * wants one in its own, so `frame` becomes a handle to something on
+     * the card and `sw_frame` is the staging copy that gets uploaded to
+     * it. Both null on the software path, which is every path this had
+     * before.
+     */
+    AVBufferRef *hw_device;
+    AVBufferRef *hw_frames;
+    AVFrame     *sw_frame;
 };
+
+/*
+ * The pixel format a GPU encoder wants to be handed.
+ *
+ * NV12 for all of them: it is what every hardware block on the desk
+ * takes, and asking for YUV420P means the driver converts it again on
+ * the way in.
+ */
+static int is_hardware_encoder(const char *name)
+{
+    return strstr(name, "_vaapi") || strstr(name, "_nvenc") ||
+           strstr(name, "_qsv")   || strstr(name, "_vulkan");
+}
+
+static enum AVHWDeviceType hw_type_for(const char *name)
+{
+    if (strstr(name, "_vaapi"))  return AV_HWDEVICE_TYPE_VAAPI;
+    if (strstr(name, "_nvenc"))  return AV_HWDEVICE_TYPE_CUDA;
+    if (strstr(name, "_qsv"))    return AV_HWDEVICE_TYPE_QSV;
+    if (strstr(name, "_vulkan")) return AV_HWDEVICE_TYPE_VULKAN;
+    return AV_HWDEVICE_TYPE_NONE;
+}
+
+static enum AVPixelFormat hw_pixfmt_for(enum AVHWDeviceType t)
+{
+    switch (t) {
+    case AV_HWDEVICE_TYPE_VAAPI:  return AV_PIX_FMT_VAAPI;
+    case AV_HWDEVICE_TYPE_CUDA:   return AV_PIX_FMT_CUDA;
+    case AV_HWDEVICE_TYPE_QSV:    return AV_PIX_FMT_QSV;
+    case AV_HWDEVICE_TYPE_VULKAN: return AV_PIX_FMT_VULKAN;
+    default: return AV_PIX_FMT_NONE;
+    }
+}
 
 static enum AVPixelFormat to_av_pixfmt(BsPixFmt f)
 {
@@ -72,7 +119,41 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
         return NULL;
     }
 
+    /*
+     * "auto" means: the card if it has an encoder, this CPU if not.
+     *
+     * Worth asking for rather than assuming, because the answer is not
+     * always yes -- a machine can have a GPU with no encoder, or a
+     * driver that reports one and then refuses every frame. So the list
+     * is tried in order and the first that actually opens wins, with
+     * libx264 at the end because it always works.
+     *
+     * Not the default. Silently moving everybody onto a different
+     * encoder would change what every stream looks like on a machine
+     * nobody has tested, and the failure would be a picture rather than
+     * a message.
+     */
+    static const char *const AUTO[] = {
+        "h264_vaapi",   /* AMD and Intel on Linux */
+        "h264_nvenc",   /* NVIDIA */
+        "h264_qsv",     /* Intel, where VAAPI is not set up */
+        "libx264",      /* always */
+    };
+
     const char *want = cfg->encoder ? cfg->encoder : "libx264";
+    if (!strcmp(want, "auto")) {
+        for (size_t i = 0; i < sizeof(AUTO) / sizeof(AUTO[0]); i++) {
+            BsEncoderConfig probe = *cfg;
+            probe.encoder = AUTO[i];
+            char ignored[128] = "";
+            BsEncoder *e = bs_encoder_create(&probe, ignored, sizeof(ignored));
+            if (e)
+                return e;
+        }
+        set_err(err, errlen, "no encoder would open, not even libx264");
+        return NULL;
+    }
+
     const AVCodec *codec = avcodec_find_encoder_by_name(want);
     if (!codec) {
         set_err(err, errlen, "encoder '%s' not available in this ffmpeg build", want);
@@ -124,9 +205,13 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
         goto fail;
     }
 
+    const int hardware = is_hardware_encoder(codec->name);
+    const enum AVHWDeviceType hw_type = hardware ? hw_type_for(codec->name)
+                                                 : AV_HWDEVICE_TYPE_NONE;
+
     enc->ctx->width     = enc->out_width;
     enc->ctx->height    = enc->out_height;
-    enc->ctx->pix_fmt   = AV_PIX_FMT_YUV420P;
+    enc->ctx->pix_fmt   = hardware ? hw_pixfmt_for(hw_type) : AV_PIX_FMT_YUV420P;
     enc->ctx->time_base = (AVRational){1, cfg->fps};
     enc->ctx->framerate = (AVRational){cfg->fps, 1};
     enc->ctx->gop_size  = cfg->gop > 0 ? cfg->gop : cfg->fps;
@@ -164,6 +249,53 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
         av_opt_set(enc->ctx->priv_data, "tune", "zerolatency", 0);
     }
 
+    if (hardware) {
+        /*
+         * A GPU encoder needs somewhere on the card to put pictures, and
+         * it will not take one out of ordinary memory. So: a device, a
+         * pool of frames on it, and the context told about the pool.
+         *
+         * cfg->device names which card, because a machine can have more
+         * than one and only one of them may have an encoder. NULL takes
+         * whatever the driver offers first, which is right on the
+         * ordinary machine with one GPU.
+         */
+        if (av_hwdevice_ctx_create(&enc->hw_device, hw_type,
+                                   cfg->device, NULL, 0) < 0) {
+            set_err(err, errlen, "no %s device (tried '%s')",
+                    av_hwdevice_get_type_name(hw_type),
+                    cfg->device ? cfg->device : "the default");
+            goto fail;
+        }
+
+        enc->hw_frames = av_hwframe_ctx_alloc(enc->hw_device);
+        if (!enc->hw_frames) {
+            set_err(err, errlen, "cannot allocate a frame pool on the device");
+            goto fail;
+        }
+        AVHWFramesContext *fr = (AVHWFramesContext *)enc->hw_frames->data;
+        fr->format    = enc->ctx->pix_fmt;
+        /* NV12 rather than YUV420P: it is what every block on a desk
+         * takes, and asking for the other means the driver converts it
+         * again on the way in. */
+        fr->sw_format = AV_PIX_FMT_NV12;
+        fr->width     = enc->out_width;
+        fr->height    = enc->out_height;
+        /* Enough that an upload never waits on the encoder having
+         * finished with the last one, and few enough to be nothing at
+         * these sizes. */
+        fr->initial_pool_size = 8;
+        if (av_hwframe_ctx_init(enc->hw_frames) < 0) {
+            set_err(err, errlen, "cannot initialise the frame pool");
+            goto fail;
+        }
+        enc->ctx->hw_frames_ctx = av_buffer_ref(enc->hw_frames);
+        if (!enc->ctx->hw_frames_ctx) {
+            set_err(err, errlen, "out of memory");
+            goto fail;
+        }
+    }
+
     if (avcodec_open2(enc->ctx, codec, NULL) < 0) {
         set_err(err, errlen, "avcodec_open2 failed for '%s'", codec->name);
         goto fail;
@@ -175,12 +307,37 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
         set_err(err, errlen, "frame/packet allocation failed");
         goto fail;
     }
-    enc->frame->format = enc->ctx->pix_fmt;
-    enc->frame->width  = enc->ctx->width;
-    enc->frame->height = enc->ctx->height;
-    if (av_frame_get_buffer(enc->frame, 0) < 0) {
-        set_err(err, errlen, "av_frame_get_buffer failed");
-        goto fail;
+    if (hardware) {
+        /*
+         * Two frames on this path. `sw_frame` is where the conversion
+         * lands, in ordinary memory; `frame` is a handle to a picture on
+         * the card that it is uploaded into. The upload is the only
+         * copy the hardware path adds, and it buys the whole encode.
+         */
+        enc->sw_frame = av_frame_alloc();
+        if (!enc->sw_frame) {
+            set_err(err, errlen, "frame allocation failed");
+            goto fail;
+        }
+        enc->sw_frame->format = AV_PIX_FMT_NV12;
+        enc->sw_frame->width  = enc->out_width;
+        enc->sw_frame->height = enc->out_height;
+        if (av_frame_get_buffer(enc->sw_frame, 0) < 0) {
+            set_err(err, errlen, "av_frame_get_buffer failed");
+            goto fail;
+        }
+        if (av_hwframe_get_buffer(enc->hw_frames, enc->frame, 0) < 0) {
+            set_err(err, errlen, "cannot take a frame from the device pool");
+            goto fail;
+        }
+    } else {
+        enc->frame->format = enc->ctx->pix_fmt;
+        enc->frame->width  = enc->ctx->width;
+        enc->frame->height = enc->ctx->height;
+        if (av_frame_get_buffer(enc->frame, 0) < 0) {
+            set_err(err, errlen, "av_frame_get_buffer failed");
+            goto fail;
+        }
     }
 
     /*
@@ -193,7 +350,8 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
     const int shrinking = (enc->out_width != cfg->width ||
                            enc->out_height != cfg->height);
     enc->sws = sws_getContext(cfg->width, cfg->height, src_fmt,
-                              enc->out_width, enc->out_height, AV_PIX_FMT_YUV420P,
+                              enc->out_width, enc->out_height,
+                              hardware ? AV_PIX_FMT_NV12 : AV_PIX_FMT_YUV420P,
                               shrinking ? SWS_BILINEAR : SWS_POINT,
                               NULL, NULL, NULL);
     if (!enc->sws) {
@@ -223,10 +381,16 @@ void bs_encoder_destroy(BsEncoder *enc)
 {
     if (!enc)
         return;
-    if (enc->sws)   sws_freeContext(enc->sws);
-    if (enc->pkt)   av_packet_free(&enc->pkt);
-    if (enc->frame) av_frame_free(&enc->frame);
-    if (enc->ctx)   avcodec_free_context(&enc->ctx);
+    if (enc->sws)      sws_freeContext(enc->sws);
+    if (enc->pkt)      av_packet_free(&enc->pkt);
+    if (enc->frame)    av_frame_free(&enc->frame);
+    if (enc->sw_frame) av_frame_free(&enc->sw_frame);
+    /* The context first: it holds a reference to the pool, and the pool
+     * holds one to the device. Freeing them the other way round leaves
+     * the encoder pointing at memory that has gone. */
+    if (enc->ctx)      avcodec_free_context(&enc->ctx);
+    if (enc->hw_frames) av_buffer_unref(&enc->hw_frames);
+    if (enc->hw_device) av_buffer_unref(&enc->hw_device);
     free(enc);
 }
 
@@ -236,14 +400,27 @@ int bs_encoder_encode(BsEncoder *enc, const uint8_t *src, int src_stride,
     if (!enc || !src)
         return -1;
 
-    if (av_frame_make_writable(enc->frame) < 0)
+    /* The picture the conversion writes into: ordinary memory either
+     * way, and on the hardware path a staging copy on its way to the
+     * card rather than the thing the encoder is handed. */
+    AVFrame *dst = enc->sw_frame ? enc->sw_frame : enc->frame;
+
+    if (av_frame_make_writable(dst) < 0)
         return -1;
 
     const uint8_t *src_planes[4] = { src, NULL, NULL, NULL };
     int src_strides[4] = { src_stride, 0, 0, 0 };
 
     sws_scale(enc->sws, src_planes, src_strides, 0, enc->height,
-              enc->frame->data, enc->frame->linesize);
+              dst->data, dst->linesize);
+
+    if (enc->sw_frame) {
+        /* Onto the card. The handle keeps its own pool buffer, so this
+         * writes into the frame the encoder already holds rather than
+         * taking a new one every picture. */
+        if (av_hwframe_transfer_data(enc->frame, enc->sw_frame, 0) < 0)
+            return -1;
+    }
 
     enc->frame->pts = enc->pts++;
     if (enc->force_keyframe) {

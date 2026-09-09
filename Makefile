@@ -97,6 +97,7 @@ test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_fli
 	./tests/run_top_screen.sh
 	./tests/run_web_files.sh
 	./tests/run_prompt.sh
+	./tests/run_hardware_encoder.sh
 	./tests/run_switch_client.sh
 	./tests/input_merge
 	./tests/resize_flip

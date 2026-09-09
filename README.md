@@ -34,6 +34,13 @@ own; this adds a bridge to one you already have.
   plays it: muting the PC does not silence the phone, and a PC with no
   output device configured still streams.
 - **Any renderer** — software, OpenGL, OpenGL compute, Vulkan.
+- **The card's own encoder**, where there is one. `--encoder auto` takes
+  it and falls back to the CPU when there is not; `BOTTOM_SCREEN_ENCODER`
+  says the same thing to all three emulators at once, none of which
+  offers a field for it. Measured on a Radeon RX 6600 against libx264:
+  185% of a core down to 128% at 1080p, 232% down to 134% at 1440p. At a
+  DS's own size it buys nothing, which is the honest half of the
+  number.
 - **Internal resolution followed live**, up to 1440 tall. Turn the
   emulator up and the stream grows with it, without dropping the
   clients watching.

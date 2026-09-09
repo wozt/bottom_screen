@@ -43,7 +43,20 @@ typedef struct {
     int bitrate;        /* bits/s; 0 picks a default from the resolution */
     int gop;            /* keyframe interval in frames; 0 = fps (one per second) */
     BsPixFmt pixfmt;
-    const char *encoder; /* NULL = libx264. "h264_vaapi", "h264_nvenc" to try hardware */
+    const char *encoder;
+
+    /*
+     * Which card, for a hardware encoder. NULL takes whatever the
+     * driver offers first, which is the right answer on a machine with
+     * one GPU and the wrong one on a machine with two -- only one of
+     * them may have an encoder, and there is no way to tell from here
+     * which the driver will pick.
+     *
+     * A VAAPI render node ("/dev/dri/renderD128"), a CUDA index, or
+     * whatever the chosen backend names its devices. Ignored by a
+     * software encoder.
+     */
+    const char *device; /* NULL = libx264. "h264_vaapi", "h264_nvenc" to try hardware */
 } BsEncoderConfig;
 
 /* Called once per encoded packet, from inside bs_encoder_encode. */

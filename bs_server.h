@@ -31,6 +31,10 @@ typedef struct {
     int         bitrate;    /* 0 = derived from the resolution */
     int         gop;        /* 0 = one keyframe per second */
     const char *encoder;    /* NULL = libx264 */
+    /* Which card a hardware encoder should use. NULL takes whatever the
+     * driver offers first, which is right with one GPU and a guess with
+     * two -- only one of them may have an encoder. */
+    const char *device;
     int         quiet;      /* 1 = no progress on stdout */
 
     /* How many clients may watch at once. 0 = 4. They share one

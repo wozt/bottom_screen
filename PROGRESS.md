@@ -113,6 +113,22 @@ itself for the two cases where waiting is half a second of green:
 somebody joining a stream that is already running, and somebody moving
 between the screens. Measured: 494ms before, 27ms after.
 
+**The card's encoder is asked for, never assumed.** A hardware encoder
+is worth having at 1080p and above -- 185% of a core down to 128%,
+232% down to 134% on a Radeon RX 6600 -- and worth nothing at a DS's own
+size, where the drawing and the colour conversion cost more than the
+encode. `auto` tries VAAPI, NVENC and QSV in turn and ends at libx264,
+which always works. It is not the default: silently moving everybody
+onto a different encoder would change what every stream looks like on
+machines nobody has tested, and the failure would be a picture rather
+than a message.
+
+The bet it rests on is that a hardware encoder repeats SPS/PPS in front
+of every keyframe, the way x264 does when asked. That is the driver's
+promise rather than ours, so `run_hardware_encoder.sh` measures it: a
+client that joins late, having missed the opening keyframe, must still
+decode.
+
 **Native resolutions, never stretched.** The server sends what the
 emulator renders; a client may enlarge it, but nothing is resampled on
 the way. Every size offered is a whole multiple of the screen's own,
@@ -186,7 +202,7 @@ every time it ran alone.
 
 ## Testing
 
-`make test` runs twelve, in a few minutes, with no console and no game:
+`make test` runs thirteen, in a few minutes, with no console and no game:
 
 | | What it holds down |
 |---|---|
@@ -196,6 +212,7 @@ every time it ran alone.
 | `run_top_screen.sh` | both screens at once, joining one already running, and the keyframe that saves half a second |
 | `run_web_files.sh` | every file the page asks for, parsed |
 | `run_prompt.sh` | the machine's question, answered, in both directions |
+| `run_hardware_encoder.sh` | the card's encoder, and a client joining late still decoding it |
 | `run_switch_client.sh` | the console client's own network half, run on a desktop |
 | `input_merge`, `resize_flip` | two clients' buttons merged; the picture changing shape under the encoder |
 | `run_patches_fresh.sh`, `run_recipes.sh`, `run_recipe_drift.sh` | the emulator changes still apply, and refuse honestly when they cannot |
