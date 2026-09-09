@@ -88,6 +88,27 @@ case "$(type_of)" in
 esac
 grep -q "#bar" "$OUT/body" || { echo "  /app.css is not the stylesheet"; fail=1; }
 
+# The hidden attribute has to actually hide.
+#
+# A browser hides it from its own stylesheet, which any author rule
+# beats -- so `label { display: flex }` undid `<label hidden>`, and
+# `#prompt { display: flex }` left the question box covering the whole
+# picture from the moment the page loaded, opaque, swallowing every
+# click, with nothing anywhere saying why. Every element that starts
+# hidden is one author rule away from the same fault, so the rule that
+# settles it is checked rather than trusted.
+if grep -qE '\[hidden\][^{]*\{[^}]*display: *none *!important' "$OUT/body"; then
+    echo "  the stylesheet makes hidden mean hidden"
+else
+    echo "  nothing in the stylesheet enforces the hidden attribute"
+    fail=1
+fi
+
+hidden_ids=$(grep -oE 'id="[a-zA-Z-]+"[^>]*hidden' "$OUT/index.html" |
+             grep -oE 'id="[a-zA-Z-]+"' | wc -l)
+echo "  $hidden_ids elements start hidden"
+[ "$hidden_ids" -ge 1 ] || { echo "  none do, so that rule protects nothing"; fail=1; }
+
 # --- and a path nobody defined -----------------------------------------
 #
 # The page, not an error: a browser asks for /favicon.ico on its own,

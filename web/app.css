@@ -1,4 +1,21 @@
 /*
+ * The hidden attribute, meant.
+ *
+ * A browser hides it with display:none from its own stylesheet, which
+ * any author rule beats -- so `label { display: flex }` quietly undid
+ * `<label hidden>`, and `#prompt { display: flex }` undid the whole
+ * question box. That last one covered the picture with an opaque
+ * full-screen panel from the moment the page loaded and swallowed every
+ * click behind it: no image, nothing clickable, and no message anywhere
+ * saying why.
+ *
+ * First rule in the file, and !important, because it has to beat
+ * everything after it. The rows for a Wii U's second audio output and
+ * for the sticks were showing on every console for the same reason.
+ */
+[hidden] { display: none !important; }
+
+/*
  * The same look as capture2cloud, deliberately: these are two halves of
  * the same habit, and a person moving between them should not have to
  * learn a second set of manners. Eleven-pixel monospace on near-black,
