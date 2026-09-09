@@ -45,7 +45,11 @@ setting — the ceiling is 1440 tall whatever is asked for:
 | melonDS at 4x | 1024x768 | 1024x768 |
 | Azahar at 3x | 960x720 | 1200x720 |
 | Azahar at 6x | 1920x1440 | 2400x1440 |
-| Cemu | 854x480 | 1920x1080 |
+| Cemu | 848x480 | 1920x1080 |
+
+A Wii U GamePad is 854 across and every size here is rounded to a whole
+number of macroblocks, so it is sent as 848. Every other native size is
+already a multiple of sixteen.
 
 The 3DS is the one console whose two screens are different shapes: 4:3
 below, 5:3 above. A DS has two of the same, a Wii U two of 16:9.
@@ -191,6 +195,15 @@ which any author rule beats.** `#prompt { display: flex }` left a
 full-screen opaque panel over the page from the moment it loaded,
 swallowing every click. `[hidden] { display: none !important; }` goes
 first in the file.
+
+**A stream can be correct and still look wrong.** A green stripe down
+the right of the picture in a browser: H.264 codes in blocks of sixteen,
+854 is 53.4 of them, so the picture is coded at 864 and the padding is
+marked to be ignored. ffmpeg honours that and every test here passed;
+the browser handed the padding over, and padding nobody wrote is chroma
+at zero, which is green. Reading the parameter sets settled it in one
+step after two rounds of guessing. The fix is to leave nothing to
+honour: resize to a whole number of blocks, so 854 becomes 848.
 
 **The page is compiled into each emulator.** Fixing it and rebuilding
 the standalone server fixes nothing for anybody using an emulator, which
