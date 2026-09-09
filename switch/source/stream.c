@@ -27,6 +27,20 @@ static volatile int g_screens = 1 << BS_SCREEN_BOTTOM;
 /* How many clients are on each screen, as the server last said. */
 static volatile int g_watching[BS_SCREEN_COUNT];
 
+/*
+ * The question the machine is waiting on, if any.
+ *
+ * A 3DS or a Wii U stops and asks for a name, a message or a Mii. The
+ * emulator would answer that with a dialog on the desktop it is running
+ * on, which from here is somewhere nobody can see while the game waits.
+ * The reader thread stores it; the main loop notices and asks.
+ */
+static pthread_mutex_t g_prompt_lock = PTHREAD_MUTEX_INITIALIZER;
+static BsPrompt   g_prompt;
+static char       g_prompt_body[BS_PROMPT_MAX];
+static size_t     g_prompt_body_len;
+static volatile int g_prompt_pending;
+
 static StreamInfo g_info;
 static pthread_mutex_t g_info_lock = PTHREAD_MUTEX_INITIALIZER;
 
@@ -251,6 +265,17 @@ static void *reader(void *arg)
              * leaves or moves between the two. */
             g_watching[BS_SCREEN_BOTTOM] = sc.watching_bottom;
             g_watching[BS_SCREEN_TOP] = sc.watching_top;
+        } else if (type == BS_MSG_PROMPT && n >= sizeof(BsPrompt)) {
+            pthread_mutex_lock(&g_prompt_lock);
+            memcpy(&g_prompt, buf, sizeof(g_prompt));
+            g_prompt_body_len = n - sizeof(BsPrompt);
+            if (g_prompt_body_len > sizeof(g_prompt_body))
+                g_prompt_body_len = sizeof(g_prompt_body);
+            memcpy(g_prompt_body, buf + sizeof(BsPrompt), g_prompt_body_len);
+            /* id 0 withdraws it: the game stopped waiting, so whatever
+             * is on screen for it should go. */
+            g_prompt_pending = (g_prompt.id != 0);
+            pthread_mutex_unlock(&g_prompt_lock);
         } else if (type == BS_MSG_PING) {
             bs_send_msg(g_conn, BS_MSG_PONG, NULL, 0, NULL, 0);
         }
@@ -455,6 +480,50 @@ int stream_watching(int screen)
     if (screen < 0 || screen >= BS_SCREEN_COUNT)
         return 0;
     return g_watching[screen];
+}
+
+/*
+ * The question waiting to be asked, copied out for the main loop.
+ *
+ * Returns its id, or 0 when there is nothing. The body is the title
+ * followed by one label per choice, all NUL-separated -- handed over
+ * whole rather than parsed here, because the caller is the one that
+ * knows whether it wants a keyboard or a list.
+ */
+uint16_t stream_take_prompt(BsPrompt *out, char *body, size_t bodylen)
+{
+    if (!g_prompt_pending)
+        return 0;
+    uint16_t id = 0;
+    pthread_mutex_lock(&g_prompt_lock);
+    if (g_prompt_pending) {
+        g_prompt_pending = 0;
+        *out = g_prompt;
+        size_t n = g_prompt_body_len;
+        if (n >= bodylen) n = bodylen - 1;
+        memcpy(body, g_prompt_body, n);
+        body[n] = '\0';
+        id = g_prompt.id;
+    }
+    pthread_mutex_unlock(&g_prompt_lock);
+    return id;
+}
+
+void stream_send_prompt_reply(uint16_t id, int cancelled, int choice,
+                              const char *text)
+{
+    if (!g_conn || !g_connected)
+        return;
+    uint8_t body[BS_PROMPT_MAX];
+    BsPromptReply rp;
+    memset(&rp, 0, sizeof(rp));
+    rp.id = id;
+    rp.cancelled = (uint8_t)(cancelled ? 1 : 0);
+    rp.choice = (uint8_t)choice;
+    size_t n = text ? strlen(text) : 0;
+    if (n > sizeof(body)) n = sizeof(body);
+    if (n) memcpy(body, text, n);
+    bs_send_msg(g_conn, BS_MSG_PROMPT_REPLY, &rp, sizeof(rp), body, n);
 }
 
 void stream_send_size(int width, int height)

@@ -371,25 +371,26 @@ function showBar() {
 }
 
 /*
- * Where the pointer has to be for the bar to come back.
+ * Where the pointer has to be for the bar to come back: one corner.
  *
- * Not anywhere: the bar sits over the top of the picture, and on a
- * screen you are drawing on with a stylus, a bar that reappears every
- * time the pen moves is a bar permanently in the way. So it is the top
- * tenth of the window, and only the black either side of the picture --
- * the picture itself is the touch area and belongs to the game.
+ * The bar sits over the top of the picture, and on a screen you are
+ * drawing on with a stylus a bar that reappears whenever the pen moves
+ * is a bar permanently in the way. The first attempt at this took the
+ * top tenth of the window wherever there was black beside the picture,
+ * which sounded narrow and was not -- with the on-screen buttons shown
+ * that black is a whole column, so the bar came back on almost any
+ * movement at all.
  *
- * The corner is the exception, and it exists for one case: a 16:9
- * picture filling a fullscreen window with the on-screen buttons turned
- * off leaves no black at all, which would leave no way back to the
- * menu. Eight pixels of corner is enough to find with a mouse and small
- * enough that nothing else will land there.
+ * Sixteen pixels of the top-left corner instead. Findable with a mouse,
+ * small enough that nothing else lands there, and the same answer in
+ * every mode -- including the one that has no black to aim at, which is
+ * a 16:9 picture filling a fullscreen window with the buttons turned
+ * off.
  */
+const BAR_CORNER = 16;
+
 function barZone(x, y) {
-  if (x < 8 && y < 8) return true;
-  if (y > innerHeight * 0.10) return false;
-  const r = canvas.getBoundingClientRect();
-  return x < r.left || x > r.right;
+  return x < BAR_CORNER && y < BAR_CORNER;
 }
 
 window.addEventListener("pointermove", (e) => {

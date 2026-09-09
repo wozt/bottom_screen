@@ -573,6 +573,53 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         }
     }
 
+    /*
+     * The machine asking for something a controller cannot give.
+     *
+     * A dialog rather than anything drawn into the picture, so the
+     * phone's own keyboard comes up for text -- which is the whole point
+     * of asking here instead of on whatever desktop the emulator is
+     * running on. Modal, because the game is stopped waiting for it and
+     * there is nothing else worth doing.
+     */
+    private var promptDialog: android.app.AlertDialog? = null
+
+    override fun onPrompt(id: Int, kind: Int, maxLen: Int, multiline: Boolean,
+                          title: String, choices: List<String>) = runOnUiThread {
+        promptDialog?.dismiss()
+        promptDialog = null
+        /* id 0 withdraws it: the game stopped waiting, so the box goes
+         * rather than being left for somebody to type into. */
+        if (id == 0) return@runOnUiThread
+
+        val b = android.app.AlertDialog.Builder(this).setTitle(title)
+        if (kind == BsProtocol.PROMPT_CHOICE && choices.isNotEmpty()) {
+            b.setItems(choices.toTypedArray()) { _, which ->
+                client?.sendPromptReply(id, false, which, choices[which])
+                promptDialog = null
+            }
+        } else {
+            val field = android.widget.EditText(this).apply {
+                if (maxLen > 0)
+                    filters = arrayOf(android.text.InputFilter.LengthFilter(maxLen))
+                setSingleLine(!multiline)
+            }
+            b.setView(field)
+            b.setPositiveButton("send") { _, _ ->
+                client?.sendPromptReply(id, false, 0, field.text.toString())
+                promptDialog = null
+            }
+        }
+        b.setNegativeButton("cancel") { _, _ ->
+            client?.sendPromptReply(id, true, 0, "")
+            promptDialog = null
+        }
+        /* Not dismissable by tapping outside: an answer the game never
+         * receives is a game that never restarts. */
+        b.setCancelable(false)
+        promptDialog = b.show()
+    }
+
     override fun onAudio(data: ByteArray, offset: Int, length: Int) {
         audio?.decode(data, offset, length)
     }
@@ -657,6 +704,7 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     }
 
     override fun onDisconnected(reason: String) {
+        runOnUiThread { promptDialog?.dismiss(); promptDialog = null }
         runOnUiThread {
             if (leavingOnPurpose) {
                 /* Already torn down by disconnectToForm, which left a

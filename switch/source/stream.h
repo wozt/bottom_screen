@@ -78,6 +78,15 @@ int  stream_screens(void);
  * count. Zero until it says otherwise. */
 int  stream_watching(int screen);
 
+/*
+ * The machine's own question, when it has one: a name, a message, a Mii.
+ * Returns its id and fills `body` with the title followed by one label
+ * per choice, NUL-separated, or returns 0 when nothing is being asked.
+ */
+uint16_t stream_take_prompt(BsPrompt *out, char *body, size_t bodylen);
+void stream_send_prompt_reply(uint16_t id, int cancelled, int choice,
+                              const char *text);
+
 /* Re-encode at this bitrate; zero lets the server choose. */
 void stream_send_quality(int bitrate);
 

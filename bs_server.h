@@ -87,6 +87,39 @@ void bs_server_offer_top(BsServer *srv);
  */
 int bs_server_wants_screen(const BsServer *srv, int screen);
 
+/*
+ * Asks whoever is watching a question the controller cannot answer.
+ *
+ * A 3DS or a Wii U stops and asks for a name, a message or a Mii, and
+ * an emulator answers that with a dialog on the desktop it happens to
+ * be running on. Streamed to a phone, that dialog is somewhere nobody
+ * can see and the game waits for ever.
+ *
+ * `kind` is BS_PROMPT_TEXT or BS_PROMPT_CHOICE. Returns an id to quote
+ * to the two calls below, or 0 when nobody is watching -- in which case
+ * the backend should do whatever it did before this existed, because
+ * there is nobody to ask.
+ *
+ * Never blocks. The backend polls, which suits every applet here: they
+ * are all asynchronous already, and blocking an emulator's thread on a
+ * person typing is how an emulator stops responding.
+ */
+uint16_t bs_server_prompt(BsServer *srv, int kind, const char *title,
+                          const char *const *choices, int n_choices,
+                          int max_len, int multiline);
+
+/*
+ * 1 when answered, 0 while still waiting, -1 when the person declined or
+ * the question was withdrawn. On 1, `text` holds the answer and
+ * `choice` the index picked.
+ */
+int bs_server_prompt_poll(BsServer *srv, uint16_t id,
+                          char *text, size_t textlen, int *choice);
+
+/* Withdraws a question the game has stopped waiting for, so it stops
+ * being a box somebody is still typing into. */
+void bs_server_prompt_cancel(BsServer *srv, uint16_t id);
+
 /* The port the server actually bound, which may not be the one asked
  * for. 0 before it starts. */
 uint16_t bs_server_port(const BsServer *srv);

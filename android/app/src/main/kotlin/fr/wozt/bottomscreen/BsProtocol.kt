@@ -70,6 +70,20 @@ object BsProtocol {
     const val SCREEN_BOTTOM = 0
     const val SCREEN_TOP = 1
 
+    /*
+     * The machine asking for something a controller cannot give.
+     *
+     * A 3DS or a Wii U stops and asks for a name, a message or a Mii.
+     * The emulator would answer that with a dialog on the desktop it is
+     * running on, which from here is somewhere nobody can see while the
+     * game waits for ever.
+     */
+    const val MSG_PROMPT = 25
+    const val MSG_PROMPT_REPLY = 26
+
+    const val PROMPT_TEXT = 1
+    const val PROMPT_CHOICE = 2
+
     /** Which of a Wii U's two outputs to hear. */
     const val AUDIO_BOTH = 0
     const val AUDIO_TV = 1
@@ -248,6 +262,25 @@ object BsProtocol {
         b.putInt(bitrate)
         b.putShort(fps.toShort())
         b.putShort(0)
+        return b.array()
+    }
+
+    /**
+     * Answers the machine's question. The id is quoted back so an answer
+     * to one the game has already withdrawn is recognised and dropped
+     * rather than delivered to whatever asked next.
+     */
+    fun promptReplyMessage(id: Int, cancelled: Boolean, choice: Int,
+                           text: String): ByteArray {
+        val body = text.toByteArray(Charsets.UTF_8)
+        val b = buffer(MSG_HEADER_SIZE + 4 + body.size)
+        b.put(MSG_PROMPT_REPLY.toByte())
+        b.put(0); b.put(0); b.put(0)
+        b.putInt(4 + body.size)
+        b.putShort(id.toShort())
+        b.put(if (cancelled) 1 else 0)
+        b.put(choice.toByte())
+        b.put(body)
         return b.array()
     }
 

@@ -1223,6 +1223,89 @@ static unsigned present_for(int console)
     return m;
 }
 
+/*
+ * The machine asking for something a controller cannot give.
+ *
+ * The console's own keyboard for text, which is the only sane way to
+ * type with a pad in your hands and the whole reason for asking here
+ * rather than on whatever desktop the emulator is running on. A list for
+ * a choice, drawn with the same rows as every other menu so nothing has
+ * to be learned twice.
+ *
+ * Both hold the main loop, which is right: the game is stopped waiting
+ * for the answer, so there is nothing else worth drawing.
+ */
+static void serve_prompt(void)
+{
+    BsPrompt p;
+    char body[BS_PROMPT_MAX];
+    const uint16_t id = stream_take_prompt(&p, body, sizeof(body));
+    if (id == 0)
+        return;
+
+    /* The title, then one label per choice, all NUL-separated. */
+    const char *parts[65];
+    int n = 0;
+    for (size_t at = 0; at < sizeof(body) && n < 65; ) {
+        parts[n++] = body + at;
+        at += strlen(body + at) + 1;
+        if (at >= sizeof(body) || body[at] == '\0')
+            break;
+    }
+    const char *title = n > 0 ? parts[0] : "";
+
+    if (p.kind == BS_PROMPT_CHOICE && p.choices > 0) {
+        const int count = (p.choices < n - 1) ? p.choices : n - 1;
+        if (count <= 0) {
+            stream_send_prompt_reply(id, 1, 0, "");
+            return;
+        }
+        int at = 0;
+        for (;;) {
+            PadState pad;
+            padInitializeDefault(&pad);
+            padUpdate(&pad);
+            const u64 down = padGetButtonsDown(&pad);
+            if (down & HidNpadButton_Down) at = (at + 1) % count;
+            if (down & HidNpadButton_Up)   at = (at + count - 1) % count;
+            if (down & HidNpadButton_A) {
+                stream_send_prompt_reply(id, 0, at, parts[1 + at]);
+                return;
+            }
+            if (down & HidNpadButton_B) {
+                stream_send_prompt_reply(id, 1, 0, "");
+                return;
+            }
+
+            SDL_SetRenderDrawColor(g_renderer, 8, 10, 16, 255);
+            SDL_RenderClear(g_renderer);
+            draw_text(g_font, title, 90, 60, COL_ACCENT);
+            for (int i = 0; i < count; i++) {
+                const int y = 150 + i * ROW_H;
+                if (y > SCREEN_H - 90)
+                    break;
+                fill(70, y, SCREEN_W - 140, ROW_H - 6,
+                     i == at ? COL_SELECTED : COL_ROW);
+                draw_text(g_small, parts[1 + i], 90, y + 8,
+                          i == at ? COL_TEXT : COL_DIM);
+            }
+            draw_text(g_small, "\u2191\u2193  choose   A  use   B  cancel",
+                      70, SCREEN_H - 44, COL_DIM);
+            SDL_RenderPresent(g_renderer);
+            SDL_Delay(16);
+        }
+    }
+
+    char answer[512] = "";
+    size_t len = sizeof(answer);
+    if (p.max_len > 0 && (size_t)p.max_len + 1 < len)
+        len = (size_t)p.max_len + 1;
+    if (ask_text(title, "", answer, len))
+        stream_send_prompt_reply(id, 0, 0, answer);
+    else
+        stream_send_prompt_reply(id, 1, 0, "");
+}
+
 static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
 {
     SDL_SetRenderDrawColor(g_renderer, 0, 0, 0, 255);
@@ -1436,6 +1519,11 @@ int main(int argc, char **argv)
 
         StreamInfo info;
         stream_info(&info);
+        /* The machine may be waiting on somebody rather than on a
+         * button. Answered before anything is drawn, because the
+         * game is stopped until it is. */
+        serve_prompt();
+
 
         /* What this screen has been seen to carry, which is what the
          * size ladder is measured against. Never shrinks while the

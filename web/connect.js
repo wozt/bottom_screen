@@ -102,6 +102,9 @@ function connect() {
        * memory of the moment this page connected. */
       watchingBottom = payload[1];
       watchingTop = payload[2];
+    } else if (type === MSG.PROMPT) {
+      /* The machine is asking for something the buttons cannot give. */
+      onPrompt(payload);
     } else if (type === MSG.PING) {
       send(MSG.PONG);
     }

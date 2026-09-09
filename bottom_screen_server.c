@@ -40,6 +40,7 @@ static void usage(void)
 "  --bitrate N             bits/s; 0 derives one from the resolution\n"
 "  --encoder NAME          libx264 (default), h264_vaapi, h264_nvenc\n"
 "  --no-top                do not offer the machine's other screen\n"
+"  --prompt                ask the clients a question, then a choice\n"
 "  --help\n"
 "\n"
 "This binary serves a synthetic test pattern. The emulator backends use\n"
@@ -56,6 +57,10 @@ int main(int argc, char **argv)
      * thread, and having it there is what makes the client's toggle
      * something to try rather than something to read about. */
     int offer_top = 1;
+    /* For working on the clients' side of it without a 3DS asking for a
+     * name. Two questions, one of each kind, in the order a person would
+     * meet them. */
+    int demo_prompt = 0;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -67,6 +72,7 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--bitrate") && next) { cfg.bitrate = atoi(next); i++; }
         else if (!strcmp(a, "--encoder") && next) { cfg.encoder = next; i++; }
         else if (!strcmp(a, "--no-top"))          { offer_top = 0; }
+        else if (!strcmp(a, "--prompt"))          { demo_prompt = 1; }
         else { fprintf(stderr, "unknown argument: %s\n", a); usage(); return 1; }
     }
     if (!console) { fprintf(stderr, "unknown console\n"); return 1; }
@@ -99,9 +105,53 @@ int main(int argc, char **argv)
     /* The server runs on its own thread; this one only waits for a
      * signal. Polling rather than pausing keeps the shutdown path the
      * same one the emulator backend uses. */
+    /*
+     * The demonstration, driven the way a backend would drive it: ask,
+     * poll, act. Nothing here blocks, because an emulator's thread
+     * cannot afford to wait on somebody typing.
+     */
+    static const char *const MIIS[] = {
+        "Alex", "Robin", "Sam", "Kim", "Jules", "Charlie",
+    };
+    int stage = 0;
+    uint16_t prompt = 0;
+
     while (!g_stop) {
         struct timespec ts = { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 };
         nanosleep(&ts, NULL);
+
+        if (!demo_prompt || stage > 1)
+            continue;
+        if (prompt == 0) {
+            if (!bs_server_has_client(srv))
+                continue;
+            prompt = (stage == 0)
+                ? bs_server_prompt(srv, BS_PROMPT_TEXT,
+                                   "What shall we call this one?",
+                                   NULL, 0, 10, 0)
+                : bs_server_prompt(srv, BS_PROMPT_CHOICE, "Choose a Mii",
+                                   MIIS, (int)(sizeof(MIIS) / sizeof(MIIS[0])),
+                                   0, 0);
+            continue;
+        }
+
+        char answer[256] = "";
+        int choice = 0;
+        const int state = bs_server_prompt_poll(srv, prompt, answer,
+                                                sizeof(answer), &choice);
+        if (state == 0)
+            continue;
+        if (state == 1 && stage == 0)
+            printf("the clients answered: \"%s\"\n", answer);
+        else if (state == 1)
+            printf("the clients chose %d (%s)\n", choice,
+                   choice >= 0 && choice < (int)(sizeof(MIIS) / sizeof(MIIS[0]))
+                       ? MIIS[choice] : "?");
+        else
+            printf("the clients declined\n");
+        fflush(stdout);
+        prompt = 0;
+        stage++;
     }
 
     printf("\nstopping\n");

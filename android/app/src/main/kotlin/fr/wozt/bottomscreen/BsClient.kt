@@ -35,6 +35,12 @@ class BsClient(
          * shown and being taken away.
          */
         fun onScreens(mask: Int, watchingBottom: Int, watchingTop: Int)
+        /**
+         * The machine is asking for something. [id] of 0 withdraws the
+         * question -- the game stopped waiting, so the box should go.
+         */
+        fun onPrompt(id: Int, kind: Int, maxLen: Int, multiline: Boolean,
+                     title: String, choices: List<String>)
         fun onDisconnected(reason: String)
     }
 
@@ -94,6 +100,12 @@ class BsClient(
     /** Picks which of the machine's two screens to receive. */
     fun sendScreen(screen: Int) {
         if (running) outQueue.offer(BsProtocol.screenMessage(screen))
+    }
+
+    /** Answers the machine's question. */
+    fun sendPromptReply(id: Int, cancelled: Boolean, choice: Int, text: String) {
+        if (running)
+            outQueue.offer(BsProtocol.promptReplyMessage(id, cancelled, choice, text))
     }
 
     private fun readLoop() {
@@ -180,6 +192,24 @@ class BsClient(
                                                payload[2].toInt() and 0xFF)
                         else if (h.payloadSize >= 1)
                             listener.onScreens(payload[0].toInt() and 0xFF, 0, 0)
+                    }
+                    BsProtocol.MSG_PROMPT -> {
+                        if (h.payloadSize >= 8) {
+                            val bb = java.nio.ByteBuffer.wrap(payload, 0, h.payloadSize)
+                                .order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                            val id = bb.getShort(0).toInt() and 0xFFFF
+                            val kind = payload[2].toInt() and 0xFF
+                            val nChoices = payload[3].toInt() and 0xFF
+                            val maxLen = bb.getShort(4).toInt() and 0xFFFF
+                            val multiline = payload[6].toInt() != 0
+                            /* The title, then one label per choice, all
+                             * NUL-separated UTF-8. */
+                            val parts = String(payload, 8, h.payloadSize - 8,
+                                               Charsets.UTF_8).split("\u0000")
+                            listener.onPrompt(id, kind, maxLen, multiline,
+                                              parts.firstOrNull() ?: "",
+                                              parts.drop(1).take(nChoices))
+                        }
                     }
                     BsProtocol.MSG_PING -> outQueue.offer(BsProtocol.emptyMessage(BsProtocol.MSG_PONG))
                 }

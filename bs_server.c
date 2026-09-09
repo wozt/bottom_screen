@@ -186,6 +186,26 @@ struct BsServer {
      * BS_MSG_SET_AUDIO_SOURCE. */
     volatile int audio_source;
 
+    /*
+     * The one question the machine is waiting on an answer to.
+     *
+     * One at a time, because a console shows one applet at a time -- a
+     * 3DS asking for a name is not also asking for a Mii. The backend
+     * puts a question here, every client is shown it, and the first
+     * answer wins; a second is dropped because the id no longer
+     * matches.
+     *
+     * Its own lock rather than the roster's: the answer arrives on a
+     * client's receiving thread and is collected by the emulator's, and
+     * neither has any business holding up the other's.
+     */
+    pthread_mutex_t prompt_lock;
+    uint16_t  prompt_id;        /* 0 = nothing being asked */
+    int       prompt_state;     /* 0 waiting, 1 answered, -1 cancelled */
+    int       prompt_choice;
+    char      prompt_answer[BS_PROMPT_MAX];
+    uint16_t  prompt_next_id;
+
     BsClient *clients;
     int       max_clients;
 
@@ -745,6 +765,27 @@ static void *client_recv_thread(void *arg)
             BsScreenChoice sc;
             memcpy(&sc, buf, sizeof(sc));
             client_set_screen(cl, sc.screen);
+        } else if (type == BS_MSG_PROMPT_REPLY && n >= sizeof(BsPromptReply)) {
+            BsPromptReply rp;
+            memcpy(&rp, buf, sizeof(rp));
+            pthread_mutex_lock(&srv->prompt_lock);
+            /*
+             * Only if it answers the question still being asked. A
+             * second person answering, or somebody answering one the
+             * game has already withdrawn, is dropped here rather than
+             * handed to whatever asked next.
+             */
+            if (srv->prompt_id != 0 && rp.id == srv->prompt_id &&
+                srv->prompt_state == 0) {
+                srv->prompt_state = rp.cancelled ? -1 : 1;
+                srv->prompt_choice = rp.choice;
+                size_t textlen = n - sizeof(rp);
+                if (textlen >= sizeof(srv->prompt_answer))
+                    textlen = sizeof(srv->prompt_answer) - 1;
+                memcpy(srv->prompt_answer, buf + sizeof(rp), textlen);
+                srv->prompt_answer[textlen] = '\0';
+            }
+            pthread_mutex_unlock(&srv->prompt_lock);
         } else if (type == BS_MSG_SET_AUDIO_SOURCE && n >= sizeof(BsAudioChoice)) {
             BsAudioChoice ac;
             memcpy(&ac, buf, sizeof(ac));
@@ -1355,6 +1396,7 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
         goto fail;
     }
     pthread_mutex_init(&srv->roster, NULL);
+    pthread_mutex_init(&srv->prompt_lock, NULL);
     pthread_mutex_init(&srv->reap_lock, NULL);
     pthread_cond_init(&srv->roster_cond, NULL);
 
@@ -1524,6 +1566,7 @@ void bs_server_destroy(BsServer *srv)
     if (srv->aenc)
         bs_audio_destroy(srv->aenc);
     if (srv->clients) {
+        pthread_mutex_destroy(&srv->prompt_lock);
         pthread_cond_destroy(&srv->roster_cond);
         pthread_mutex_destroy(&srv->reap_lock);
         pthread_mutex_destroy(&srv->roster);
@@ -1587,6 +1630,125 @@ int bs_server_wants_screen(const BsServer *srv, int screen)
             return 1;
     }
     return 0;
+}
+
+/* ------------------------------------------------------------ prompts */
+
+uint16_t bs_server_prompt(BsServer *srv, int kind, const char *title,
+                          const char *const *choices, int n_choices,
+                          int max_len, int multiline)
+{
+    if (!srv || !title)
+        return 0;
+    if (n_choices < 0) n_choices = 0;
+    if (n_choices > 255) n_choices = 255;
+
+    /* Nobody watching, nobody to ask. The backend gets 0 and does
+     * whatever it did before this existed, which is its own dialog on
+     * whatever desktop it is running on. */
+    if (bs_server_clients(srv) == 0)
+        return 0;
+
+    uint8_t body[BS_PROMPT_MAX];
+    size_t at = 0;
+    size_t n = strlen(title) + 1;
+    if (n > sizeof(body)) n = sizeof(body);
+    memcpy(body, title, n - 1);
+    body[n - 1] = '\0';
+    at = n;
+
+    int sent_choices = 0;
+    for (int i = 0; i < n_choices && choices; i++) {
+        const char *c = choices[i] ? choices[i] : "";
+        size_t len = strlen(c) + 1;
+        if (at + len > sizeof(body))
+            break;              /* a truncated list beats none at all */
+        memcpy(body + at, c, len);
+        at += len;
+        sent_choices++;
+    }
+
+    pthread_mutex_lock(&srv->prompt_lock);
+    if (++srv->prompt_next_id == 0)
+        srv->prompt_next_id = 1;     /* 0 means "nothing" */
+    const uint16_t id = srv->prompt_next_id;
+    srv->prompt_id = id;
+    srv->prompt_state = 0;
+    srv->prompt_choice = 0;
+    srv->prompt_answer[0] = '\0';
+    pthread_mutex_unlock(&srv->prompt_lock);
+
+    BsPrompt hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.id = id;
+    hdr.kind = (uint8_t)kind;
+    hdr.choices = (uint8_t)sent_choices;
+    hdr.max_len = (uint16_t)(max_len > 0 ? max_len : 255);
+    hdr.multiline = (uint8_t)(multiline ? 1 : 0);
+
+    pthread_mutex_lock(&srv->roster);
+    for (int i = 0; i < srv->max_clients; i++) {
+        BsClient *cl = &srv->clients[i];
+        if (cl->in_use && !cl->gone && cl->ready)
+            client_send(cl, BS_MSG_PROMPT, 0, &hdr, sizeof(hdr), body, at);
+    }
+    pthread_mutex_unlock(&srv->roster);
+
+    if (!srv->cfg.quiet)
+        fprintf(stderr, "bottom_screen: asking the clients: %s\n", title);
+    return id;
+}
+
+int bs_server_prompt_poll(BsServer *srv, uint16_t id,
+                          char *text, size_t textlen, int *choice)
+{
+    if (!srv || id == 0)
+        return -1;
+    int state;
+    pthread_mutex_lock(&srv->prompt_lock);
+    if (srv->prompt_id != id) {
+        state = -1;             /* withdrawn, or another question since */
+    } else {
+        state = srv->prompt_state;
+        if (state == 1) {
+            if (text && textlen) {
+                size_t n = strlen(srv->prompt_answer);
+                if (n >= textlen) n = textlen - 1;
+                memcpy(text, srv->prompt_answer, n);
+                text[n] = '\0';
+            }
+            if (choice)
+                *choice = srv->prompt_choice;
+        }
+    }
+    pthread_mutex_unlock(&srv->prompt_lock);
+    return state;
+}
+
+void bs_server_prompt_cancel(BsServer *srv, uint16_t id)
+{
+    if (!srv || id == 0)
+        return;
+    pthread_mutex_lock(&srv->prompt_lock);
+    const int mine = (srv->prompt_id == id);
+    if (mine)
+        srv->prompt_id = 0;
+    pthread_mutex_unlock(&srv->prompt_lock);
+    if (!mine)
+        return;
+
+    /* Told, not left on screen: a question the game has stopped waiting
+     * for is a box somebody is still typing into. */
+    BsPrompt hdr;
+    memset(&hdr, 0, sizeof(hdr));
+    hdr.id = 0;
+    pthread_mutex_lock(&srv->roster);
+    for (int i = 0; i < srv->max_clients; i++) {
+        BsClient *cl = &srv->clients[i];
+        if (cl->in_use && !cl->gone && cl->ready)
+            client_send(cl, BS_MSG_PROMPT, 0, &hdr, sizeof(hdr), NULL, 0);
+    }
+    pthread_mutex_unlock(&srv->roster);
 }
 
 uint16_t bs_server_port(const BsServer *srv) { return srv ? srv->port : 0; }

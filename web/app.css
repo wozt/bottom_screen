@@ -192,3 +192,25 @@ button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
                border-radius: 50%;
                border: 2px solid var(--btn-border); background: var(--btn-pressed);
                pointer-events: none; }
+
+/*
+ * The machine's own question, over everything.
+ *
+ * Modal on purpose: the game is stopped waiting for it, so there is
+ * nothing else worth doing, and a box you can lose behind the picture is
+ * a game that never restarts.
+ */
+#prompt { position: fixed; inset: 0; z-index: 20; display: flex;
+          align-items: center; justify-content: center;
+          background: rgba(0,0,0,.6); }
+#promptPanel { background: #16181d; border: 1px solid #333; border-radius: 8px;
+               padding: 16px; min-width: min(420px, 80vw); max-width: 90vw;
+               display: flex; flex-direction: column; gap: 10px; }
+#promptTitle { color: #ddd; font-size: 15px; }
+#promptField { background: #0d0f13; color: #eee; border: 1px solid #444;
+               border-radius: 4px; padding: 8px; font-size: 15px; }
+/* A column, so a hundred Mii names scroll instead of running off. */
+#promptList { display: flex; flex-direction: column; gap: 4px;
+              max-height: 46vh; overflow-y: auto; }
+#promptList button { text-align: left; padding: 8px 10px; font-size: 14px; }
+#promptButtons { display: flex; gap: 8px; justify-content: flex-end; }

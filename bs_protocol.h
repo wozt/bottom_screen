@@ -216,8 +216,63 @@ typedef enum {
      * older clients simply never learn about the top screen, and that is
      * the correct outcome for them.
      */
-    BS_MSG_SCREENS = 24
+    BS_MSG_SCREENS = 24,
+
+    /*
+     * The machine is asking for something a controller cannot give.
+     *
+     * A 3DS or a Wii U stops and asks for a name, a message, a Mii --
+     * and the emulator answers that with a dialog on the desktop it is
+     * running on. Streamed to a phone, that dialog is somewhere you
+     * cannot see and the game waits for ever. So the question is put on
+     * the wire and whoever is watching answers it.
+     *
+     * Sent to every client, on whichever screen: the question belongs to
+     * the machine, not to the picture. The first answer wins, and the
+     * rest are told it is over -- two people typing different names is a
+     * race the game cannot see, so it is settled here.
+     *
+     * A DS has none of this. Its games draw their own keyboards on the
+     * touch screen, which already works.
+     */
+    BS_MSG_PROMPT = 25,        /* server -> client, a question */
+    BS_MSG_PROMPT_REPLY = 26   /* client -> server, an answer */
 } BsMsgType;
+
+typedef enum {
+    BS_PROMPT_TEXT   = 1,   /* type something */
+    BS_PROMPT_CHOICE = 2    /* pick one of the labels that follow */
+} BsPromptKind;
+
+/*
+ * Followed by NUL-terminated UTF-8: the title first, then one label per
+ * choice. Strings rather than fixed fields because a Mii's name is
+ * whatever somebody called it, and a keyboard's hint is whatever the
+ * game wrote.
+ *
+ * id is what an answer quotes, so an answer to a question the game has
+ * already withdrawn is recognised and dropped rather than delivered to
+ * whatever asked next. A prompt with id 0 withdraws the one in flight.
+ */
+typedef struct __attribute__((packed)) {
+    uint16_t id;
+    uint8_t  kind;        /* BsPromptKind */
+    uint8_t  choices;     /* labels following the title */
+    uint16_t max_len;     /* text: the longest answer that will be taken */
+    uint8_t  multiline;
+    uint8_t  reserved;
+} BsPrompt;
+
+/* Followed by the answer as UTF-8 when the kind was text. */
+typedef struct __attribute__((packed)) {
+    uint16_t id;
+    uint8_t  cancelled;   /* the person said no */
+    uint8_t  choice;      /* which label, when the kind was choice */
+} BsPromptReply;
+
+/* The longest question or answer that will cross the wire. A Mii list is
+ * a hundred names; a keyboard's hint is a sentence. */
+#define BS_PROMPT_MAX 4096
 
 /* Which picture. The bottom screen is 0 so that everything written
  * before this existed keeps meaning what it meant. */

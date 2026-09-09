@@ -95,6 +95,20 @@
 <div id="stage"><canvas id="screen" width="256" height="192"></canvas></div>
 <div id="padRight" class="padside"></div>
 
+<!-- The machine asking for something a controller cannot give: a name,
+     a message, a Mii. Hidden until it does. -->
+<div id="prompt" hidden>
+  <div id="promptPanel">
+    <div id="promptTitle"></div>
+    <input id="promptField" type="text" autocomplete="off">
+    <div id="promptList"></div>
+    <div id="promptButtons">
+      <button id="promptOk">send</button>
+      <button id="promptCancel">cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- Plain scripts in one shared scope, in an order that matters:
      main.js defines what the rest reach for, and connect.js opens the
      socket once everything it will call exists. -->
@@ -106,4 +120,5 @@
 <script src="/pad.js"></script>
 <script src="/settings.js"></script>
 <script src="/servers.js"></script>
+<script src="/prompt.js"></script>
 <script src="/connect.js"></script>

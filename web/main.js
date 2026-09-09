@@ -30,7 +30,7 @@
 const MSG = { VIDEO: 1, AUDIO: 2, STREAM_INFO: 3, SCREENS: 24,
               INPUT: 16, PING: 17, PONG: 18, REQUEST_KEYFRAME: 19,
               SET_QUALITY: 20, SET_SIZE: 21, SET_AUDIO_SOURCE: 22,
-              SET_SCREEN: 23 };
+              SET_SCREEN: 23, PROMPT: 25, PROMPT_REPLY: 26 };
 const INPUT = { TOUCH_DOWN: 1, TOUCH_MOVE: 2, TOUCH_UP: 3,
                 BUTTON_DOWN: 4, BUTTON_UP: 5, AXIS: 6 };
 const BTN = { A:1, B:2, X:3, Y:4, L:5, R:6, ZL:7, ZR:8,

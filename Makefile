@@ -39,7 +39,7 @@ all: $(BINARIES)
 WEB_FILES := web/index.html web/app.css \
              web/main.js web/protocol.js web/audio.js web/video.js \
              web/touch.js web/pad.js web/settings.js web/servers.js \
-             web/connect.js
+             web/prompt.js web/connect.js
 
 web_page.h: $(WEB_FILES) scripts/embed_page.py
 	python3 scripts/embed_page.py $(WEB_FILES) web_page.h
@@ -96,6 +96,7 @@ test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_fli
 	./tests/run_receive_size.sh
 	./tests/run_top_screen.sh
 	./tests/run_web_files.sh
+	./tests/run_prompt.sh
 	./tests/run_switch_client.sh
 	./tests/input_merge
 	./tests/resize_flip

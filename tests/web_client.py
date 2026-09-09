@@ -18,6 +18,11 @@ WANT_FRAMES = int(sys.argv[2]) if len(sys.argv) > 2 else 60
 MSG_VIDEO, MSG_AUDIO, MSG_STREAM_INFO = 1, 2, 3
 MSG_INPUT, MSG_PING, MSG_PONG, MSG_REQUEST_KEYFRAME = 16, 17, 18, 19
 MSG_SET_SCREEN, MSG_SCREENS = 23, 24
+MSG_PROMPT, MSG_PROMPT_REPLY = 25, 26
+
+# "prompt" answers the first question the machine asks, which is what a
+# person at the page would do.
+ANSWER_PROMPTS = "prompt" in sys.argv[3:]
 
 # "top" asks for the machine's other screen once the stream is running,
 # which is what the page's own control does.
@@ -57,6 +62,7 @@ async def main():
         screens = None
         switched = False
         new_size = None
+        answered = 0
         while video < WANT_FRAMES:
             raw = await asyncio.wait_for(ws.recv(), timeout=10)
             kind, size = struct.unpack_from("<B3xI", raw, 0)
@@ -79,6 +85,23 @@ async def main():
                     await ws.send(message(MSG_INPUT, ev))
             elif kind == MSG_AUDIO:
                 audio += 1
+            elif kind == MSG_PROMPT:
+                pid = struct.unpack_from("<H", body, 0)[0]
+                if pid == 0:
+                    print("la question a ete retiree")
+                    continue
+                pkind, nchoices = body[2], body[3]
+                parts = body[8:].decode("utf-8", "replace").split("\0")
+                print(f"question ({'choix' if pkind == 2 else 'texte'}): "
+                      f"{parts[0]!r}" +
+                      (f", {nchoices} choix" if pkind == 2 else ""))
+                if ANSWER_PROMPTS:
+                    if pkind == 2:
+                        reply = struct.pack("<HBB", pid, 0, 1)
+                    else:
+                        reply = struct.pack("<HBB", pid, 0, 0) + b"Robin"
+                    await ws.send(message(MSG_PROMPT_REPLY, reply))
+                    answered += 1
             elif kind == MSG_SCREENS:
                 screens = body[0]
             elif kind == MSG_STREAM_INFO:
@@ -94,6 +117,11 @@ async def main():
                 await ws.send(message(MSG_SET_SCREEN, bytes([WANT_SCREEN, 0, 0, 0])))
 
         print(f"{video} video, {audio} audio, {keyframes} keyframes")
+        if ANSWER_PROMPTS:
+            print(f"questions repondues: {answered}")
+            if answered < 2:
+                print("FAIL: the machine's questions did not both arrive")
+                return 1
         if screens is not None:
             print(f"ecrans annonces: masque {screens}")
         if WANT_SCREEN:
