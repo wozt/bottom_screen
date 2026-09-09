@@ -8,6 +8,7 @@ import android.graphics.PointF
 import android.graphics.RectF
 import android.view.MotionEvent
 import android.view.View
+import kotlin.math.atan2
 import kotlin.math.hypot
 
 /**
@@ -563,15 +564,27 @@ class PadOverlay(context: Context) : View(context) {
         val u = unit()
         val pad = u * 0.22f
 
+        /*
+         * A cross inside a circle, the way a modern controller draws it.
+         *
+         * The circle is not decoration: it is the shape the directions
+         * are actually read from -- eight sectors of it -- so drawing
+         * only the cross showed a smaller target than the one that
+         * works, and the diagonals had nothing on screen at all.
+         */
         val cx = dpadRect.centerX()
         val cy = dpadRect.centerY()
+        val r = dpadRect.width() / 2f
         val arm = dpadRect.width() / 3f
+        val reach = r * 0.92f
         fill.color = if (dpadHeld.isNotEmpty()) tint(HELD_ALPHA) else idle()
         stroke.color = edge()
-        canvas.drawRect(cx - arm / 2f, dpadRect.top, cx + arm / 2f, dpadRect.bottom, fill)
-        canvas.drawRect(dpadRect.left, cy - arm / 2f, dpadRect.right, cy + arm / 2f, fill)
-        canvas.drawRect(cx - arm / 2f, dpadRect.top, cx + arm / 2f, dpadRect.bottom, stroke)
-        canvas.drawRect(dpadRect.left, cy - arm / 2f, dpadRect.right, cy + arm / 2f, stroke)
+        canvas.drawCircle(cx, cy, r, fill)
+        canvas.drawCircle(cx, cy, r, stroke)
+        canvas.drawRect(cx - arm / 2f, cy - reach, cx + arm / 2f, cy + reach, fill)
+        canvas.drawRect(cx - reach, cy - arm / 2f, cx + reach, cy + arm / 2f, fill)
+        canvas.drawRect(cx - arm / 2f, cy - reach, cx + arm / 2f, cy + reach, stroke)
+        canvas.drawRect(cx - reach, cy - arm / 2f, cx + reach, cy + arm / 2f, stroke)
 
         for (c in controls) {
             fill.color = if (c.pressed) tint(HELD_ALPHA) else idle()
@@ -794,16 +807,46 @@ class PadOverlay(context: Context) : View(context) {
         return hypot(x - dpadRect.centerX(), y - dpadRect.centerY()) < r
     }
 
+    /*
+     * Eight sectors of a circle rather than two thresholds on a square.
+     *
+     * Crossing an x threshold and a y threshold independently does give
+     * diagonals, but not ones anybody can aim at: the diagonal zones are
+     * the four corners of the square, so they start where the thumb has
+     * already left the cross, and the four straight directions each
+     * occupy a third of the width. Sectors give each of the eight
+     * directions the same 45 degrees, and the diagonals sit exactly
+     * where the circle's diagonals are -- which is what the cross is
+     * drawn inside, so what you aim at is what you get.
+     */
     private fun updateDpad(x: Float, y: Float) {
         val cx = dpadRect.centerX()
         val cy = dpadRect.centerY()
-        val dead = dpadRect.width() * 0.14f
+        val r = dpadRect.width() / 2f
 
+        val dx = x - cx
+        val dy = y - cy
         val wanted = HashSet<Int>()
-        if (x < cx - dead) wanted.add(BsProtocol.BTN_LEFT)
-        if (x > cx + dead) wanted.add(BsProtocol.BTN_RIGHT)
-        if (y < cy - dead) wanted.add(BsProtocol.BTN_UP)
-        if (y > cy + dead) wanted.add(BsProtocol.BTN_DOWN)
+
+        /* A dead middle, so resting a thumb on the centre is not a
+         * direction. Small: this is a cross, not a stick, and the point
+         * of it is that a light touch already means something. */
+        if (hypot(dx, dy) > r * DPAD_DEAD) {
+            var a = Math.toDegrees(atan2(dy.toDouble(), dx.toDouble())).toFloat()
+            if (a < 0f) a += 360f
+            /* Shifted by half a sector so each direction is centred on
+             * its own axis rather than starting at it. */
+            when ((((a + 22.5f) % 360f) / 45f).toInt()) {
+                0 -> wanted.add(BsProtocol.BTN_RIGHT)
+                1 -> { wanted.add(BsProtocol.BTN_RIGHT); wanted.add(BsProtocol.BTN_DOWN) }
+                2 -> wanted.add(BsProtocol.BTN_DOWN)
+                3 -> { wanted.add(BsProtocol.BTN_LEFT); wanted.add(BsProtocol.BTN_DOWN) }
+                4 -> wanted.add(BsProtocol.BTN_LEFT)
+                5 -> { wanted.add(BsProtocol.BTN_LEFT); wanted.add(BsProtocol.BTN_UP) }
+                6 -> wanted.add(BsProtocol.BTN_UP)
+                else -> { wanted.add(BsProtocol.BTN_RIGHT); wanted.add(BsProtocol.BTN_UP) }
+            }
+        }
 
         for (code in dpadHeld - wanted) onButton?.invoke(code, false)
         for (code in wanted - dpadHeld) onButton?.invoke(code, true)
@@ -903,6 +946,9 @@ class PadOverlay(context: Context) : View(context) {
         const val SHOULDER_W = 1.8f
         const val MENU_W = 2.0f
         const val DPAD_SPAN = 2.9f
+
+        /* The still middle of the cross, as a fraction of its radius. */
+        const val DPAD_DEAD = 0.22f
         const val MENU_H = 0.7f
         const val MENU_GAP = 0.27f
         const val STICK_R = 1.05f

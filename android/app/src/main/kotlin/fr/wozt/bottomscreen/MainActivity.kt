@@ -79,6 +79,18 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     /* 0 = whatever the emulator renders, N = N times the console's own
      * screen, -2 = half of it (the Wii U only). */
     private var receiveScale = 0
+    /*
+     * Quality and size, one of each per screen.
+     *
+     * The server encodes the two screens separately -- that is what a
+     * second screen costs -- so these are genuinely separate answers: a
+     * television picture worth 8 Mbit/s beside a GamePad screen worth 2
+     * is a normal pair, not a contradiction. `quality` and
+     * `receiveScale` are the entries for whichever screen is on the
+     * wire, kept because everything downstream already reads them.
+     */
+    private val qualityFor = arrayOf(Quality.AUTO, Quality.AUTO)
+    private val scaleFor = intArrayOf(0, 0)
     private var fps = 0
 
     /* Set while leaving a server on purpose, so the closing socket does
@@ -133,7 +145,9 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             setBackgroundColor(Color.BLACK)
         }
         val prefs0 = getSharedPreferences(PREFS, MODE_PRIVATE)
-        quality = Quality.byName(prefs0.getString("quality", null))
+        qualityFor[0] = Quality.byName(prefs0.getString("quality", null))
+        qualityFor[1] = Quality.byName(prefs0.getString("quality_top", null))
+        quality = qualityFor[0]
         volume = prefs0.getFloat("volume", 1f)
         muted = prefs0.getBoolean("muted", false)
         buttonScale = prefs0.getFloat("pad_scale", 1f)
@@ -143,7 +157,9 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         stickBelow = booleanArrayOf(prefs0.getBoolean("stick_l_below", false),
                                     prefs0.getBoolean("stick_r_below", true))
         padVisibility = PadVisibility.byName(prefs0.getString("pad_visibility", null))
-        receiveScale = prefs0.getInt("receive_scale", 0)
+        scaleFor[0] = prefs0.getInt("receive_scale", 0)
+        scaleFor[1] = prefs0.getInt("receive_scale_top", 0)
+        receiveScale = scaleFor[0]
         gamepadPresent = Gamepad.anyConnected()
         applyFullscreen()
         buildForm()
@@ -1063,6 +1079,14 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             override var port: Int
                 get() = prefs.getInt("port", BsProtocol.DEFAULT_PORT)
                 set(v) { prefs.edit().putInt("port", v).apply() }
+            override fun qualityOf(screen: Int) = qualityFor[screen]
+            override fun setQuality(screen: Int, q: Quality) { qualityFor[screen] = q }
+            override fun scaleOf(screen: Int) = scaleFor[screen]
+            override fun setScale(screen: Int, v: Int) { scaleFor[screen] = v }
+            override fun nativeWidthOf(screen: Int) =
+                ConsoleProfile.nativeFor(profile, screen).first
+            override fun nativeHeightOf(screen: Int) =
+                ConsoleProfile.nativeFor(profile, screen).second
             override var quality: Quality
                 get() = this@MainActivity.quality
                 set(v) { this@MainActivity.quality = v }
@@ -1197,9 +1221,17 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
             .putBoolean("stick_l_below", stickBelow[0])
             .putBoolean("stick_r_below", stickBelow[1])
             .putString("pad_visibility", padVisibility.name)
-            .putString("quality", quality.name)
-            .putInt("receive_scale", receiveScale)
+            .putString("quality", qualityFor[0].name)
+            .putInt("receive_scale", scaleFor[0])
+            .putString("quality_top", qualityFor[1].name)
+            .putInt("receive_scale_top", scaleFor[1])
             .apply()
+
+        /* The entries for the screen on the wire are the ones that
+         * apply, and everything below reads these two. The other
+         * screen's are remembered and sent when it is joined. */
+        quality = qualityFor[shownScreen]
+        receiveScale = scaleFor[shownScreen]
 
         audio?.volume = if (muted) 0f else volume
         pad?.buttonScale = buttonScale

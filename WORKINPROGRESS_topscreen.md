@@ -37,25 +37,28 @@ being used.
 
 ## Open faults
 
-### 1. Android: the geometry does not follow the screen  *(blocking)*
+### 1. Android: the geometry does not follow the screen  ~~*(blocking)*~~
 
-In 3DS mode the top screen does not take the room it should and is not
-drawn at the 3DS's real ratio. It does not correct itself when the
-screen is changed, and it is worse across a rotation.
+**Done.** The cause was in the server: the size is announced when it
+changes, which says nothing to a client arriving on a screen somebody
+else is already watching. That client kept the size from its handshake
+-- the bottom screen's -- and drew a 5:3 picture as though it were 4:3.
+It now gets told the shape of the screen it joins. Rotation keeps the
+settings panel in front of the layout it rebuilds.
 
-### 2. Android: the pad is wrong at 16:9  *(blocking)*
+### 2. Android: the pad is wrong at 16:9  ~~*(blocking)*~~
 
-On both Wii U screens and the 3DS top screen -- the wide ones -- the
-controls sit too high on the right: ZL, L, the left stick and the d-pad
-are all pushed up. The gravity that decides where a control settles does
-not react to the band changing width.
+**Done.** The unit came from one divisor chosen when a DS was the only
+console. It is solved now: each band's demand is counted off the console
+profile -- how tall its contents are, how wide the widest is, what is
+already spoken for at the top -- and the unit is the largest at which
+both bands still hold everything. Shoulders pin to the top, menus to the
+bottom, the arm floats in what is left, and each stick is measured into
+the gap on its own side. The right-hand shoulders no longer start as low
+as the left-hand ones, which only gave room to a button that is not on
+their side.
 
-Two spacing faults come with it:
-
-- an abnormally large gap between the d-pad and the face buttons,
-- no gap at all between the settings button and ZL.
-
-### 3. Switch: coming back from the top screen freezes  *(blocking)*
+### 3. Switch: coming back from the top screen freezes  *(believed fixed)*
 
 Going to the top screen from the menu works. Coming back does not: the
 last top picture stays on screen.
@@ -67,41 +70,52 @@ for this exists but `bs_server.c` is compiled into each emulator, so the
 emulators have to be rebuilt for it to take effect. Not yet confirmed on
 the console.
 
-### 4. The Wii U top screen offers no sizes  *(functional)*
+### 4. The Wii U top screen offers no sizes  ~~*(functional)*~~
 
-Its picture is capped at 1024x768 and the size control offers no
-multiples of the top screen's own 1280x720 -- only "whatever is
-rendered". Both the Android client and the Switch are affected.
+**Mostly answered by measuring.** Cemu's television picture is
+1920x1080, not 1024x768 -- 1024x768 is melonDS at four times a DS
+screen. What was wrong on the client: it recorded the rendered size once,
+at the first connection, so after changing screens the ladder was still
+capped by the screen that had been left. It follows the screen now.
 
-The ladder is built from what the emulator actually renders, so if
-Cemu's television readback comes back smaller than 1280x720 there are no
-rungs to offer. To be found out rather than assumed.
+What remains is arithmetic rather than a fault: the rungs are whole
+multiples of 1280x720 and none of them may exceed what Cemu renders, so
+at 1920x1080 there is one rung -- native -- plus "whatever is rendered".
+Raising Cemu's internal resolution is what adds more.
 
-### 5. Cemu will not serve until its GamePad window is open  *(functional)*
+### 5. Cemu will not serve until its GamePad window is open  ~~*(functional)*~~
 
-The server is started from the GamePad view's own path, so nothing is
-served until that window exists. It should not be a condition.
+**Done.** Either view opens the server now, and only one of them counts
+frames towards the rate -- both are drawn once per frame, so letting
+both count would report twice the real one. A client watching the bottom
+screen before that window exists sees nothing, which is the truth: Cemu
+is not drawing it.
 
 ## Wanted
 
 ### 6. Separate menus for the two screens
 
-In all three clients, the top and the bottom screen get their own
-section, each with its own quality and internal resolution -- they are
-separate encoders, so these are genuinely separate settings. Anything
-that is shared between the two stays shared and is not duplicated.
+**Done on Android**, still to do in the browser and on the Switch. Each
+screen has its own quality and its own size, remembered separately and
+sent when that screen is joined. Sound is not duplicated: there is one
+set of speakers whatever is being watched.
 
 ### 7. An Xbox-shaped d-pad
 
-DS, 3DS and Wii U alike: a cross inside a circle, with the diagonals
-handled in the circle's diagonals rather than at the arms' corners.
+**Done on Android**, still to do in the browser and on the Switch. Eight
+sectors of the circle, so each direction gets the same 45 degrees and
+the diagonals sit where the circle's diagonals are. The old two-threshold
+square did produce diagonals, but only in its corners -- where the thumb
+has already left the cross.
 
 ## Testing
 
 ### 8. A run through every mode
 
-Six combinations -- DS, 3DS and Wii U, each top and bottom -- against
-the real emulators.
+**Done**: `tests/run_emulator_matrix.sh`. Measured, all six: a DS is
+1024x768 on both screens at four times native; Azahar is 320x240 below
+and 1200x720 above, which is 5:3 exactly; Cemu is 854x480 below and
+1920x1080 above.
 
 **The emulators, and therefore the servers, are restarted between
 tests.** `bs_server.c` is linked into each emulator, so a server left

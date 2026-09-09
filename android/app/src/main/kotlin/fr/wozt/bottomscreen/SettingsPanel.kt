@@ -36,6 +36,16 @@ class SettingsPanel(
     interface PanelState {
         var host: String
         var port: Int
+        /* Per screen, because the two are separate encoders on the
+         * server and so genuinely separate settings: a television
+         * picture worth 8 Mbit/s and a GamePad screen worth 2 are a
+         * normal pair of answers, not a contradiction. Sound is not
+         * here, because there is one set of speakers whatever is being
+         * watched. */
+        fun qualityOf(screen: Int): Quality
+        fun setQuality(screen: Int, q: Quality)
+        fun scaleOf(screen: Int): Int
+        fun setScale(screen: Int, v: Int)
         var quality: Quality
         var volume: Float
         var muted: Boolean
@@ -75,6 +85,8 @@ class SettingsPanel(
 
         /** The console's own screen, which every offered size is a
          *  multiple of. */
+        fun nativeWidthOf(screen: Int): Int
+        fun nativeHeightOf(screen: Int): Int
         val nativeWidth: Int
         val nativeHeight: Int
 
@@ -240,22 +252,16 @@ class SettingsPanel(
     }
 
     private fun stream() {
-        group("quality")
-        for (q in Quality.entries) {
-            check(q.label, settings.quality == q) {
-                settings.quality = q
-                actions.onApply()
-                rebuild()
-            }
-        }
-
         /*
-         * The other screen, offered only where there is one.
+         * One section per screen, because the server encodes them
+         * separately and they are worth different things: a television
+         * picture at 8 Mbit/s beside a GamePad screen at 2 is a normal
+         * pair of answers. Only the screen being watched is applied
+         * straight away; the other is remembered and sent on arrival.
          *
-         * Against the point of the application, and useful: the
-         * television picture is usually what is worth watching on a Wii
-         * U. A server built before this existed never says it has one,
-         * and then this row is simply not there.
+         * With no second screen on offer there is one section and no
+         * heading telling somebody which screen it is, because there is
+         * only one.
          */
         if (settings.hasTopScreen) {
             group("screen")
@@ -263,14 +269,32 @@ class SettingsPanel(
                 listOf("bottom" to BsProtocol.SCREEN_BOTTOM,
                        "top" to BsProtocol.SCREEN_TOP),
                 settings.screenShown
-            ) { settings.screenShown = it }
+            ) { settings.screenShown = it; rebuild() }
             hint("The top screen has no touch panel, so taps do nothing " +
                  "there. The buttons still work.")
+
+            screenSection("bottom screen", BsProtocol.SCREEN_BOTTOM)
+            screenSection("top screen", BsProtocol.SCREEN_TOP)
+        } else {
+            screenSection(null, BsProtocol.SCREEN_BOTTOM)
+        }
+    }
+
+    /* Quality and size for one screen. `title` is null when there is
+     * only one and naming it would be noise. */
+    private fun screenSection(title: String?, screen: Int) {
+        group(if (title == null) "quality" else "$title \u2014 quality")
+        for (q in Quality.entries) {
+            check(q.label, settings.qualityOf(screen) == q) {
+                settings.setQuality(screen, q)
+                actions.onApply()
+                rebuild()
+            }
         }
 
-        group("size received")
+        group(if (title == null) "size received" else "$title \u2014 size received")
         /*
-         * Multiples of the console's own screen, never below it.
+         * Multiples of that screen's own size, never below it.
          *
          * An emulator at a raised internal resolution puts far more on
          * the wire than a phone can show, so asking for less is worth
@@ -281,34 +305,25 @@ class SettingsPanel(
          * always a size the console itself could have produced.
          *
          * The Wii U is the exception, because 854x480 has room to give:
-         * half of it is still 427x240.
-         *
-         * Shared with anyone else watching, because there is one
-         * encoder.
+         * half of it is still larger than a DS screen.
          */
-        val nw = settings.nativeWidth
-        val nh = settings.nativeHeight
-
-        if (nw >= 640) {
-            option("half of native  ${nw / 2}x${nh / 2}", -2)
+        val nw = settings.nativeWidthOf(screen)
+        val nh = settings.nativeHeightOf(screen)
+        val current = settings.scaleOf(screen)
+        val srcW = if (screen == settings.screenShown) settings.sourceWidth else 0
+        if (nw >= 640) sizeOption("half of native  ${nw / 2}x${nh / 2}", -2, screen, current)
+        var f = 1
+        while (nw * f <= maxOf(srcW, nw) && nh * f <= BsProtocol.MAX_STREAM_HEIGHT) {
+            sizeOption(if (f == 1) "native  ${nw}x${nh}"
+                       else "${f}x native  ${nw * f}x${nh * f}", f, screen, current)
+            f++
         }
-        /* Nothing past the ceiling: the server would bring it back down
-         * anyway, and an option that quietly means something else is
-         * worse than no option. */
-        var factor = 1
-        while (nw * factor <= settings.sourceWidth &&
-               nh * factor <= BsProtocol.MAX_STREAM_HEIGHT) {
-            option(if (factor == 1) "native  ${nw}x$nh"
-                   else "${factor}x native  ${nw * factor}x${nh * factor}", factor)
-            factor++
-        }
-        option("whatever is rendered  " +
-               "${settings.sourceWidth}x${settings.sourceHeight}", 0)
+        sizeOption("whatever is rendered", 0, screen, current)
     }
 
-    private fun option(label: String, scale: Int) {
-        check(label, settings.receiveScale == scale) {
-            settings.receiveScale = scale
+    private fun sizeOption(label: String, value: Int, screen: Int, current: Int) {
+        check(label, current == value) {
+            settings.setScale(screen, value)
             actions.onApply()
             rebuild()
         }
