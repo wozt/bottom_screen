@@ -18,7 +18,7 @@ fi
 
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-PORT=${PORT:-5099}
+PORT=${PORT:-5092}
 OUT=$(mktemp -d)
 
 "$DIR/bottom_screen_server" --console wiiu --port "$PORT" >"$OUT/server.log" 2>&1 &

@@ -17,7 +17,7 @@ fi
 
 
 DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-PORT=${PORT:-5099}
+PORT=${PORT:-5091}
 CONSOLE=${CONSOLE:-ds}
 FRAMES=${FRAMES:-90}
 CLIENTS=${CLIENTS:-3}
