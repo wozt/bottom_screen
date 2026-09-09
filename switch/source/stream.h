@@ -74,6 +74,10 @@ void stream_send_audio_source(int source);
 void stream_send_screen(int screen);
 int  stream_screens(void);
 
+/* How many clients are watching the given BsScreen, the server's own
+ * count. Zero until it says otherwise. */
+int  stream_watching(int screen);
+
 /* Re-encode at this bitrate; zero lets the server choose. */
 void stream_send_quality(int bitrate);
 

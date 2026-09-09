@@ -163,19 +163,51 @@ static int send_all(BsConn *conn, const void *buf, size_t len)
     return bs_write_all(conn, buf, len);
 }
 
-static int serve_page(BsConn *conn)
+/*
+ * The page and the files it pulls in, by path.
+ *
+ * Separate files rather than one, because they are three languages and
+ * nine subjects: fifty kilobytes of JavaScript inside an HTML file is
+ * fifty kilobytes an editor cannot highlight, a linter cannot read and
+ * nobody can search by subject. Two dozen extra requests on a link that
+ * is about to carry video costs nothing.
+ *
+ * The table is generated beside the bytes, so adding a file to the page
+ * is one line in the Makefile and nothing here.
+ *
+ * Anything unrecognised gets the page, which is what a browser asking
+ * for /favicon.ico or a stray path should see rather than an error it
+ * will render as one.
+ */
+static int serve_file(BsConn *conn, const char *path)
 {
+    const BsWebFile *file = &BS_WEB_FILES[0];
+    if (path) {
+        /* The request line is "GET /pad.js HTTP/1.1"; the path ends at
+         * the space, or at a query string nobody here uses. */
+        size_t n = 0;
+        while (path[n] && path[n] != ' ' && path[n] != '?')
+            n++;
+        for (size_t i = 0; i < BS_WEB_FILE_COUNT; i++) {
+            if (strlen(BS_WEB_FILES[i].path) == n &&
+                strncmp(BS_WEB_FILES[i].path, path, n) == 0) {
+                file = &BS_WEB_FILES[i];
+                break;
+            }
+        }
+    }
+
     char head[256];
     int n = snprintf(head, sizeof(head),
                      "HTTP/1.1 200 OK\r\n"
-                     "Content-Type: text/html; charset=utf-8\r\n"
+                     "Content-Type: %s\r\n"
                      "Content-Length: %u\r\n"
                      "Cache-Control: no-store\r\n"
                      "Connection: close\r\n\r\n",
-                     (unsigned)BS_WEB_PAGE_LEN);
+                     file->type, (unsigned)file->len);
     if (send_all(conn, head, (size_t)n) != 0)
         return -1;
-    return send_all(conn, BS_WEB_PAGE, BS_WEB_PAGE_LEN);
+    return send_all(conn, file->body, file->len);
 }
 
 int bs_ws_serve(BsConn *conn, char *err, size_t errlen)
@@ -189,9 +221,17 @@ int bs_ws_serve(BsConn *conn, char *err, size_t errlen)
     const char *key = header_value(request, "Sec-WebSocket-Key");
     const char *upgrade = header_value(request, "Upgrade");
     if (!key || !upgrade || strncasecmp(upgrade, "websocket", 9) != 0) {
-        /* An ordinary page request. Serving it and closing is the whole
-         * of what a browser needs before it can open the socket. */
-        serve_page(conn);
+        /*
+         * An ordinary request. Serving it and closing is the whole of
+         * what a browser needs before it can open the socket -- three
+         * times over now, for the page, its stylesheet and its script.
+         *
+         * The path is whatever follows the method: "GET /app.js
+         * HTTP/1.1". Anything unrecognised gets the page.
+         */
+        const char *path = strchr(request, ' ');
+        if (path) path++;
+        serve_file(conn, path);
         return 0;
     }
 

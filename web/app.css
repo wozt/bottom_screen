@@ -1,0 +1,194 @@
+/*
+ * The same look as capture2cloud, deliberately: these are two halves of
+ * the same habit, and a person moving between them should not have to
+ * learn a second set of manners. Eleven-pixel monospace on near-black,
+ * a bar that fades out of the way, and menus that open OVER the picture
+ * rather than growing the bar downwards -- the bar sits on top of the
+ * thing you are watching, so it must not push into it.
+ */
+html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+             color: #ddd; font: 11px monospace; }
+/*
+ * The picture takes what the buttons do not, and the buttons move
+ * rather than the picture shrinking.
+ *
+ * Stacked, a 4:3 screen in a wide window used a quarter of it: the pad
+ * claimed a full-width band underneath, and the picture was left with
+ * whatever height remained. Beside the picture, the same buttons cost
+ * only their own width and the picture gets the whole height.
+ *
+ * This is a grid rather than a flex row because the track sizes have to
+ * be DEFINITE. The canvas asks for height:100%, and a percentage height
+ * against a parent whose own height is content-derived resolves to auto:
+ * the canvas then fell back to its intrinsic 4:3, sat at the top of the
+ * stage, and overflowed the window once the pad was hidden. A 1fr track
+ * is measured from the window, so height:100% has something real to
+ * resolve against.
+ */
+body { display: grid; }
+
+/* Landscape: buttons either side, the picture keeps the full height. */
+body { grid-template-columns: auto minmax(0, 1fr) auto;
+       grid-template-rows: minmax(0, 1fr);
+       grid-template-areas: "padl stage padr"; }
+
+/* Portrait: the picture across the top, the two halves of the pad side
+   by side underneath, which is how a phone is held. */
+@media (max-aspect-ratio: 1/1) {
+  body { grid-template-columns: 1fr 1fr;
+         grid-template-rows: minmax(0, 1fr) auto;
+         grid-template-areas: "stage stage" "padl padr"; }
+}
+
+#stage { grid-area: stage; display: flex; align-items: center;
+         justify-content: center; min-width: 0; min-height: 0; }
+
+/*
+ * Full height, but the contents sit as a group in the middle of it.
+ * Stacked against the bottom edge they were awkward to reach; held
+ * apart at the extremes they ran under the bar at the top and touched
+ * the bottom of the window. The top padding keeps the bar clear even
+ * for the tallest side, which is the Wii U's.
+ */
+/*
+ * A positioned space rather than a stack.
+ *
+ * Flexbox decided where every control went, which is fine until
+ * somebody wants to move one: there was nothing to move. Each group --
+ * the triggers, the d-pad, the stick, the menu button -- now carries its
+ * own place in the column, kept as a fraction so it survives a resize
+ * and a different window.
+ */
+/*
+ * A width of its own, because absolutely positioned children give a
+ * column none: the grid's auto track collapsed to nothing and the pad
+ * hung off both edges of the window. Wide enough for the broadest
+ * group, which is the face diamond at three buttons across.
+ */
+.padside { position: relative; padding: 0;
+           width: calc(var(--btn) * 3.4); }
+.pgroup { position: absolute; transform: translate(-50%, -50%);
+          display: flex; flex-direction: column; align-items: center; gap: 8px; }
+body.arranging .pgroup { outline: 2px dashed rgba(255,220,0,.9);
+                         outline-offset: 6px; cursor: move; }
+body.arranging button.b, body.arranging .stick { pointer-events: none; }
+#padLeft  { grid-area: padl; justify-content: flex-start; }
+#padRight { grid-area: padr; justify-content: flex-end; }
+
+/*
+ * Sized by the browser, not by script.
+ *
+ * Measuring the box in order to resize the thing inside it is a loop:
+ * the canvas grew, the stage shrank around it, and the next measurement
+ * disagreed with the last. A replaced element with an intrinsic ratio
+ * and two maximums needs none of that -- it fills what it is given and
+ * keeps its shape, which is the whole requirement.
+ */
+/* capture2cloud's own rule. The element fills the stage and the drawing
+   is letterboxed inside it, which keeps the shape without any script
+   measuring anything. */
+canvas { image-rendering: auto; touch-action: none; display: block;
+         width: 100%; height: 100%; object-fit: contain; background: #000; }
+
+#bar { position: fixed; top: 0; left: 0; right: 0; padding: 5px 10px;
+       background: rgba(0,0,0,.65); display: flex; flex-direction: column;
+       gap: 3px; opacity: 0; transition: opacity .2s; pointer-events: none;
+       z-index: 5; }
+#bar.visible { opacity: 1; pointer-events: auto; }
+#statsRow, #controlsRow { display: flex; gap: 10px; align-items: center;
+                          flex-wrap: wrap; }
+#info { color: #8f8; white-space: nowrap; }
+/* Its own space, so a warning never lands on top of the counters. */
+#warn { color: #fc6; white-space: nowrap; margin-left: 6px; }
+#warn:not(:empty)::before { content: "\2014  "; color: #666; }
+
+/* A group is a summary that reads like a button and a panel that opens
+   over the picture. */
+.menu-group { position: relative; }
+.menu-group > summary { list-style: none; cursor: pointer; background: #222;
+     color: #ddd; border: 1px solid #444; border-radius: 4px; padding: 3px 8px;
+     white-space: nowrap; font: 11px monospace; }
+.menu-group > summary::-webkit-details-marker { display: none; }
+.menu-group > summary::after { content: ' \25be'; color: #888; }
+.menu-group[open] > summary { background: #333; border-color: #666; }
+.menu-group[open] > summary::after { content: ' \25b4'; }
+.menu-items { position: absolute; top: calc(100% + 4px); left: 0; z-index: 6;
+     background: rgba(10,10,10,.96); border: 1px solid #444; border-radius: 5px;
+     padding: 8px 10px; display: flex; flex-direction: column; gap: 6px;
+     min-width: 210px; max-height: 70vh; overflow-y: auto; }
+
+button { background: #222; color: #ddd; border: 1px solid #444;
+         border-radius: 4px; padding: 3px 8px; cursor: pointer;
+         font: 11px monospace; }
+select { background: #222; color: #ddd; border: 1px solid #444;
+         border-radius: 4px; padding: 2px 4px; font: 11px monospace; }
+input[type=range] { width: 84px; }
+input[type=text] { background: #222; color: #ddd; border: 1px solid #444;
+                   border-radius: 4px; padding: 3px 6px; font: 11px monospace;
+                   width: 100%; box-sizing: border-box; }
+label { display: flex; gap: 6px; align-items: center; white-space: nowrap; }
+.menu-items label { justify-content: space-between; gap: 10px; }
+.menu-items label:has(input[type=checkbox]) { justify-content: flex-start; }
+.hint { color: #888; white-space: normal; max-width: 210px; }
+
+/* The servers list, inside its panel. */
+.srv { display: flex; gap: 6px; align-items: center; }
+.srv a { flex: 1; color: #cde; text-decoration: none; padding: 4px 6px;
+         border-radius: 4px; background: #ffffff12; }
+.srv a:hover { background: #ffffff22; }
+
+/* The on-screen buttons, in capture2cloud's own values. */
+/*
+ * The buttons are sized from the window, not fixed.
+ *
+ * In landscape the picture is limited by whatever the two button
+ * columns leave it, so every pixel the buttons do not take is a pixel
+ * the picture gets. Fixed 58px buttons cost a 4:3 screen most of a
+ * small window. The floor is what stays pressable; the ceiling stops
+ * them looking absurd on a large display.
+ */
+body { --btn-bg: rgba(255,255,255,.14); --btn-border: rgba(255,255,255,.4);
+       --btn-pressed: rgba(255,255,255,.45);
+       --btn: clamp(30px, 6.2vh, 52px); }
+.padside:empty { display: none; }
+
+.stack { display: flex; flex-direction: column; gap: 8px; }
+button.b { width: var(--btn); height: var(--btn); border-radius: 50%;
+           border: 2px solid var(--btn-border); background: var(--btn-bg);
+           color: var(--btn-label, #fff);
+           font: bold calc(var(--btn) * 0.24) sans-serif;
+           touch-action: none;
+           user-select: none; box-shadow: 0 0 4px rgba(0,0,0,.5); }
+button.b:active, button.b.held { background: var(--btn-pressed); }
+.row { display: flex; gap: 8px; }
+.pgroup > .row { flex-direction: column; }
+#dpad { display: grid; grid-template-columns: repeat(3, calc(var(--btn) * 0.86));
+        grid-template-rows: repeat(3, calc(var(--btn) * 0.86)); gap: 2px; }
+#dpad button.b { width: calc(var(--btn) * 0.86); height: calc(var(--btn) * 0.86);
+                 border-radius: 8px; }
+/*
+ * Shoulders and menu buttons are oblong, as they are on the console and
+ * in the Android client: they are pressed with the side of a finger
+ * rather than aimed at, and a circle wastes the width their labels
+ * need -- which is why they were abbreviated to SEL and STA.
+ */
+button.b.wide { width: calc(var(--btn) * 1.9); height: calc(var(--btn) * 0.76);
+                border-radius: 8px; font-size: calc(var(--btn) * 0.22); }
+.diamond { display: grid; grid-template-columns: repeat(3, var(--btn));
+           grid-template-rows: repeat(3, var(--btn)); gap: 2px; }
+.diamond .top    { grid-area: 1 / 2; }
+.diamond .left   { grid-area: 2 / 1; }
+.diamond .right  { grid-area: 2 / 3; }
+.diamond .bottom { grid-area: 3 / 2; }
+.stickwrap { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.sticklabel { font: 10px monospace; color: var(--btn-label, #fff); opacity: .7; }
+.stick { position: relative; width: calc(var(--btn) * 1.3);
+         height: calc(var(--btn) * 1.3); border-radius: 50%;
+         border: 2px solid var(--btn-border); background: var(--btn-bg);
+         touch-action: none; }
+.stick .knob { position: absolute; left: 50%; top: 50%;
+               width: calc(var(--btn) * 0.58); height: calc(var(--btn) * 0.58);
+               margin: calc(var(--btn) * -0.29) 0 0 calc(var(--btn) * -0.29);
+               border-radius: 50%;
+               border: 2px solid var(--btn-border); background: var(--btn-pressed);
+               pointer-events: none; }

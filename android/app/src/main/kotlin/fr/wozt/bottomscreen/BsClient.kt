@@ -34,7 +34,7 @@ class BsClient(
          * which is why the choice starts hidden rather than starting
          * shown and being taken away.
          */
-        fun onScreens(mask: Int)
+        fun onScreens(mask: Int, watchingBottom: Int, watchingTop: Int)
         fun onDisconnected(reason: String)
     }
 
@@ -171,7 +171,15 @@ class BsClient(
                         }
                     }
                     BsProtocol.MSG_SCREENS -> {
-                        if (h.payloadSize >= 1) listener.onScreens(payload[0].toInt() and 0xFF)
+                        /* Four bytes: the mask, then how many are
+                         * watching each screen. Sent again whenever
+                         * somebody arrives, leaves or moves. */
+                        if (h.payloadSize >= 4)
+                            listener.onScreens(payload[0].toInt() and 0xFF,
+                                               payload[1].toInt() and 0xFF,
+                                               payload[2].toInt() and 0xFF)
+                        else if (h.payloadSize >= 1)
+                            listener.onScreens(payload[0].toInt() and 0xFF, 0, 0)
                     }
                     BsProtocol.MSG_PING -> outQueue.offer(BsProtocol.emptyMessage(BsProtocol.MSG_PONG))
                 }

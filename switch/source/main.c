@@ -1286,10 +1286,16 @@ static void draw_playing(const StreamInfo *info, SDL_Rect *dst_out)
      */
     if (g_show_stats) {
         char probe[128];
+        const int wb = stream_watching(BS_SCREEN_BOTTOM);
+        const int wt = stream_watching(BS_SCREEN_TOP);
+        char who[48] = "";
+        if (wb + wt > 0)
+            snprintf(who, sizeof(who), "   %d watching (%d bottom, %d top)",
+                     wb + wt, wb, wt);
         snprintf(probe, sizeof(probe),
-                 "%s   %ux%u   %u frames   \u2013   START+SELECT for settings",
+                 "%s   %ux%u   %u frames%s   \u2013   START+SELECT for settings",
                  stream_decoder_name(), (unsigned)info->width,
-                 (unsigned)info->height, (unsigned)stream_frames());
+                 (unsigned)info->height, (unsigned)stream_frames(), who);
         int tw = 0, th = 0;
         TTF_SizeUTF8(g_small, probe, &tw, &th);
         fill(8, 8, tw + 16, th + 8, (SDL_Color){ 0, 0, 0, 170 });

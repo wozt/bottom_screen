@@ -145,6 +145,12 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
      */
     @Volatile private var shownScreen = BsProtocol.SCREEN_BOTTOM
     @Volatile private var screensMask = 1 shl BsProtocol.SCREEN_BOTTOM
+    /* How many are watching each screen, as the server last said. Worth
+     * saying out loud: three people on the top screen and none on the
+     * bottom explains a great deal about why a picture looks as it
+     * does. */
+    @Volatile private var watchingBottom = 0
+    @Volatile private var watchingTop = 0
     private var padColour = 0
     private var stickBelow = booleanArrayOf(false, true)
     private var startInEdit = false
@@ -556,8 +562,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         }
     }
 
-    override fun onScreens(mask: Int) {
+    override fun onScreens(mask: Int, watchingBottom: Int, watchingTop: Int) {
         screensMask = mask
+        this.watchingBottom = watchingBottom
+        this.watchingTop = watchingTop
         /* The settings may be open on the very row this adds. */
         runOnUiThread {
             (panel as? android.widget.ScrollView)
@@ -1243,8 +1251,11 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     /** One line, the way capture2cloud reports a stream. */
     private fun statusLine(): String {
         val a = ack ?: return "not connected"
+        val watching = watchingBottom + watchingTop
         return "${profile.label}  ${a.width}x${a.height}  ${fps} fps" +
-               (if (a.hasAudio) "  sound" else "  no sound")
+               (if (a.hasAudio) "  sound" else "  no sound") +
+               (if (watching > 0) "  $watching watching" else "") +
+               (if (watchingTop > 0) " ($watchingBottom bottom, $watchingTop top)" else "")
     }
 
     /*

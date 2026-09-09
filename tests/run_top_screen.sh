@@ -130,6 +130,39 @@ else
     fail=1
 fi
 
+# --- a second viewer does not wait for the next scheduled keyframe ----
+#
+# Clients may not ask for keyframes: one that is struggling asks
+# constantly, which is exactly when the others can least afford it. But
+# joining a stream that is already running means waiting for the next
+# scheduled one -- half a second on average, a second at worst, of
+# nothing or of green depending on the decoder. The server issues one
+# itself for that case, and this is the difference: measured without it,
+# 494ms and 495ms; with it, 29ms.
+( "$DIR/tests/smoke_client" --port "$P" --frames 400 >/dev/null 2>&1 || true ) &
+FIRST=$!
+sleep 3
+"$DIR/tests/smoke_client" --port "$P" --frames 30 >"$OUT/second.txt" 2>&1 || true
+kill $FIRST 2>/dev/null || true
+wait $FIRST 2>/dev/null || true
+
+ms=$(grep -oE "premiere image cle apres [0-9]+" "$OUT/second.txt" | grep -oE "[0-9]+$")
+if [ -n "$ms" ] && [ "$ms" -lt 200 ]; then
+    note "a second viewer got its first picture in ${ms}ms"
+else
+    note "a second viewer waited ${ms:-?}ms for a picture, which is a whole GOP"
+    fail=1
+fi
+
+# And the counts the clients put in their own status lines.
+if grep -q "masque 3, 2 en bas" "$OUT/second.txt"; then
+    note "the server counts who is watching what"
+else
+    note "the viewer counts did not arrive:"
+    grep "ecrans disponibles" "$OUT/second.txt" | sed 's/^/    /'
+    fail=1
+fi
+
 # --- and the same thing through a browser's transport -----------------
 #
 # The page reaches the server over a WebSocket, which is its own framing

@@ -24,6 +24,8 @@ static volatile int g_connected;
  * until it says otherwise, which is also what an older server means by
  * saying nothing. */
 static volatile int g_screens = 1 << BS_SCREEN_BOTTOM;
+/* How many clients are on each screen, as the server last said. */
+static volatile int g_watching[BS_SCREEN_COUNT];
 
 static StreamInfo g_info;
 static pthread_mutex_t g_info_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -244,6 +246,11 @@ static void *reader(void *arg)
             BsScreens sc;
             memcpy(&sc, buf, sizeof(sc));
             g_screens = sc.available;
+            /* And how many are watching each, which the counters line
+             * says out loud. Sent again whenever somebody arrives,
+             * leaves or moves between the two. */
+            g_watching[BS_SCREEN_BOTTOM] = sc.watching_bottom;
+            g_watching[BS_SCREEN_TOP] = sc.watching_top;
         } else if (type == BS_MSG_PING) {
             bs_send_msg(g_conn, BS_MSG_PONG, NULL, 0, NULL, 0);
         }
@@ -441,6 +448,13 @@ void stream_send_screen(int screen)
 int stream_screens(void)
 {
     return g_screens;
+}
+
+int stream_watching(int screen)
+{
+    if (screen < 0 || screen >= BS_SCREEN_COUNT)
+        return 0;
+    return g_watching[screen];
 }
 
 void stream_send_size(int width, int height)

@@ -830,7 +830,16 @@ void vpad_merge(PadState21 pad) {
                 const int x_slot = (f->anchor == VPAD_LSTICK) ? PAD_LX : PAD_RX;
                 const int y_slot = (f->anchor == VPAD_LSTICK) ? PAD_LY : PAD_RY;
                 deflect(pad, x_slot, (int)(nx * 100.0f));
-                deflect(pad, y_slot, (int)(ny * 100.0f));
+                /*
+                 * Negated: a screen's y grows downward and a stick's
+                 * does not. Reading the finger's offset straight into
+                 * the axis made the on-screen sticks answer up with down
+                 * -- and only the on-screen ones, because the console's
+                 * own sticks already report the other way round and both
+                 * end up in the same merged state. Two halves of one
+                 * control disagreeing is worse than either convention.
+                 */
+                deflect(pad, y_slot, (int)(-ny * 100.0f));
                 break;
             }
             case VPAD_DPAD:
@@ -941,7 +950,9 @@ void vpad_draw(SDL_Renderer *r, const PadState21 pad) {
                     const int vx = (a == VPAD_LSTICK) ? pad[PAD_LX] : pad[PAD_RX];
                     const int vy = (a == VPAD_LSTICK) ? pad[PAD_LY] : pad[PAD_RY];
                     const float kx = cx + (g_editing ? 0.0f : vx * STICK_TRAVEL / 100.0f);
-                    const float ky = cy + (g_editing ? 0.0f : vy * STICK_TRAVEL / 100.0f);
+                    /* Back into screen space for drawing, the same
+                     * negation the finger went through on the way in. */
+                    const float ky = cy - (g_editing ? 0.0f : vy * STICK_TRAVEL / 100.0f);
                     ui_fill_circle(r, (int)kx, (int)ky, (int)(0.8f * U), COL_KNOB);
                     ui_draw_circle(r, (int)kx, (int)ky, (int)(0.8f * U), edge);
                 } else if (a == VPAD_DPAD) {

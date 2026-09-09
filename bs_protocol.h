@@ -233,10 +233,24 @@ typedef struct __attribute__((packed)) {
     uint8_t reserved[3];
 } BsScreenChoice;
 
-/* A bit per BsScreen: 1 << BS_SCREEN_TOP is set when there is one. */
+/*
+ * Which screens exist, and who is watching what.
+ *
+ * Sent once when a client is ready and again whenever the answer
+ * changes -- somebody arriving, leaving, or moving between the two. The
+ * counts ride in bytes that were reserved, so this is the same four
+ * bytes it always was and a client built before they meant anything
+ * reads the mask and ignores the rest.
+ *
+ * The counts are for the clients to say out loud. Knowing that three
+ * people are on the top screen and none on the bottom explains a great
+ * deal about why a picture looks the way it does.
+ */
 typedef struct __attribute__((packed)) {
-    uint8_t available;
-    uint8_t reserved[3];
+    uint8_t available;         /* a bit per BsScreen */
+    uint8_t watching_bottom;
+    uint8_t watching_top;
+    uint8_t reserved;
 } BsScreens;
 
 /* What BS_MSG_SET_AUDIO_SOURCE selects. */

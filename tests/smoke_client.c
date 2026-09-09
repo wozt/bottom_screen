@@ -167,6 +167,18 @@ int main(int argc, char **argv)
     int resizes = 0;
     int screens_seen = -1;   /* the mask the server sent, -1 = it said nothing */
 
+    /*
+     * How long the first decodable picture took.
+     *
+     * A client joining a stream nobody else is watching gets one at
+     * once: the encoder is being built for it and its opening frame is
+     * a keyframe. One joining a stream already running used to wait for
+     * the next scheduled keyframe, which is up to a second of nothing --
+     * or of green, depending on the decoder.
+     */
+    const uint32_t joined_at = bs_now_us();
+    uint32_t first_key_us = 0;
+
     int audio_packets = 0;
     size_t audio_bytes = 0;
 
@@ -187,7 +199,8 @@ int main(int argc, char **argv)
             BsScreens sc;
             memcpy(&sc, buf, sizeof(sc));
             screens_seen = sc.available;
-            printf("ecrans disponibles: masque %d\n", screens_seen);
+            printf("ecrans disponibles: masque %d, %d en bas, %d en haut\n",
+                   screens_seen, sc.watching_bottom, sc.watching_top);
             continue;
         }
         if (type == BS_MSG_STREAM_INFO && n >= sizeof(BsStreamInfo)) {
@@ -218,7 +231,10 @@ int main(int argc, char **argv)
 
         BsVideoHeader vh;
         memcpy(&vh, buf, sizeof(vh));
-        if (vh.flags & BS_VFLAG_KEYFRAME) keyframes++;
+        if (vh.flags & BS_VFLAG_KEYFRAME) {
+            keyframes++;
+            if (!first_key_us) first_key_us = bs_now_us() - joined_at;
+        }
         if (decoded == 0) first_id = vh.frame_id;
         last_id = vh.frame_id;
         total_bytes += (uint64_t)n;
@@ -322,6 +338,7 @@ int main(int argc, char **argv)
         printf("note: %u frame ids spanned for %d decoded pictures\n",
                last_id - first_id + 1, decoded);
 
+    printf("premiere image cle apres %.0f ms\n", first_key_us / 1000.0);
     printf("decoded %d frames, %d keyframes, %.1f fps, %.2f Mbit/s\n",
            decoded, keyframes, fps, mbps);
     if (ack.audio_rate > 0)

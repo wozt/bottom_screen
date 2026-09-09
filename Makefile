@@ -34,8 +34,15 @@ all: $(BINARIES)
 
 # The page is compiled in, so there is no file to install and no path
 # to get wrong relative to wherever an emulator was launched from.
-web_page.h: web/index.html scripts/embed_page.py
-	python3 scripts/embed_page.py web/index.html web_page.h
+# The order matters only for the scripts, and index.html is what lists
+# them; here it is just the set of files the server carries.
+WEB_FILES := web/index.html web/app.css \
+             web/main.js web/protocol.js web/audio.js web/video.js \
+             web/touch.js web/pad.js web/settings.js web/servers.js \
+             web/connect.js
+
+web_page.h: $(WEB_FILES) scripts/embed_page.py
+	python3 scripts/embed_page.py $(WEB_FILES) web_page.h
 
 bottom_screen_server: $(SERVER_SRC) bs_server.h bs_encoder.h bs_net.h \
                       bs_protocol.h bs_source.h bs_mailbox.h bs_ws.h web_page.h
@@ -88,6 +95,7 @@ test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_fli
 	./tests/run_multiclient.sh
 	./tests/run_receive_size.sh
 	./tests/run_top_screen.sh
+	./tests/run_web_files.sh
 	./tests/run_switch_client.sh
 	./tests/input_merge
 	./tests/resize_flip

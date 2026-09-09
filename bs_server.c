@@ -138,6 +138,23 @@ typedef struct BsStream {
 
     uint32_t     frame_id;
     uint64_t     bytes;
+
+    /*
+     * One keyframe, asked for by the server rather than by a client.
+     *
+     * Clients may not ask: one that is struggling asks constantly, which
+     * is exactly when the others can least afford it, and three of them
+     * turned the stream into mostly keyframes. But there are two moments
+     * where waiting up to a second for the next one is a second of green
+     * mush, and the server knows both without being told -- somebody
+     * joining a stream that is already running, and somebody moving
+     * between the two screens.
+     *
+     * Read and cleared by the pump, so the encoder is only ever touched
+     * by the thread that owns it, and a burst of arrivals costs one
+     * keyframe rather than one each.
+     */
+    volatile int want_keyframe;
 } BsStream;
 
 struct BsServer {
@@ -383,14 +400,39 @@ static void client_release_all(BsClient *cl)
  * carries on, which is exactly right: it never learns there is a top
  * screen, and it never had one before either.
  */
+static void announce_screens(BsServer *srv);
+
 static void client_send_screens(BsClient *cl)
 {
+    BsServer *srv = cl->srv;
     BsScreens sc;
     memset(&sc, 0, sizeof(sc));
     for (int i = 0; i < BS_SCREEN_COUNT; i++)
-        if (cl->srv->video[i].offered)
+        if (srv->video[i].offered)
             sc.available |= (uint8_t)(1u << i);
+
+    int watching[BS_SCREEN_COUNT] = { 0, 0 };
+    for (int i = 0; i < srv->max_clients; i++) {
+        const BsClient *o = &srv->clients[i];
+        if (o->in_use && !o->gone && o->ready &&
+            o->screen >= 0 && o->screen < BS_SCREEN_COUNT)
+            watching[o->screen]++;
+    }
+    sc.watching_bottom = (uint8_t)watching[BS_SCREEN_BOTTOM];
+    sc.watching_top    = (uint8_t)watching[BS_SCREEN_TOP];
+
     client_send(cl, BS_MSG_SCREENS, 0, &sc, sizeof(sc), NULL, 0);
+}
+
+/* Whether anybody other than `cl` is already watching that screen. */
+static int others_watching(BsServer *srv, const BsClient *cl, int screen)
+{
+    for (int i = 0; i < srv->max_clients; i++) {
+        const BsClient *o = &srv->clients[i];
+        if (o != cl && o->in_use && !o->gone && o->ready && o->screen == screen)
+            return 1;
+    }
+    return 0;
 }
 
 /*
@@ -438,6 +480,14 @@ static void client_set_screen(BsClient *cl, int screen)
 
     cl->screen = screen;
     cl->want_key = 1;
+    /*
+     * One keyframe on the stream being joined, so the picture comes back
+     * now rather than at the next scheduled one. Only where somebody
+     * else is already watching: if this client is the first, the encoder
+     * is about to be built for it and its opening frame is a keyframe.
+     */
+    if (others_watching(srv, cl, screen))
+        srv->video[screen].want_keyframe = 1;
 
     /*
      * Throw away what is queued for the screen it just left -- those are
@@ -581,6 +631,19 @@ static void *client_recv_thread(void *arg)
      */
     client_send_screens(cl);
 
+    /*
+     * A client arriving on a stream that is already running waits for
+     * the next scheduled keyframe -- up to a second of nothing, or of
+     * green, depending on the decoder. One is asked for instead. Alone
+     * on a stream it needs nothing: the encoder is being built for it,
+     * and its opening frame is a keyframe already.
+     */
+    if (others_watching(srv, cl, cl->screen))
+        srv->video[cl->screen].want_keyframe = 1;
+
+    /* And everyone else learns there is one more of them. */
+    announce_screens(srv);
+
     /* Someone is watching, so the pump has work to do. */
     pthread_mutex_lock(&srv->roster);
     pthread_cond_broadcast(&srv->roster_cond);
@@ -699,6 +762,8 @@ static void *client_recv_thread(void *arg)
     /* This client left. The server has not, and neither have the others. */
     cl->gone = 1;
     client_release_all(cl);
+    /* One fewer, which the others are told. */
+    announce_screens(srv);
     pthread_mutex_lock(&cl->lock);
     pthread_cond_signal(&cl->cond);
     pthread_mutex_unlock(&cl->lock);
@@ -1137,6 +1202,11 @@ static void *pump_thread(void *arg)
                 fprintf(stderr, "bottom_screen: encoding the %s screen at %dx%d\n",
                         st->which == BS_SCREEN_TOP ? "top" : "bottom",
                         st->out_w, st->out_h);
+        }
+
+        if (st->want_keyframe) {
+            st->want_keyframe = 0;
+            bs_encoder_request_keyframe(st->enc);
         }
 
         if (st->quality_dirty) {
