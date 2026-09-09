@@ -170,6 +170,18 @@ struct BsServer {
     BsAudioEncoder *aenc;      /* NULL when the source is silent */
     BsServerConfig cfg;
 
+    /*
+     * Which encoder the search settled on, held so the search happens
+     * once.
+     *
+     * The default asks the card first and falls back, which means trying
+     * encoders until one opens -- and creating a VAAPI device is not
+     * free. Every change of size or quality rebuilds the encoder, so
+     * without this a person moving a slider would pay for that search
+     * each time. cfg.encoder is pointed here after the first one opens.
+     */
+    char encoder_name[64];
+
     int       listen_fd;
     uint16_t  port;          /* the one actually bound, not the one asked for */
 
@@ -1443,6 +1455,12 @@ BsServer *bs_server_create(BsSource *source, const BsServerConfig *cfg,
      * is read from the encoder rather than assumed, because that is
      * where rounding to even numbers happens. The handshake carries it
      * to every client, so it counts as already told. */
+    /* Settled now, so every rebuild after this one goes straight to it
+     * instead of searching again. */
+    snprintf(srv->encoder_name, sizeof(srv->encoder_name), "%s",
+             bs_encoder_name(bot->enc));
+    srv->cfg.encoder = srv->encoder_name;
+
     bs_encoder_out_size(bot->enc, &bot->out_w, &bot->out_h);
     bot->told_w = bot->out_w;
     bot->told_h = bot->out_h;

@@ -120,18 +120,18 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
     }
 
     /*
-     * "auto" means: the card if it has an encoder, this CPU if not.
+     * The default: the card if it has an encoder, this CPU if not.
      *
-     * Worth asking for rather than assuming, because the answer is not
-     * always yes -- a machine can have a GPU with no encoder, or a
-     * driver that reports one and then refuses every frame. So the list
-     * is tried in order and the first that actually opens wins, with
-     * libx264 at the end because it always works.
+     * Tried in order, and the first that actually opens wins -- because
+     * the answer is not always yes. A machine can have a GPU with no
+     * encoder, or a driver that reports one and then refuses every
+     * frame, and the only way to find out is to ask it. libx264 is last
+     * because it always works.
      *
-     * Not the default. Silently moving everybody onto a different
-     * encoder would change what every stream looks like on a machine
-     * nobody has tested, and the failure would be a picture rather than
-     * a message.
+     * Which one was taken is announced when the server starts, so a
+     * stream that looks wrong on a machine nobody has tested is one line
+     * away from being explained rather than a mystery. `libx264` asked
+     * for by name is still exactly that, and is the way back.
      */
     static const char *const AUTO[] = {
         "h264_vaapi",   /* AMD and Intel on Linux */
@@ -140,7 +140,7 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
         "libx264",      /* always */
     };
 
-    const char *want = cfg->encoder ? cfg->encoder : "libx264";
+    const char *want = cfg->encoder ? cfg->encoder : "auto";
     if (!strcmp(want, "auto")) {
         for (size_t i = 0; i < sizeof(AUTO) / sizeof(AUTO[0]); i++) {
             BsEncoderConfig probe = *cfg;

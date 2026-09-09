@@ -113,15 +113,24 @@ itself for the two cases where waiting is half a second of green:
 somebody joining a stream that is already running, and somebody moving
 between the screens. Measured: 494ms before, 27ms after.
 
-**The card's encoder is asked for, never assumed.** A hardware encoder
-is worth having at 1080p and above -- 185% of a core down to 128%,
-232% down to 134% on a Radeon RX 6600 -- and worth nothing at a DS's own
-size, where the drawing and the colour conversion cost more than the
-encode. `auto` tries VAAPI, NVENC and QSV in turn and ends at libx264,
-which always works. It is not the default: silently moving everybody
-onto a different encoder would change what every stream looks like on
-machines nobody has tested, and the failure would be a picture rather
-than a message.
+**The card's encoder is the default, and it is tried rather than
+assumed.** VAAPI, then NVENC, then QSV, ending at libx264 which always
+works -- the first that actually opens wins, because a GPU can have no
+encoder and a driver can report one and then refuse every frame. Worth
+185% of a core down to 128% at 1080p and 232% down to 134% at 1440p on a
+Radeon RX 6600; worth nothing at a DS's own size, where the drawing and
+the colour conversion cost more than the encode.
+
+Two things make a default safe here rather than presumptuous. It is
+announced at startup, so a stream that looks wrong on a machine nobody
+has tested is one line away from being explained. And `--encoder
+libx264`, or `BOTTOM_SCREEN_ENCODER=libx264` for the emulators, is the
+way back.
+
+Settled once. The default means trying encoders until one opens, and
+creating a VAAPI device is not free; every change of size or quality
+rebuilds the encoder, so the name that won is kept and used directly
+after that.
 
 The bet it rests on is that a hardware encoder repeats SPS/PPS in front
 of every keyframe, the way x264 does when asked. That is the driver's
