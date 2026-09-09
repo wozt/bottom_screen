@@ -842,14 +842,40 @@ void vpad_merge(PadState21 pad) {
                 deflect(pad, y_slot, (int)(-ny * 100.0f));
                 break;
             }
-            case VPAD_DPAD:
-                /* Each axis answered separately, so up+right is up and
-                 * right rather than whichever arrow is nearest. */
-                if (dy < -DPAD_THRESHOLD) press(pad, PAD_UP, 100);
-                if (dy > DPAD_THRESHOLD)  press(pad, PAD_DOWN, 100);
-                if (dx < -DPAD_THRESHOLD) press(pad, PAD_LEFT, 100);
-                if (dx > DPAD_THRESHOLD)  press(pad, PAD_RIGHT, 100);
+            case VPAD_DPAD: {
+                /*
+                 * Eight sectors of the circle, not two thresholds on a
+                 * square.
+                 *
+                 * Crossing an x threshold and a y threshold
+                 * independently does give diagonals, but only in the
+                 * corners of the square they describe -- where the
+                 * thumb has already left the cross -- while each
+                 * straight direction takes a third of the width.
+                 * Sectors give all eight the same forty-five degrees,
+                 * and the diagonals land where the circle's diagonals
+                 * are, which is the shape this is drawn as.
+                 */
+                const float len = sqrtf(dx * dx + dy * dy);
+                if (len <= DPAD_THRESHOLD)
+                    break;          /* a dead middle, so resting is not a direction */
+
+                float a = atan2f(dy, dx) * 180.0f / 3.14159265f;
+                if (a < 0.0f) a += 360.0f;
+                /* Shifted by half a sector so each direction is centred
+                 * on its own axis rather than starting at it. */
+                switch ((int)((a + 22.5f) / 45.0f) % 8) {
+                case 0: press(pad, PAD_RIGHT, 100); break;
+                case 1: press(pad, PAD_RIGHT, 100); press(pad, PAD_DOWN, 100); break;
+                case 2: press(pad, PAD_DOWN, 100); break;
+                case 3: press(pad, PAD_LEFT, 100); press(pad, PAD_DOWN, 100); break;
+                case 4: press(pad, PAD_LEFT, 100); break;
+                case 5: press(pad, PAD_LEFT, 100); press(pad, PAD_UP, 100); break;
+                case 6: press(pad, PAD_UP, 100); break;
+                default: press(pad, PAD_RIGHT, 100); press(pad, PAD_UP, 100); break;
+                }
                 break;
+            }
             case VPAD_FACE:
                 if (f->sub >= 0 && f->sub < 4) {
                     press(pad, FACE[f->sub].slot, 100);

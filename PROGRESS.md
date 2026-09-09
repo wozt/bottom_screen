@@ -58,16 +58,6 @@ below, 5:3 above. A DS has two of the same, a Wii U two of 16:9.
 
 ## Open
 
-### The Android picture is sometimes black on connect
-
-About one start in eight on a real phone. Two causes were found and
-fixed; at least one remains.
-
-### A requested bitrate is exceeded by about half again
-
-The encoder is told a frame rate measured once at startup and never
-revisited. Ask for 4 Mbit/s and roughly 6 arrives.
-
 ### Cemu serves nothing on the bottom screen without its GamePad window
 
 The server starts from either view now, so a game running on the
@@ -84,10 +74,14 @@ showing it black.
 The only route Azahar supports needs a second console, and the spare has
 a swollen battery. Nothing in this project depends on it.
 
-### The top screen is not in every menu yet
+### Nothing else, for now
 
-Separate quality and size per screen, and the round d-pad, are done on
-Android. The browser and the Switch still share one set.
+Two faults were closed by decision rather than by a fix, and are
+recorded here so nobody starts on them again. The Android picture that
+was sometimes black on connect no longer is. And a requested bitrate is
+still exceeded by about half again -- the encoder is told a frame rate
+measured once at startup and never revisited -- which is understood,
+measured, and not worth the change.
 
 ---
 
@@ -109,6 +103,14 @@ shared between everyone watching a screen, and the last to ask wins. The
 screen itself is the one setting that escapes this, because sharing it
 would leave nothing to choose — which is why a second screen costs a
 second encoder and the first does not.
+
+**The d-pad is eight sectors of a circle, on all three clients.** Two
+thresholds on a square does give diagonals, but only in the square's
+corners -- where the thumb has already left the cross -- while each
+straight direction takes a third of the width. The browser had it worse
+than that: a three-by-three grid of buttons with the corners empty, so a
+thumb between up and right pressed nothing at all. Four buttons cannot
+make eight directions.
 
 **Clients may not ask for keyframes.** One that is struggling asks
 constantly, which is exactly when the others can least afford it; three

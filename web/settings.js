@@ -69,7 +69,26 @@ audioSourceEl.addEventListener("change", () => {
  * which stops sending.
  */
 const screenPickEl = document.getElementById("screenPick");
+
+/*
+ * Quality and size, one of each per screen.
+ *
+ * The server encodes the two separately -- that is what a second screen
+ * costs -- so these are genuinely separate answers: a television picture
+ * worth 8 Mbit/s beside a GamePad screen worth 2 is a normal pair, not a
+ * contradiction. Held as the select's own values, because that is what
+ * has to go back into it.
+ *
+ * Sound is not here. There is one set of speakers whatever is on screen.
+ */
+const qualityFor = ["0", "0"];
+const scaleFor = ["0", "0"];
+
 screenPickEl.addEventListener("change", () => {
+  /* What was on the screen being left, remembered before leaving it. */
+  qualityFor[screenShown] = qualityEl.value;
+  scaleFor[screenShown] = sizeEl.value;
+
   screenShown = parseInt(screenPickEl.value, 10) || 0;
   if (touching) { touching = false; sendInput(INPUT.TOUCH_UP, 0, 0, 0); }
   const b = new Uint8Array(4);
@@ -91,9 +110,21 @@ screenPickEl.addEventListener("change", () => {
    */
   fullW = 0; fullH = 0;
   buildSizes(console_id);
+  /* What this screen was last set to, put back before either is sent.
+   * A rung that no longer exists -- the other screen renders less --
+   * falls back to "whatever is rendered", which always does. */
+  qualityEl.value = qualityFor[screenShown];
+  sizeEl.value = scaleFor[screenShown];
+  if (!sizeEl.value) sizeEl.value = "0";
   applyQuality();
   sizeEl.dispatchEvent(new Event("change"));
 });
+
+/* Remembered as they are changed, not only when a screen is left: a
+ * client that never switches back still has the right answer stored for
+ * the one it is on. */
+qualityEl.addEventListener("change", () => { qualityFor[screenShown] = qualityEl.value; });
+sizeEl.addEventListener("change", () => { scaleFor[screenShown] = sizeEl.value; });
 
 /*
  * The pad's colour, chosen rather than fixed.

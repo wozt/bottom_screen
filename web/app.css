@@ -179,10 +179,32 @@ button.b { width: var(--btn); height: var(--btn); border-radius: 50%;
 button.b:active, button.b.held { background: var(--btn-pressed); }
 .row { display: flex; gap: 8px; }
 .pgroup > .row { flex-direction: column; }
-#dpad { display: grid; grid-template-columns: repeat(3, calc(var(--btn) * 0.86));
-        grid-template-rows: repeat(3, calc(var(--btn) * 0.86)); gap: 2px; }
-#dpad button.b { width: calc(var(--btn) * 0.86); height: calc(var(--btn) * 0.86);
-                 border-radius: 8px; }
+/*
+ * The d-pad: a cross drawn inside a circle.
+ *
+ * The circle is not decoration -- it is the shape the directions are
+ * actually read from, eight sectors of it -- so drawing only the cross
+ * would show a smaller target than the one that works, and the
+ * diagonals would have nothing on screen at all.
+ */
+#dpad { position: relative; width: calc(var(--btn) * 2.6);
+        height: calc(var(--btn) * 2.6); border-radius: 50%;
+        background: var(--btn-bg); border: 2px solid var(--btn-border);
+        touch-action: none; }
+#dpad .arm-v, #dpad .arm-h { position: absolute; background: var(--btn-bg);
+        border: 2px solid var(--btn-border); pointer-events: none; }
+#dpad .arm-v { left: 50%; top: 6%; width: 34%; height: 88%;
+               transform: translateX(-50%); }
+#dpad .arm-h { top: 50%; left: 6%; height: 34%; width: 88%;
+               transform: translateY(-50%); }
+/* The lamps, which a thumb and a plugged-in pad both light. */
+#dpad .arrow { position: absolute; width: 22%; height: 22%;
+               border-radius: 4px; pointer-events: none; }
+#dpad .arrow.held { background: var(--btn-pressed); }
+#dpad .up    { left: 39%; top: 10%; }
+#dpad .down  { left: 39%; bottom: 10%; }
+#dpad .left  { top: 39%; left: 10%; }
+#dpad .right { top: 39%; right: 10%; }
 /*
  * Shoulders and menu buttons are oblong, as they are on the console and
  * in the Android client: they are pressed with the side of a finger

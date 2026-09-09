@@ -217,17 +217,12 @@ did not.
 
 Still open:
 
-- **A black picture on Android when connecting**, about one start in
-  eight on a real phone. Two causes were found and fixed and at least
-  one remains.
-- **A requested bitrate is exceeded by about half again**, because the
-  encoder is told a frame rate measured once at startup and never
-  revisited.
 - **Cemu draws no GamePad view without its window**, so a client
   watching the bottom screen of a game running on the television alone
   sees nothing. The port is there; the picture is not.
-- **Separate quality and size per screen, and the round d-pad**, are
-  done on Android and not yet in the browser or on the Switch.
+- **A requested bitrate is exceeded by about half again**, because the
+  encoder is told a frame rate measured once at startup. Understood,
+  measured, and left alone.
 - **The 3DS system titles**, which are not installed: the only route
   Azahar supports needs a second console.
 

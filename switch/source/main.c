@@ -184,6 +184,20 @@ static void settle_selection(void)
 /* Settings while playing, reached by holding START and SELECT. */
 static int g_menu_open;
 static int g_receive_scale;      /* 0 = as rendered, N = N x native */
+/*
+ * Quality and size, one of each per screen.
+ *
+ * The server encodes the two separately -- that is what a second screen
+ * costs -- so these are genuinely separate answers: a television picture
+ * worth 8 Mbit/s beside a GamePad screen worth 2 is a normal pair, not a
+ * contradiction. g_receive_scale and g_quality are the entries for
+ * whichever screen is on the wire, kept because everything else already
+ * reads them.
+ *
+ * Sound is not here. There is one set of speakers whatever is on screen.
+ */
+static int g_scale_for[BS_SCREEN_COUNT];
+static int g_quality_for[BS_SCREEN_COUNT];
 static int g_volume = 100;
 static int g_muted;
 static int g_show_buttons;       /* off until asked for */
@@ -1103,9 +1117,18 @@ static void adjust_row(const StreamInfo *info, int delta)
          * wait for it, because the picture changing shape is already
          * handled the way an emulator's internal resolution moving is.
          */
+        /* What was set for the screen being left, before leaving it. */
+        g_scale_for[g_screen] = g_receive_scale;
+        g_quality_for[g_screen] = g_quality;
+
         g_screen = (g_screen == BS_SCREEN_TOP) ? BS_SCREEN_BOTTOM
                                                : BS_SCREEN_TOP;
         stream_send_screen(g_screen);
+
+        /* And what this one was last set to, put back before either is
+         * sent. */
+        g_receive_scale = g_scale_for[g_screen];
+        g_quality = g_quality_for[g_screen];
         /*
          * The screen that has just been joined has its own encoder, and
          * that encoder was built on the server's defaults -- it has

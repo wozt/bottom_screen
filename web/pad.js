@@ -36,6 +36,101 @@ function addButton(parent, label, code) {
 }
 
 /*
+ * The d-pad: a cross inside a circle, read as eight sectors of it.
+ *
+ * It used to be a three-by-three grid of separate buttons with the
+ * corners left empty, which meant there were no diagonals at all -- a
+ * thumb between up and right pressed nothing. Four buttons cannot make
+ * eight directions.
+ *
+ * Sectors give each of the eight the same forty-five degrees, and the
+ * diagonals sit exactly where the circle's diagonals are, which is what
+ * the shape is drawn as. The middle is dead so that resting a thumb on
+ * the centre is not a direction; it is small, because this is a cross
+ * and not a stick, and the point of a cross is that a light touch
+ * already means something.
+ */
+const DPAD_DEAD = 0.22;
+
+function addDpad(parent) {
+  const el = document.createElement("div");
+  el.id = "dpad";
+  for (const cls of ["arm-v", "arm-h"]) {
+    const arm = document.createElement("div");
+    arm.className = cls;
+    el.appendChild(arm);
+  }
+  /* One lamp per direction, so a press is visible and a physical pad
+   * can light them the way it lights every other control. */
+  const lamps = {};
+  for (const [name, code] of [["up", BTN.UP], ["down", BTN.DOWN],
+                              ["left", BTN.LEFT], ["right", BTN.RIGHT]]) {
+    const d = document.createElement("div");
+    d.className = "arrow " + name;
+    el.appendChild(d);
+    lamps[code] = d;
+    padButtons.set(code, d);
+  }
+  parent.appendChild(el);
+
+  let held = null;
+  const down = new Set();
+
+  const apply = (wanted) => {
+    for (const code of down) if (!wanted.has(code)) {
+      sendInput(INPUT.BUTTON_UP, code, 0, 0);
+      lamps[code].classList.remove("held");
+    }
+    for (const code of wanted) if (!down.has(code)) {
+      sendInput(INPUT.BUTTON_DOWN, code, 0, 0);
+      lamps[code].classList.add("held");
+    }
+    down.clear();
+    for (const code of wanted) down.add(code);
+  };
+
+  const move = (ev) => {
+    const r = el.getBoundingClientRect();
+    const radius = r.width / 2;
+    const dx = ev.clientX - (r.left + radius);
+    const dy = ev.clientY - (r.top + radius);
+    const wanted = new Set();
+    if (Math.hypot(dx, dy) > radius * DPAD_DEAD) {
+      let a = Math.atan2(dy, dx) * 180 / Math.PI;
+      if (a < 0) a += 360;
+      /* Shifted by half a sector so each direction is centred on its
+       * own axis rather than starting at it. */
+      switch (Math.floor(((a + 22.5) % 360) / 45)) {
+        case 0: wanted.add(BTN.RIGHT); break;
+        case 1: wanted.add(BTN.RIGHT); wanted.add(BTN.DOWN); break;
+        case 2: wanted.add(BTN.DOWN); break;
+        case 3: wanted.add(BTN.LEFT); wanted.add(BTN.DOWN); break;
+        case 4: wanted.add(BTN.LEFT); break;
+        case 5: wanted.add(BTN.LEFT); wanted.add(BTN.UP); break;
+        case 6: wanted.add(BTN.UP); break;
+        default: wanted.add(BTN.RIGHT); wanted.add(BTN.UP); break;
+      }
+    }
+    apply(wanted);
+  };
+
+  el.addEventListener("pointerdown", (ev) => {
+    held = ev.pointerId;
+    el.setPointerCapture(ev.pointerId);
+    move(ev);
+    ev.preventDefault();
+  });
+  el.addEventListener("pointermove", (ev) => { if (held === ev.pointerId) move(ev); });
+  for (const e of ["pointerup", "pointercancel"])
+    el.addEventListener(e, (ev) => {
+      if (held !== ev.pointerId) return;
+      held = null;
+      apply(new Set());
+    });
+  return el;
+}
+
+/*
  * A stick: drag inside the circle, let go and it re-centres.
  *
  * Both axes are sent on every move rather than only the one that
@@ -220,14 +315,7 @@ function buildPad(id) {
   lShoulders.className = "stack";
   shoulderSide("L", "ZL").forEach(
     (n) => addButton(lShoulders, n, BTN[n]).classList.add("wide"));
-  const dpad = document.createElement("div");
-  dpad.id = "dpad";
-  const cells = [null, BTN.UP, null, BTN.LEFT, null, BTN.RIGHT, null, BTN.DOWN, null];
-  const names = ["", "▲", "", "◀", "", "▶", "", "▼", ""];
-  cells.forEach((code, i) => {
-    if (code === null) { dpad.appendChild(document.createElement("div")); return; }
-    addButton(dpad, names[i], code);
-  });
+  const dpad = addDpad(left);
   const lStick = document.createElement("div");
   const rStick = document.createElement("div");
   (profile.sticks || []).forEach((sp) => addStick(sp.left ? lStick : rStick, sp));
