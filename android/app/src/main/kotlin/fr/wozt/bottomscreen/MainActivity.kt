@@ -74,6 +74,22 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     /* The size the emulator actually renders, remembered before anybody
      * asks for less: the fractions below are fractions of that, not of
      * each other. */
+    /*
+     * The largest picture each screen has been seen to carry.
+     *
+     * Every rung of the size ladder is a whole multiple of the screen's
+     * own size, and none may exceed what the emulator renders -- asking
+     * for more than exists only upscales. Measuring that against the
+     * stream as it stands answers a different question: choose one times
+     * native and the stream becomes native, so the cap becomes native,
+     * so one times is the only rung left and there is no way back up.
+     *
+     * Largest ever seen, per screen, never shrinking while the
+     * connection lasts: a smaller picture is this client's own doing,
+     * not the emulator rendering less.
+     */
+    private val seenWidth = intArrayOf(0, 0)
+    private val seenHeight = intArrayOf(0, 0)
     private var fullWidth = 0
     private var fullHeight = 0
     /* 0 = whatever the emulator renders, N = N times the console's own
@@ -513,6 +529,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
          * nothing at all. A Wii U's television picture is bigger than
          * its GamePad's, so that is where it showed.
          */
+        if (info.width > seenWidth[shownScreen]) seenWidth[shownScreen] = info.width
+        if (info.height > seenHeight[shownScreen]) seenHeight[shownScreen] = info.height
         if (receiveScale == 0) { fullWidth = info.width; fullHeight = info.height }
         if (info.width == old.width && info.height == old.height) return
 
@@ -574,6 +592,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
          * activity last showed, so the two are put back in step rather
          * than left disagreeing. */
         shownScreen = BsProtocol.SCREEN_BOTTOM
+        /* And what the last server rendered says nothing about this
+         * one. */
+        seenWidth.fill(0)
+        seenHeight.fill(0)
         runOnUiThread { buildPlayUi(ack) }
     }
 
@@ -681,6 +703,8 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     private fun buildPlayUi(ack: BsProtocol.HelloAck) {
         profile = ConsoleProfile.forConsole(ack.console)
         if (fullWidth == 0) { fullWidth = ack.width; fullHeight = ack.height }
+        if (ack.width > seenWidth[shownScreen]) seenWidth[shownScreen] = ack.width
+        if (ack.height > seenHeight[shownScreen]) seenHeight[shownScreen] = ack.height
         form.visibility = View.GONE
 
         val landscape =
@@ -1172,8 +1196,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                 get() = ConsoleProfile.nativeFor(profile, shownScreen).first
             override val nativeHeight: Int
                 get() = ConsoleProfile.nativeFor(profile, shownScreen).second
-            override val sourceWidth: Int get() = fullWidth
-            override val sourceHeight: Int get() = fullHeight
+            override val sourceWidth: Int
+                get() = maxOf(fullWidth, seenWidth[shownScreen])
+            override val sourceHeight: Int
+                get() = maxOf(fullHeight, seenHeight[shownScreen])
         }
 
         val actions = object : SettingsPanel.Actions {

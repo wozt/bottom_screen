@@ -203,6 +203,24 @@ static int g_audio_source;
  */
 static int g_screen;
 
+/*
+ * The largest picture this screen has been seen to carry.
+ *
+ * The rungs of the size ladder are whole multiples of the screen's own
+ * size, and none of them may exceed what the emulator renders -- asking
+ * for more than exists only upscales. But the cap was the width of the
+ * stream as it stands, which is the answer to a different question:
+ * choose one times native and the stream becomes native, so the cap
+ * becomes native, so one times is the only rung left and there is no way
+ * back up. A locked-in setting that looks like the option simply
+ * stopping.
+ *
+ * The largest ever seen is the honest proxy: a fresh connection is at
+ * the source's own size, and nothing this client asks for can make the
+ * emulator render less.
+ */
+static int g_seen_w[BS_SCREEN_COUNT], g_seen_h[BS_SCREEN_COUNT];
+
 /* The ladder the web and Android clients offer, in the same words. */
 static const struct { const char *label; int bitrate; } QUALITY[] = {
     { "automatic",         0 },
@@ -705,6 +723,12 @@ static void try_connect(void)
          * one showed, so the two are put back in step here rather than
          * left disagreeing about what is on the wire. */
         g_screen = BS_SCREEN_BOTTOM;
+        /* And what the last server rendered says nothing about this
+         * one. */
+        for (int i = 0; i < BS_SCREEN_COUNT; i++) {
+            g_seen_w[i] = 0;
+            g_seen_h[i] = 0;
+        }
         if (g_receive_scale) {
             int nw = 0, nh = 0;
             native_size(info.console, &nw, &nh);
@@ -1044,7 +1068,9 @@ static void adjust_row(const StreamInfo *info, int delta)
         /* Nothing past the ceiling: the server brings anything taller
          * back down, and an option that quietly means something else is
          * worse than no option at all. */
-        for (int f = 1; nw * f <= info->width &&
+        const int cap_w = g_seen_w[g_screen] > info->width
+                          ? g_seen_w[g_screen] : info->width;
+        for (int f = 1; nw * f <= cap_w &&
                         nh * f <= BS_MAX_STREAM_HEIGHT &&
                         n < (int)(sizeof(steps) / sizeof(steps[0])) - 1; f++)
             steps[n++] = f;
@@ -1404,6 +1430,15 @@ int main(int argc, char **argv)
 
         StreamInfo info;
         stream_info(&info);
+
+        /* What this screen has been seen to carry, which is what the
+         * size ladder is measured against. Never shrinks while the
+         * connection lasts: a smaller picture is this client's own
+         * doing, not the emulator rendering less. */
+        if (g_screen >= 0 && g_screen < BS_SCREEN_COUNT) {
+            if (info.width > g_seen_w[g_screen])  g_seen_w[g_screen] = info.width;
+            if (info.height > g_seen_h[g_screen]) g_seen_h[g_screen] = info.height;
+        }
 
         /*
          * START and SELECT together: a second opens the settings, five

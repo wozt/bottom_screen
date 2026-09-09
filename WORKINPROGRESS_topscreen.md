@@ -70,18 +70,26 @@ for this exists but `bs_server.c` is compiled into each emulator, so the
 emulators have to be rebuilt for it to take effect. Not yet confirmed on
 the console.
 
-### 4. The Wii U top screen offers no sizes  ~~*(functional)*~~
+### 4. The size ladder stopped short  ~~*(functional)*~~
 
-**Mostly answered by measuring.** Cemu's television picture is
-1920x1080, not 1024x768 -- 1024x768 is melonDS at four times a DS
-screen. What was wrong on the client: it recorded the rendered size once,
-at the first connection, so after changing screens the ladder was still
-capped by the screen that had been left. It follows the screen now.
+**Done, and the ceiling reaches further than it looked.** Measured with
+Azahar's internal resolution at six: the 3DS top screen streams at
+2400x1440, which is six times its own 400x240 and exactly the ceiling.
+Nothing in the chain was in the way -- the emulator was set to three, so
+three was all there was to offer.
 
-What remains is arithmetic rather than a fault: the rungs are whole
-multiples of 1280x720 and none of them may exceed what Cemu renders, so
-at 1920x1080 there is one rung -- native -- plus "whatever is rendered".
-Raising Cemu's internal resolution is what adds more.
+Two real faults were in the way of ever seeing it. The client recorded
+what was rendered once, at the first connection, so after changing
+screens the ladder was still capped by the screen that had been left.
+And the cap was taken from the stream as it stands, which answers a
+different question: choose one times native and the stream becomes
+native, so the cap becomes native, so one times is the only rung left
+and there is no way back up. Both clients now remember the largest
+picture each screen has been seen to carry, which never shrinks while
+the connection lasts.
+
+Cemu's television picture measured 1920x1080; 1024x768 was melonDS at
+four times a DS screen, not Cemu.
 
 ### 5. Cemu will not serve until its GamePad window is open  ~~*(functional)*~~
 
