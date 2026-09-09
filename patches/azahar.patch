@@ -46,7 +46,7 @@ index f6f8bf9ed..6f6e5cd1c 100644
 +    target_include_directories(audio_core PRIVATE "${BOTTOM_SCREEN_DIR}")
 +endif()
 diff --git a/src/audio_core/dsp_interface.cpp b/src/audio_core/dsp_interface.cpp
-index 52e781ca4..5e3df7684 100644
+index 52e781ca4..a77c75841 100644
 --- a/src/audio_core/dsp_interface.cpp
 +++ b/src/audio_core/dsp_interface.cpp
 @@ -11,6 +11,10 @@
@@ -60,19 +60,344 @@ index 52e781ca4..5e3df7684 100644
  namespace AudioCore {
  
  DspInterface::DspInterface(Core::System& system_) : system(system_) {}
-@@ -117,6 +121,12 @@ void DspInterface::OutputCallback(s16* buffer, std::size_t num_frames) {
+@@ -37,6 +41,24 @@ void DspInterface::EnableStretching(bool enable) {
+ }
+ 
+ void DspInterface::OutputFrame(StereoFrame16 frame) {
++#ifdef BOTTOM_SCREEN_ENABLED
++    /*
++     * Taken where the DSP produces sound, not where a sink consumes it.
++     *
++     * This used to sit in OutputCallback, which is the callback a sink
++     * invokes to ask for samples -- so with no output device configured
++     * nothing ever called it and the stream was silent, on every
++     * renderer. It also ran at the sink's rate while the mailbox was
++     * created for the DSP's 32728Hz, which would have pitched the sound
++     * down by half again if it had ever been heard.
++     *
++     * Before the `if (!sink)` below, deliberately: whether this machine
++     * has anywhere to play sound is not the stream's business.
++     */
++    BottomScreen::SubmitAudio(frame.data()->data(),
++                              static_cast<int>(frame.size()));
++#endif
++
+     if (!sink) {
+         return;
+     }
+@@ -54,6 +76,11 @@ void DspInterface::OutputFrame(StereoFrame16 frame) {
+ }
+ 
+ void DspInterface::OutputSample(std::array<s16, 2> sample) {
++#ifdef BOTTOM_SCREEN_ENABLED
++    /* The same tap, for the one-sample path. */
++    BottomScreen::SubmitAudio(sample.data(), 1);
++#endif
++
+     if (!sink) {
+         return;
+     }
+@@ -117,6 +144,7 @@ void DspInterface::OutputCallback(s16* buffer, std::size_t num_frames) {
              buffer[i * 2 + 1] = static_cast<s16>(buffer[i * 2 + 1] * volume_scale_factor);
          }
      }
 +
-+#ifdef BOTTOM_SCREEN_ENABLED
-+    // The block on its way to the speakers, taken here so it does not
-+    // depend on which sink is in use.
-+    BottomScreen::SubmitAudio(buffer, static_cast<int>(num_frames));
-+#endif
  }
  
  } // namespace AudioCore
+diff --git a/src/citra_qt/CMakeLists.txt b/src/citra_qt/CMakeLists.txt
+index 91d8e1353..53734a9a4 100644
+--- a/src/citra_qt/CMakeLists.txt
++++ b/src/citra_qt/CMakeLists.txt
+@@ -11,6 +11,8 @@ add_library(citra_qt STATIC EXCLUDE_FROM_ALL
+     aboutdialog.cpp
+     aboutdialog.h
+     aboutdialog.ui
++    bottom_screen_applets.cpp
++    bottom_screen_applets.h
+     applets/mii_selector.cpp
+     applets/mii_selector.h
+     applets/swkbd.cpp
+@@ -297,6 +299,15 @@ endif()
+ create_target_directory_groups(citra_qt)
+ 
+ target_link_libraries(citra_qt PRIVATE audio_core citra_common citra_core input_common network video_core)
++
++# The keyboard and the Mii selector ask the stream's clients from here,
++# because this is where the dialogs they fall back to live. Attached
++# from this side because video_core is configured first, so a check for
++# this target from over there is always false.
++if (TARGET bottom_screen_c)
++    target_link_libraries(citra_qt PRIVATE bottom_screen_c)
++    target_compile_definitions(citra_qt PRIVATE BOTTOM_SCREEN_ENABLED)
++endif()
+ target_link_libraries(citra_qt PRIVATE Boost::boost nihstro-headers Qt6::Widgets Qt6::Multimedia Qt6::Concurrent)
+ target_link_libraries(citra_qt PRIVATE ${PLATFORM_LIBRARIES} Threads::Threads)
+ 
+diff --git a/src/citra_qt/bottom_screen_applets.cpp b/src/citra_qt/bottom_screen_applets.cpp
+new file mode 100644
+index 000000000..c4863daa9
+--- /dev/null
++++ b/src/citra_qt/bottom_screen_applets.cpp
+@@ -0,0 +1,181 @@
++#include "citra_qt/bottom_screen_applets.h"
++
++#include <memory>
++#include <mutex>
++#include <string>
++#include <vector>
++
++#include "common/string_util.h"
++#include "core/frontend/applets/mii_selector.h"
++#include "core/frontend/applets/swkbd.h"
++#include "core/hle/applets/mii_selector.h"
++#include "video_core/bottom_screen_bridge.h"
++
++/* C, and it says so nowhere itself: without this the names come out
++ * mangled and the link fails on symbols that are plainly there. */
++extern "C" {
++#include "bs_protocol.h"
++#include "bs_server.h"
++}
++
++namespace BottomScreen {
++namespace {
++
++/*
++ * The one question in flight, and what to do with the answer.
++ *
++ * One at a time because a 3DS shows one applet at a time -- it is not
++ * asking for a name and a Mii at once. Guarded because the answer
++ * arrives on a client's receiving thread and is acted on from the
++ * render thread, which is the one PollApplets runs on.
++ */
++std::mutex g_lock;
++std::function<void(bool cancelled, int choice, const std::string& text)> g_finish;
++std::uint16_t g_id = 0;
++
++void Pending(std::uint16_t id,
++             std::function<void(bool, int, const std::string&)> finish) {
++    std::lock_guard lock{g_lock};
++    g_id = id;
++    g_finish = std::move(finish);
++}
++
++class Keyboard final : public Frontend::SoftwareKeyboard {
++public:
++    explicit Keyboard(std::shared_ptr<Frontend::SoftwareKeyboard> inner_)
++        : inner{std::move(inner_)} {}
++
++    void Execute(const Frontend::KeyboardConfig& config_) override {
++        Frontend::SoftwareKeyboard::Execute(config_);
++
++        // The game's own hint where it wrote one, because "Enter a name"
++        // is worth more than "the 3DS wants something".
++        const std::string title =
++            config.hint_text.empty() ? "The game is asking for some text" : config.hint_text;
++
++        BsServer* srv = Server();
++        const std::uint16_t id =
++            srv ? bs_server_prompt(srv, BS_PROMPT_TEXT, title.c_str(), nullptr, 0,
++                                   config.max_text_length, config.multiline_mode)
++                : 0;
++        if (id == 0) {
++            // Nobody watching: the dialog on this desktop, exactly as
++            // before.
++            inner->Execute(config_);
++            return;
++        }
++        Pending(id, [this](bool cancelled, int, const std::string& text) {
++            // Button 1 is the middle of three and the plain "OK" of two,
++            // which is what a keyboard closing normally reports.
++            Finalize(cancelled ? std::string{} : text, cancelled ? 0 : 1);
++        });
++    }
++
++    void ShowError(const std::string& error) override { inner->ShowError(error); }
++
++private:
++    std::shared_ptr<Frontend::SoftwareKeyboard> inner;
++};
++
++class Selector final : public Frontend::MiiSelector {
++public:
++    explicit Selector(std::shared_ptr<Frontend::MiiSelector> inner_)
++        : inner{std::move(inner_)} {}
++
++    void Setup(const Frontend::MiiSelectorConfig& config_) override {
++        Frontend::MiiSelector::Setup(config_);
++
++        // The same list the dialog shows, in the same order, so an index
++        // means the same thing either way.
++        miis.clear();
++        labels.clear();
++        miis.push_back(HLE::Applets::MiiSelector::GetStandardMiiResult().selected_mii_data);
++        labels.emplace_back("Standard Mii");
++        for (const auto& mii : Frontend::LoadMiis()) {
++            miis.push_back(mii);
++            labels.push_back(Common::UTF16BufferToUTF8(mii.mii_name));
++        }
++
++        std::vector<const char*> ptrs;
++        ptrs.reserve(labels.size());
++        for (const auto& l : labels) {
++            ptrs.push_back(l.c_str());
++        }
++
++        const std::string title =
++            (config.title.empty() || config.title.at(0) == '\0') ? "Choose a Mii" : config.title;
++
++        BsServer* srv = Server();
++        const std::uint16_t id =
++            srv ? bs_server_prompt(srv, BS_PROMPT_CHOICE, title.c_str(), ptrs.data(),
++                                   static_cast<int>(ptrs.size()), 0, 0)
++                : 0;
++        if (id == 0) {
++            inner->Setup(config_);
++            return;
++        }
++        Pending(id, [this](bool cancelled, int choice, const std::string&) {
++            if (cancelled || choice < 0 || choice >= static_cast<int>(miis.size())) {
++                Finalize(1, Mii::MiiData{});
++            } else {
++                Finalize(0, miis[static_cast<std::size_t>(choice)]);
++            }
++        });
++    }
++
++private:
++    std::shared_ptr<Frontend::MiiSelector> inner;
++    std::vector<Mii::MiiData> miis;
++    std::vector<std::string> labels;
++};
++
++} // namespace
++
++std::shared_ptr<Frontend::MiiSelector> WrapMiiSelector(
++    std::shared_ptr<Frontend::MiiSelector> inner) {
++    return std::make_shared<Selector>(std::move(inner));
++}
++
++std::shared_ptr<Frontend::SoftwareKeyboard> WrapKeyboard(
++    std::shared_ptr<Frontend::SoftwareKeyboard> inner) {
++    return std::make_shared<Keyboard>(std::move(inner));
++}
++
++void PollApplets() {
++    std::uint16_t id;
++    {
++        std::lock_guard lock{g_lock};
++        id = g_id;
++    }
++    if (id == 0) {
++        return;
++    }
++
++    BsServer* srv = Server();
++    if (!srv) {
++        return;
++    }
++
++    char text[512] = "";
++    int choice = 0;
++    const int state = bs_server_prompt_poll(srv, id, text, sizeof(text), &choice);
++    if (state == 0) {
++        return; // still being answered
++    }
++
++    std::function<void(bool, int, const std::string&)> finish;
++    {
++        std::lock_guard lock{g_lock};
++        if (g_id != id) {
++            return; // somebody got there first
++        }
++        finish = std::move(g_finish);
++        g_id = 0;
++        g_finish = nullptr;
++    }
++    if (finish) {
++        finish(state != 1, choice, std::string{text});
++    }
++}
++
++} // namespace BottomScreen
+diff --git a/src/citra_qt/bottom_screen_applets.h b/src/citra_qt/bottom_screen_applets.h
+new file mode 100644
+index 000000000..aabd4c43e
+--- /dev/null
++++ b/src/citra_qt/bottom_screen_applets.h
+@@ -0,0 +1,33 @@
++// Asking whoever is watching, instead of whoever is sitting here.
++//
++// A 3DS stops and asks for a name or a Mii, and Azahar answers that with
++// a dialog on this desktop. Streamed to a phone in another room, that
++// dialog is somewhere nobody can see while the game waits for ever.
++//
++// These wrap the Qt applets rather than replacing them: the question
++// goes to the clients when there are any, and falls through to the
++// dialog when there are not. Nobody watching is the ordinary case, and
++// it should behave exactly as it did before this existed.
++
++#pragma once
++
++#include <memory>
++
++namespace Frontend {
++class MiiSelector;
++class SoftwareKeyboard;
++} // namespace Frontend
++
++namespace BottomScreen {
++
++std::shared_ptr<Frontend::MiiSelector> WrapMiiSelector(
++    std::shared_ptr<Frontend::MiiSelector> inner);
++std::shared_ptr<Frontend::SoftwareKeyboard> WrapKeyboard(
++    std::shared_ptr<Frontend::SoftwareKeyboard> inner);
++
++// Called once a frame from the bridge. An answer arrives on a client's
++// own thread; this is where it is handed to the applet, on a thread the
++// emulator already owns.
++void PollApplets();
++
++} // namespace BottomScreen
+diff --git a/src/citra_qt/citra_qt.cpp b/src/citra_qt/citra_qt.cpp
+index b4e9c89d7..8c441493d 100644
+--- a/src/citra_qt/citra_qt.cpp
++++ b/src/citra_qt/citra_qt.cpp
+@@ -40,6 +40,10 @@
+ #include "citra_meta/common_strings.h"
+ #include "citra_qt/aboutdialog.h"
+ #include "citra_qt/applets/mii_selector.h"
++#ifdef BOTTOM_SCREEN_ENABLED
++#include "citra_qt/bottom_screen_applets.h"
++#include "video_core/bottom_screen_bridge.h"
++#endif
+ #include "citra_qt/applets/swkbd.h"
+ #include "citra_qt/bootmanager.h"
+ #include "citra_qt/camera/qt_multimedia_camera.h"
+@@ -4492,8 +4496,22 @@ int LaunchQtFrontend(int argc, char* argv[]) {
+     // Register frontend applets
+     Frontend::RegisterDefaultApplets(system);
+ 
++#ifdef BOTTOM_SCREEN_ENABLED
++    /*
++     * Wrapped, not replaced: the question goes to whoever is watching
++     * the stream when there is anybody, and falls through to the dialog
++     * on this desktop when there is not. Nobody watching is the ordinary
++     * case and behaves exactly as it did before this existed.
++     */
++    system.RegisterMiiSelector(
++        BottomScreen::WrapMiiSelector(std::make_shared<QtMiiSelector>(main_window)));
++    system.RegisterSoftwareKeyboard(
++        BottomScreen::WrapKeyboard(std::make_shared<QtKeyboard>(main_window)));
++    BottomScreen::SetFrameHook(&BottomScreen::PollApplets);
++#else
+     system.RegisterMiiSelector(std::make_shared<QtMiiSelector>(main_window));
+     system.RegisterSoftwareKeyboard(std::make_shared<QtKeyboard>(main_window));
++#endif
+ 
+ #ifdef __APPLE__
+     // Register microphone permission check.
 diff --git a/src/citra_qt/configuration/config.cpp b/src/citra_qt/configuration/config.cpp
 index 269af5262..0e23f4b50 100644
 --- a/src/citra_qt/configuration/config.cpp
@@ -247,7 +572,7 @@ index 22fbec8cb..d67dffdba 100644
          // xperia64: 0x9A seems to be the calibrated limit of the circle pad
          // Verified by using Input Redirector with very large-value digital inputs
 diff --git a/src/video_core/CMakeLists.txt b/src/video_core/CMakeLists.txt
-index 528072c9a..6af9a5685 100644
+index 528072c9a..50c4bf7b8 100644
 --- a/src/video_core/CMakeLists.txt
 +++ b/src/video_core/CMakeLists.txt
 @@ -150,7 +150,9 @@ if (ENABLE_OPENGL)
@@ -261,7 +586,7 @@ index 528072c9a..6af9a5685 100644
          renderer_opengl/renderer_opengl.h
      )
      target_link_libraries(video_core PRIVATE glad)
-@@ -228,3 +230,49 @@ endif()
+@@ -228,3 +230,50 @@ endif()
  if (CITRA_USE_PRECOMPILED_HEADERS)
      target_precompile_headers(video_core PRIVATE precompiled_headers.h)
  endif()
@@ -307,16 +632,17 @@ index 528072c9a..6af9a5685 100644
 +    target_link_libraries(video_core PRIVATE bottom_screen_c)
 +    target_compile_definitions(video_core PRIVATE BOTTOM_SCREEN_ENABLED)
 +
++
 +    message(STATUS "bottom_screen_server: enabled for Azahar (${BOTTOM_SCREEN_DIR})")
 +else()
 +    message(STATUS "bottom_screen_server: not found, building Azahar without it")
 +endif()
 diff --git a/src/video_core/bottom_screen_bridge.cpp b/src/video_core/bottom_screen_bridge.cpp
 new file mode 100644
-index 000000000..0226347c6
+index 000000000..521715893
 --- /dev/null
 +++ b/src/video_core/bottom_screen_bridge.cpp
-@@ -0,0 +1,311 @@
+@@ -0,0 +1,461 @@
 +#include "video_core/bottom_screen_bridge.h"
 +#include "video_core/renderer_opengl/gl_resource_manager.h"
 +
@@ -346,6 +672,22 @@ index 000000000..0226347c6
 +    int       g_height = 0;
 +    std::vector<std::uint8_t> g_pixels;
 +    std::vector<std::uint8_t> g_rotated;
++
++    /*
++     * The top screen, for a client that asked for it.
++     *
++     * Its own everything, because it is not the same picture: a 3DS top
++     * screen is 400x240 where the touch screen is 320x240, and both are
++     * stored in portrait and rotated here. Built on first use and left
++     * alone afterwards -- the server stops encoding it when the last
++     * viewer leaves, and the renderers skip the readback in that case,
++     * so what remains is two buffers nobody touches.
++     */
++    BsSource* g_top_source = nullptr;
++    int       g_top_width  = 0;
++    int       g_top_height = 0;
++    std::vector<std::uint8_t> g_top_pixels;
++    std::vector<std::uint8_t> g_top_rotated;
 +    bool      g_touching = false;
 +    std::uint32_t g_held = 0;      /* bit per Settings::NativeButton */
 +    float     g_pad_x = 0.0f;
@@ -422,6 +764,11 @@ index 000000000..0226347c6
 +
 +    char err[256] = "";
 +    g_server = bs_server_create(g_source, &cfg, err, sizeof(err));
++    /* Said now, produced later: the top screen is only read back while
++     * somebody is watching it, and nobody may ask for a screen the
++     * server has not admitted to. */
++    if (g_server)
++        bs_server_offer_top(g_server);
 +    if (!g_server) {
 +        std::fprintf(stderr, "bottom_screen: %s\n", err);
 +        g_source->destroy(g_source->self);
@@ -441,11 +788,110 @@ index 000000000..0226347c6
 +        g_source = nullptr;
 +    }
 +    g_tried = false;
++    /* After the server, which is what was reading from it. */
++    if (g_top_source) {
++        g_top_source->destroy(g_top_source->self);
++        std::free(g_top_source);
++        g_top_source = nullptr;
++    }
++    g_top_width = g_top_height = 0;
 +    g_width = g_height = 0;
 +}
 +
 +bool IsRunning() {
 +    return g_server != nullptr;
++}
++
++/*
++ * Whether the top screen is worth producing at all.
++ *
++ * Asked by every renderer before it reads anything back, because a
++ * readback is a stall on the thread drawing the game. With the option
++ * switched off in every client -- which is the normal state -- Azahar
++ * does exactly the work it did before this existed.
++ */
++BsServer* Server() {
++    return g_server;
++}
++
++namespace {
++void (*g_frame_hook)() = nullptr;
++}
++
++void SetFrameHook(void (*fn)()) {
++    g_frame_hook = fn;
++}
++
++bool WantsTopScreen() {
++    return g_server && bs_server_wants_screen(g_server, BS_SCREEN_TOP);
++}
++
++void SubmitTopScreenRGBA(const void* rgba, int width, int height, bool rotate) {
++    if (!g_server || !rgba || width <= 0 || height <= 0)
++        return;
++
++    const int out_w = rotate ? height : width;
++    const int out_h = rotate ? width : height;
++
++    if (!g_top_source) {
++        /*
++         * Never starts the server. The bottom screen is what opens the
++         * port and settles the console and the frame rate; this attaches
++         * to what is already there, or does nothing.
++         */
++        g_top_source = bs_mailbox_create(BS_CONSOLE_3DS, out_w, out_h, 60,
++                                         BS_PIXFMT_RGBA, 0, 0);
++        if (!g_top_source)
++            return;
++        g_top_width = out_w;
++        g_top_height = out_h;
++        bs_server_set_top_source(g_server, g_top_source);
++    } else if (out_w != g_top_width || out_h != g_top_height) {
++        if (bs_mailbox_resize(g_top_source, out_w, out_h)) {
++            g_top_width = out_w;
++            g_top_height = out_h;
++        }
++    }
++
++    if (!rotate) {
++        bs_mailbox_submit(g_top_source, rgba, width * 4);
++        return;
++    }
++
++    /* The same quarter turn the bottom screen needs, and for the same
++     * reason: the panels are mounted in portrait and the framebuffer
++     * follows the hardware. */
++    const std::uint8_t* in = static_cast<const std::uint8_t*>(rgba);
++    g_top_rotated.resize(static_cast<std::size_t>(width) * height * 4);
++    for (int y = 0; y < height; y++) {
++        const std::uint8_t* src = in + static_cast<std::size_t>(y) * width * 4;
++        for (int x = 0; x < width; x++) {
++            const std::size_t dst = ((static_cast<std::size_t>(width - 1 - x) * height) + y) * 4;
++            std::memcpy(&g_top_rotated[dst], src + static_cast<std::size_t>(x) * 4, 4);
++        }
++    }
++    bs_mailbox_submit(g_top_source, g_top_rotated.data(), height * 4);
++}
++
++void SubmitTopScreenGL(BsTextureHandle texture) {
++    if (texture == 0 || !WantsTopScreen())
++        return;
++
++    glBindTexture(GL_TEXTURE_2D, texture);
++    GLint tw = 0, th = 0;
++    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_WIDTH, &tw);
++    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_HEIGHT, &th);
++    if (tw <= 0 || th <= 0) {
++        glBindTexture(GL_TEXTURE_2D, 0);
++        return;
++    }
++
++    g_top_pixels.resize(static_cast<std::size_t>(tw) * th * 4);
++    glPixelStorei(GL_PACK_ALIGNMENT, 1);
++    glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, g_top_pixels.data());
++    glBindTexture(GL_TEXTURE_2D, 0);
++
++    SubmitTopScreenRGBA(g_top_pixels.data(), tw, th, true);
 +}
 +
 +void SubmitBottomScreenGL(BsTextureHandle texture) {
@@ -532,9 +978,39 @@ index 000000000..0226347c6
 +    bs_mailbox_submit(g_source, g_rotated.data(), height * 4);
 +}
 +
-+void ApplyInput(Frontend::EmuWindow& window, const Layout::FramebufferLayout& layout) {
++void ApplyInput(Frontend::EmuWindow& primary, Frontend::EmuWindow* secondary) {
++    /*
++     * An answer to the machine's own question arrives on a client's
++     * receiving thread; this hands it to the applet waiting for it, on
++     * the render thread, which is a thread the emulator already owns.
++     * Here rather than in a hook of its own because this already runs
++     * once a frame for exactly the same reason.
++     */
++    if (g_frame_hook)
++        g_frame_hook();
++
 +    if (!g_server)
 +        return;
++
++    /*
++     * Which window owns the touchscreen.
++     *
++     * Under SeparateWindows the two screens live in two windows, and
++     * EmuWindow::TouchPressed rejects outright any touch aimed at the
++     * one showing the top screen -- silently, by returning false. Every
++     * tap from a client was landing there and being dropped: they
++     * arrived, they were converted, and the check threw them away.
++     *
++     * The rule is the emulator's own, from IsWithinTouchscreen: with the
++     * screens unswapped the touchscreen is on the secondary window, and
++     * swapping moves it to the primary.
++     */
++    Frontend::EmuWindow* window = &primary;
++    if (Settings::values.layout_option.GetValue() == Settings::LayoutOption::SeparateWindows &&
++        secondary && !Settings::values.swap_screen.GetValue()) {
++        window = secondary;
++    }
++    const Layout::FramebufferLayout& layout = window->GetFramebufferLayout();
 +
 +    BsInputState in;
 +    bs_mailbox_input(g_source, &in);
@@ -559,7 +1035,7 @@ index 000000000..0226347c6
 +        const unsigned y = r.top + static_cast<unsigned>(fy * r.GetHeight());
 +
 +        if (!g_touching) {
-+            window.TouchPressed(x, y);
++            window->TouchPressed(x, y);
 +            g_touching = true;
 +            static bool announced = false;
 +            if (!announced) {
@@ -568,10 +1044,10 @@ index 000000000..0226347c6
 +                             in.touch_x, in.touch_y);
 +            }
 +        } else {
-+            window.TouchMoved(x, y);
++            window->TouchMoved(x, y);
 +        }
 +    } else if (g_touching) {
-+        window.TouchReleased();
++        window->TouchReleased();
 +        g_touching = false;
 +    }
 +
@@ -630,10 +1106,10 @@ index 000000000..0226347c6
 +}
 diff --git a/src/video_core/bottom_screen_bridge.h b/src/video_core/bottom_screen_bridge.h
 new file mode 100644
-index 000000000..5683aa905
+index 000000000..9f917a3ac
 --- /dev/null
 +++ b/src/video_core/bottom_screen_bridge.h
-@@ -0,0 +1,98 @@
+@@ -0,0 +1,140 @@
 +#pragma once
 +
 +#include <cstdint>
@@ -673,6 +1149,11 @@ index 000000000..5683aa905
 + * over; everything after that is shared.
 + */
 +
++/* The server's own type, so Server() below hands back the same one
++ * bs_server.h defines rather than a different type of the same name
++ * living inside this namespace. */
++struct BsServer;
++
 +namespace BottomScreen {
 +
 +/* Idempotent. Nothing opens until a frame has actually been submitted,
@@ -703,6 +1184,38 @@ index 000000000..5683aa905
 +void SubmitBottomScreenRGBA(const void* rgba, int width, int height, bool rotate);
 +
 +/*
++ * The top screen, for a client that asked for it.
++ *
++ * WantsTopScreen is the question every renderer asks before doing any of
++ * the work: a readback stalls the thread drawing the game, and a screen
++ * nobody has switched on should cost nothing. Neither of these ever
++ * starts the server -- the bottom screen opens the port, and these
++ * attach to what is already running.
++ */
++/*
++ * The running server, or nullptr.
++ *
++ * For the applets, which need to ask it questions and are not part of
++ * this file: the keyboard and the Mii selector live in the Qt frontend,
++ * because that is where the dialogs they fall back to live.
++ */
++BsServer* Server();
++
++/*
++ * Something to run once a frame, installed by the frontend.
++ *
++ * The applets live in citra_qt, because that is where the dialogs they
++ * fall back to live, and video_core has no business including the Qt
++ * frontend. So the frontend hands this a function instead of the bridge
++ * reaching upwards for one.
++ */
++void SetFrameHook(void (*fn)());
++
++bool WantsTopScreen();
++void SubmitTopScreenGL(BsTextureHandle texture);
++void SubmitTopScreenRGBA(const void* rgba, int width, int height, bool rotate);
++
++/*
 + * Pushes what clients have sent into the window, once per frame from the
 + * same place the picture is taken so the two stay on one clock.
 + *
@@ -710,7 +1223,12 @@ index 000000000..5683aa905
 + * works out the screen itself -- passing console pixels straight in
 + * would land every tap in the wrong place.
 + */
-+void ApplyInput(Frontend::EmuWindow& window, const Layout::FramebufferLayout& layout);
++/*
++ * Both windows, because under the SeparateWindows layout the touchscreen
++ * is on one of them and the emulator refuses a touch aimed at the other.
++ * Pass the secondary as null where there is none.
++ */
++void ApplyInput(Frontend::EmuWindow& primary, Frontend::EmuWindow* secondary);
 +
 +/*
 + * True while a client holds the given Settings::NativeButton. Merged
@@ -733,7 +1251,7 @@ index 000000000..5683aa905
 +
 +}
 diff --git a/src/video_core/renderer_opengl/renderer_opengl.cpp b/src/video_core/renderer_opengl/renderer_opengl.cpp
-index 157b83e42..8e5da1edf 100644
+index 157b83e42..d6213205e 100644
 --- a/src/video_core/renderer_opengl/renderer_opengl.cpp
 +++ b/src/video_core/renderer_opengl/renderer_opengl.cpp
 @@ -14,6 +14,10 @@
@@ -747,7 +1265,7 @@ index 157b83e42..8e5da1edf 100644
  #include "video_core/shader/generator/glsl_shader_gen.h"
  
  #include "video_core/host_shaders/opengl_present_anaglyph_frag.h"
-@@ -208,6 +212,14 @@ void RendererOpenGL::PrepareRendertarget() {
+@@ -208,6 +212,17 @@ void RendererOpenGL::PrepareRendertarget() {
          }
          LoadFBToScreenInfo(framebuffer, screen_infos[i], i == 1, color_fill);
      }
@@ -757,13 +1275,16 @@ index 157b83e42..8e5da1edf 100644
 +    // color_fill_bottom applies to. Taken here, where it has just been
 +    // loaded and is still bound to nothing else.
 +    BottomScreen::SubmitBottomScreenGL(screen_infos[2].display_texture);
-+    BottomScreen::ApplyInput(render_window, render_window.GetFramebufferLayout());
++    // And the top screen for whoever asked for it: screen_infos[0], the
++    // left eye. Returns before reading anything back if nobody has.
++    BottomScreen::SubmitTopScreenGL(screen_infos[0].display_texture);
++    BottomScreen::ApplyInput(render_window, secondary_window);
 +#endif
  }
  
  void RendererOpenGL::RenderToMailbox(const Layout::FramebufferLayout& layout,
 diff --git a/src/video_core/renderer_software/renderer_software.cpp b/src/video_core/renderer_software/renderer_software.cpp
-index 87bd47311..7b4a462e7 100644
+index 87bd47311..a4699e1b4 100644
 --- a/src/video_core/renderer_software/renderer_software.cpp
 +++ b/src/video_core/renderer_software/renderer_software.cpp
 @@ -7,6 +7,10 @@
@@ -777,7 +1298,7 @@ index 87bd47311..7b4a462e7 100644
  
  namespace SwRenderer {
  
-@@ -32,6 +36,22 @@ void RendererSoftware::PrepareRenderTarget() {
+@@ -32,6 +36,32 @@ void RendererSoftware::PrepareRenderTarget() {
          const auto color_fill = fb_id == 0 ? regs_lcd.color_fill_top : regs_lcd.color_fill_bottom;
          LoadFBToScreenInfo(i, color_fill);
      }
@@ -794,14 +1315,24 @@ index 87bd47311..7b4a462e7 100644
 +        BottomScreen::SubmitBottomScreenRGBA(bottom.pixels.data(),
 +                                             static_cast<int>(bottom.height),
 +                                             static_cast<int>(bottom.width), false);
-+        BottomScreen::ApplyInput(render_window, render_window.GetFramebufferLayout());
++        BottomScreen::ApplyInput(render_window, secondary_window);
++    }
++    /* And the top screen, for a client that asked for it. Guarded
++     * separately rather than nested: this renderer keeps both, and
++     * whether the bottom one has pixels this frame says nothing about
++     * the other. */
++    const auto& top = screen_infos[0];
++    if (BottomScreen::WantsTopScreen() && !top.pixels.empty()) {
++        BottomScreen::SubmitTopScreenRGBA(top.pixels.data(),
++                                          static_cast<int>(top.height),
++                                          static_cast<int>(top.width), false);
 +    }
 +#endif
  }
  
  void RendererSoftware::LoadFBToScreenInfo(int i, const Pica::ColorFill& color_fill) {
 diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.cpp b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
-index 1fc098270..0e97f7aed 100644
+index 1fc098270..bbccebc39 100644
 --- a/src/video_core/renderer_vulkan/renderer_vulkan.cpp
 +++ b/src/video_core/renderer_vulkan/renderer_vulkan.cpp
 @@ -12,6 +12,10 @@
@@ -824,7 +1355,7 @@ index 1fc098270..0e97f7aed 100644
              FillScreen(color_fill.AsVector(), texture);
              continue;
          }
-@@ -181,10 +187,201 @@ void RendererVulkan::PrepareRendertarget() {
+@@ -181,10 +187,209 @@ void RendererVulkan::PrepareRendertarget() {
              ConfigureFramebufferTexture(texture, framebuffer);
          }
  
@@ -835,15 +1366,19 @@ index 1fc098270..0e97f7aed 100644
 +
 +#ifdef BOTTOM_SCREEN_ENABLED
 +    // screen_infos[2] is the bottom screen: fb_id 1, the one
-+    // color_fill_bottom applies to.
-+    SubmitBottomScreenToBridge();
++    // color_fill_bottom applies to. screen_infos[0] is the top screen's
++    // left eye, sent only to a client that asked for it -- everything
++    // below stalls the scheduler, so it is not done speculatively.
++    SubmitScreenToBridge(2, false);
++    if (BottomScreen::WantsTopScreen())
++        SubmitScreenToBridge(0, true);
 +#endif
  }
  
 +#ifdef BOTTOM_SCREEN_ENABLED
 +/*
-+ * Copies the bottom screen out of whatever image is currently standing
-+ * in for it and hands it to bottom_screen_server.
++ * Copies one screen out of whatever image is currently standing in for
++ * it and hands it to bottom_screen_server.
 + *
 + * The region matters: when the rasterizer accelerates the display, the
 + * image is one of its surfaces and the screen is a rectangle inside it,
@@ -855,8 +1390,8 @@ index 1fc098270..0e97f7aed 100644
 + * so far; if it ever is, the answer is a ring of staging buffers read a
 + * frame or two late, not a cleverer copy.
 + */
-+void RendererVulkan::SubmitBottomScreenToBridge() {
-+    const auto& info = screen_infos[2];
++void RendererVulkan::SubmitScreenToBridge(int index, bool top) {
++    const auto& info = screen_infos[index];
 +    if (!info.display_image) {
 +        return;
 +    }
@@ -1015,8 +1550,12 @@ index 1fc098270..0e97f7aed 100644
 +    });
 +    scheduler.Finish();
 +
-+    BottomScreen::SubmitBottomScreenRGBA(alloc_info.pMappedData, width, height, true);
-+    BottomScreen::ApplyInput(render_window, render_window.GetFramebufferLayout());
++    if (top) {
++        BottomScreen::SubmitTopScreenRGBA(alloc_info.pMappedData, width, height, true);
++    } else {
++        BottomScreen::SubmitBottomScreenRGBA(alloc_info.pMappedData, width, height, true);
++        BottomScreen::ApplyInput(render_window, secondary_window);
++    }
 +
 +    vmaDestroyBuffer(instance.GetAllocator(), staging, allocation);
 +    vmaDestroyImage(instance.GetAllocator(), scratch, image_allocation);
@@ -1027,7 +1566,7 @@ index 1fc098270..0e97f7aed 100644
      const auto sampler = present_samplers[!Settings::values.filter_mode.GetValue()];
      const auto present_set = present_heap.Commit();
 diff --git a/src/video_core/renderer_vulkan/renderer_vulkan.h b/src/video_core/renderer_vulkan/renderer_vulkan.h
-index 54f043449..9f46913de 100644
+index 54f043449..d3bfbae60 100644
 --- a/src/video_core/renderer_vulkan/renderer_vulkan.h
 +++ b/src/video_core/renderer_vulkan/renderer_vulkan.h
 @@ -52,6 +52,18 @@ struct ScreenInfo {
@@ -1049,12 +1588,14 @@ index 54f043449..9f46913de 100644
  };
  
  struct PresentUniformData {
-@@ -92,6 +104,9 @@ private:
+@@ -92,6 +104,11 @@ private:
                                       const Pica::FramebufferConfig& framebuffer);
      void ConfigureRenderPipeline();
      void PrepareRendertarget();
 +#ifdef BOTTOM_SCREEN_ENABLED
-+    void SubmitBottomScreenToBridge();
++    /* index into screen_infos; top says which of the two streams it
++     * belongs to, and only the bottom one carries input back. */
++    void SubmitScreenToBridge(int index, bool top);
 +#endif
      void RenderScreenshot();
      void RenderScreenshotWithStagingCopy();

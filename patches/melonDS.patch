@@ -14,10 +14,10 @@
 #
 diff --git a/src/frontend/qt_sdl/BottomScreenBridge.cpp b/src/frontend/qt_sdl/BottomScreenBridge.cpp
 new file mode 100644
-index 00000000..0765060b
+index 00000000..08d94e36
 --- /dev/null
 +++ b/src/frontend/qt_sdl/BottomScreenBridge.cpp
-@@ -0,0 +1,315 @@
+@@ -0,0 +1,415 @@
 +#include "BottomScreenBridge.h"
 +
 +#include <cstdio>
@@ -40,6 +40,21 @@ index 00000000..0765060b
 +namespace
 +{
 +    BsSource* g_source = nullptr;
++
++    /*
++     * The top screen, for a client that asked for it.
++     *
++     * Built the first time somebody does and left in place afterwards:
++     * the server stops encoding it when the last viewer leaves, and the
++     * work of producing it is skipped in that case too, so what remains
++     * costs only its buffer. Its own dimensions, because the two screens
++     * do not have to be the same size -- the OpenGL renderer scales both
++     * but a future one need not.
++     */
++    BsSource* g_top_source = nullptr;
++    int       g_top_width  = 0;
++    int       g_top_height = 0;
++    std::vector<uint8_t> g_topReadBuf;
 +    BsServer* g_server = nullptr;
 +    bool      g_tried  = false;
 +
@@ -140,6 +155,12 @@ index 00000000..0765060b
 +
 +    char err[256] = "";
 +    g_server = bs_server_create(g_source, &cfg, err, sizeof(err));
++    /* Said now, produced later. The top screen is only read back while
++     * somebody is watching it, and nobody may ask for a screen the
++     * server has not admitted to -- so the intent is announced here and
++     * the source turns up on the first frame after a client asks. */
++    if (g_server)
++        bs_server_offer_top(g_server);
 +    if (!g_server)
 +    {
 +        fprintf(stderr, "bottom_screen: %s\n", err);
@@ -162,6 +183,14 @@ index 00000000..0765060b
 +        free(g_source);
 +        g_source = nullptr;
 +    }
++    /* After the server, which is what was reading from it. */
++    if (g_top_source)
++    {
++        g_top_source->destroy(g_top_source->self);
++        free(g_top_source);
++        g_top_source = nullptr;
++    }
++    g_top_width = g_top_height = 0;
 +    g_tried = false;
 +}
 +
@@ -203,6 +232,75 @@ index 00000000..0765060b
 +void SubmitFrame(const void* bottomBGRA)
 +{
 +    SubmitBGRA(bottomBGRA, BS_DS_WIDTH, BS_DS_HEIGHT);
++}
++
++/*
++ * The top screen, on its way to whoever asked for it.
++ *
++ * The mailbox is made on first use rather than at startup, so a DS that
++ * nobody has asked the top screen of never allocates one. Everything
++ * above this returns early when no client is watching, which is what
++ * keeps the second screen free when it is switched off.
++ */
++static void SubmitTopBGRA(const void* pixels, int width, int height)
++{
++    if (!g_server || !pixels || width <= 0 || height <= 0)
++        return;
++
++    if (!g_top_source)
++    {
++        g_top_source = bs_mailbox_create(BS_CONSOLE_DS, width, height,
++                                         60, BS_PIXFMT_BGRA, 0, 0);
++        if (!g_top_source)
++            return;
++        g_top_width = width;
++        g_top_height = height;
++        bs_server_set_top_source(g_server, g_top_source);
++    }
++    else if (width != g_top_width || height != g_top_height)
++    {
++        /* melonDS can change renderer without restarting, so this is a
++         * real event and not a corrupt frame: 512x384 back to 256x192
++         * between two frames. Submitting the smaller buffer into a
++         * mailbox still sized for the larger one would read past the end
++         * of melonDS's own framebuffer. */
++        if (bs_mailbox_resize(g_top_source, width, height))
++        {
++            g_top_width = width;
++            g_top_height = height;
++        }
++    }
++
++    bs_mailbox_submit(g_top_source, pixels, width * 4);
++}
++
++void SubmitTopFrame(const void* topBGRA)
++{
++    if (!g_server || !bs_server_wants_screen(g_server, BS_SCREEN_TOP))
++        return;
++    SubmitTopBGRA(topBGRA, BS_DS_WIDTH, BS_DS_HEIGHT);
++}
++
++/* One layer of melonDS's screen array, read back into `into`. The two
++ * screens differ by the layer index and by nothing else, so they share
++ * this rather than the same twenty lines twice. */
++static void ReadLayer(unsigned int tex, int layer, int w, int h,
++                      std::vector<uint8_t>& into)
++{
++    GLint prevFbo = 0;
++    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevFbo);
++
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_readFbo);
++    glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
++                              (GLuint)tex, 0, layer);
++    glReadBuffer(GL_COLOR_ATTACHMENT0);
++
++    // BGRA rather than RGBA so both paths hand the encoder the same
++    // thing and nothing downstream has to know which renderer drew it.
++    glPixelStorei(GL_PACK_ALIGNMENT, 1);
++    glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, into.data());
++
++    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevFbo);
 +}
 +
 +void SubmitFrameGL(unsigned int screenTexArray)
@@ -248,24 +346,26 @@ index 00000000..0765060b
 +    /*
 +     * Layer 1 is the bottom screen: the software path uploads the top
 +     * framebuffer to layer 0 and the bottom to layer 1, and the OpenGL
-+     * path hands the compositor's own texture to the same shader.
++     * path hands the compositor's own texture to the same shader. Layer
++     * 0 is therefore the top screen, which is the only difference
++     * between the two readbacks below.
 +     */
-+    GLint prevFbo = 0;
-+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevFbo);
-+
-+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_readFbo);
-+    glFramebufferTextureLayer(GL_READ_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
-+                              (GLuint)screenTexArray, 0, 1);
-+    glReadBuffer(GL_COLOR_ATTACHMENT0);
-+
-+    // BGRA rather than RGBA so both paths hand the encoder the same
-+    // thing and nothing downstream has to know which renderer drew it.
-+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
-+    glReadPixels(0, 0, w, h, GL_BGRA, GL_UNSIGNED_BYTE, g_readBuf.data());
-+
-+    glBindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)prevFbo);
-+
++    ReadLayer(screenTexArray, 1, w, h, g_readBuf);
 +    SubmitBGRA(g_readBuf.data(), w, h);
++
++    /* And the top screen, only if somebody is watching it. A readback
++     * costs a stall on the render thread, so this is asked before the
++     * work rather than after it: with the option switched off in every
++     * client, melonDS does exactly what it did before. */
++    if (bs_server_wants_screen(g_server, BS_SCREEN_TOP))
++    {
++        const size_t topNeeded = (size_t)w * (size_t)h * 4;
++        if (g_topReadBuf.size() < topNeeded)
++            g_topReadBuf.resize(topNeeded);
++        ReadLayer(screenTexArray, 0, w, h, g_topReadBuf);
++        SubmitTopBGRA(g_topReadBuf.data(), w, h);
++
++    }
 +}
 +
 +void SubmitAudio(const int16_t* samples, int frames)
@@ -335,10 +435,10 @@ index 00000000..0765060b
 +}
 diff --git a/src/frontend/qt_sdl/BottomScreenBridge.h b/src/frontend/qt_sdl/BottomScreenBridge.h
 new file mode 100644
-index 00000000..0abc3629
+index 00000000..c664b7d0
 --- /dev/null
 +++ b/src/frontend/qt_sdl/BottomScreenBridge.h
-@@ -0,0 +1,92 @@
+@@ -0,0 +1,100 @@
 +#ifndef BOTTOMSCREENBRIDGE_H
 +#define BOTTOMSCREENBRIDGE_H
 +
@@ -390,6 +490,14 @@ index 00000000..0abc3629
 + * moment this returns.
 + */
 +void SubmitFrame(const void* bottomBGRA);
++
++/*
++ * The top screen, for a client that asked for it. Does nothing -- and
++ * costs nothing -- while nobody is watching that screen. Only the
++ * software renderer calls this; the OpenGL path reads both layers of
++ * its own texture inside SubmitFrameGL.
++ */
++void SubmitTopFrame(const void* topBGRA);
 +
 +/*
 + * The other half of the same job, for the OpenGL renderer.
@@ -526,7 +634,7 @@ index 7df4d9f4..e61a46c0 100644
      {
          memset(stream, 0, len*sizeof(s16)*2);
 diff --git a/src/frontend/qt_sdl/EmuThread.cpp b/src/frontend/qt_sdl/EmuThread.cpp
-index c3fbdfe6..a8ec99f8 100755
+index c3fbdfe6..2d0b07e2 100755
 --- a/src/frontend/qt_sdl/EmuThread.cpp
 +++ b/src/frontend/qt_sdl/EmuThread.cpp
 @@ -55,6 +55,10 @@
@@ -569,7 +677,7 @@ index c3fbdfe6..a8ec99f8 100755
  
              if (emuInstance->hotkeyPressed(HK_Lid))
              {
-@@ -322,6 +342,33 @@ void EmuThread::run()
+@@ -322,6 +342,38 @@ void EmuThread::run()
  
              emuInstance->drawScreen();
  
@@ -594,7 +702,12 @@ index c3fbdfe6..a8ec99f8 100755
 +                // resolution, so it is read back rather than skipped.
 +                void* bsTop; void* bsBottom;
 +                if (emuInstance->nds->GPU.GetFramebuffers(&bsTop, &bsBottom))
++                {
 +                    BottomScreen::SubmitFrame(bsBottom);
++                    // And the other one, for whoever asked for it. It
++                    // returns immediately if nobody has.
++                    BottomScreen::SubmitTopFrame(bsTop);
++                }
 +                else if (bsTop)
 +                    BottomScreen::SubmitFrameGL(*(unsigned int*)bsTop);
 +            }
