@@ -250,6 +250,7 @@ class PadOverlay(context: Context) : View(context) {
 
         if (sideBand > 0f) layoutBeside(w, h) else layoutBelow(w, h)
         applyOverrides(w, h)
+        keepOutOfPicture(w, h)
         text.textSize = unit() * 0.42f
     }
 
@@ -357,17 +358,36 @@ class PadOverlay(context: Context) : View(context) {
         val freeBotL = menuTop(0) - margin - (if (stickBelow[0]) stickL else 0f)
         val freeBotR = menuTop(1) - margin - (if (stickBelow[1]) stickR else 0f)
 
-        val midY = (maxOf(freeTopL, freeTopR) + minOf(freeBotL, freeBotR)) / 2f
+        /*
+         * Each side as low as its own contents allow.
+         *
+         * A thumb rests at the bottom of the phone, so that is where the
+         * arm goes: the lowest place that still clears the menu buttons
+         * and whatever stick sits below it. Down first; up only far
+         * enough not to sit on the shoulders.
+         *
+         * Per side, and the two do not have to agree. Holding them level
+         * meant the right-hand stick -- which sits below its buttons by
+         * default -- lifted the left-hand d-pad by its own height, and
+         * left a quarter of the band empty underneath it. That is the
+         * gap, and holding two halves level is not worth it: a real
+         * controller does not have its d-pad and its face buttons at the
+         * same height either.
+         */
+        val armHalfL = minOf(u * DPAD_SPAN, band - margin * 2f) / 2f
+        val armHalfR = minOf(u, (band - margin * 2f) / FACE_SPAN) * (FACE_SPAN / 2f)
+        val midL = (freeBotL - armHalfL).coerceAtLeast(freeTopL + armHalfL)
+        val midR = (freeBotR - armHalfR).coerceAtLeast(freeTopR + armHalfR)
 
         /* Both arms clamped to their band, so raising the button scale
          * cannot push either over the picture. */
         val dpadSize = minOf(u * DPAD_SPAN, band - margin * 2f)
         val dpadCx = band / 2f
-        dpadRect.set(dpadCx - dpadSize / 2f, midY - dpadSize / 2f,
-                     dpadCx + dpadSize / 2f, midY + dpadSize / 2f)
+        dpadRect.set(dpadCx - dpadSize / 2f, midL - dpadSize / 2f,
+                     dpadCx + dpadSize / 2f, midL + dpadSize / 2f)
 
         val faceU = minOf(u, (band - margin * 2f) / FACE_SPAN)
-        addFaceDiamond(w - band / 2f, midY, faceU)
+        addFaceDiamond(w - band / 2f, midR, faceU)
 
         /*
          * Each stick in the gap on its own side, and shrunk into it.
@@ -382,17 +402,18 @@ class PadOverlay(context: Context) : View(context) {
          */
         val labelH = u * STICK_LABEL
         fun place(left: Boolean): Pair<Float, Float> {
+            val mid = if (left) midL else midR
             val armHalf = if (left) dpadSize / 2f else faceU * (FACE_SPAN / 2f)
             val below = stickBelow[if (left) 0 else 1]
             val slot = if (below)
-                           (menuTop(if (left) 0 else 1) - margin) - (midY + armHalf + margin + labelH)
+                           (menuTop(if (left) 0 else 1) - margin) - (mid + armHalf + margin + labelH)
                        else
-                           (midY - armHalf - margin) -
+                           (mid - armHalf - margin) -
                                (shouldersBottom(if (left) topLeft else topRight, left) + margin + labelH)
             var r = minOf(u * STICK_R, band / 2f - margin, maxOf(slot, 0f) / 2f)
             if (r < u * 0.45f) r = u * 0.45f      /* a circle nobody can hit is worse */
-            val cy = if (below) midY + armHalf + margin + labelH + r
-                     else midY - armHalf - margin - r
+            val cy = if (below) mid + armHalf + margin + labelH + r
+                     else mid - armHalf - margin - r
             return r to cy
         }
         val (rl, yl) = place(true)
@@ -512,6 +533,57 @@ class PadOverlay(context: Context) : View(context) {
             val cx = if (st.spec.left) leftX else rightX
             st.centre.set(cx, y)
             st.knob.set(cx, y)
+        }
+    }
+
+    /*
+     * A wall along the edge of the picture.
+     *
+     * Everything laid out above already fits, but a position somebody
+     * saved does not have to: it is stored as a fraction of the view, so
+     * the same fraction lands somewhere else the moment the picture
+     * changes shape -- and a 3DS changes shape between its two screens.
+     * Without this, a layout arranged around the bottom screen put half
+     * the pad over the top one.
+     *
+     * Applied after the overrides, deliberately, so it constrains them
+     * too. A control pushed back to the edge is a small disappointment;
+     * one sitting over the game is a control you cannot see and a tap
+     * that goes nowhere.
+     */
+    private fun keepOutOfPicture(w: Float, h: Float) {
+        if (sideBand <= 0f) return
+        val margin = unit() * MARGIN * 0.5f
+
+        fun clampRect(r: RectF) {
+            val onLeft = r.centerX() < w / 2f
+            val lo = if (onLeft) margin else w - sideBand + margin
+            val hi = if (onLeft) sideBand - margin else w - margin
+            var dx = 0f
+            if (r.width() <= hi - lo) {
+                if (r.left < lo) dx = lo - r.left
+                if (r.right > hi) dx = hi - r.right
+            } else {
+                /* Wider than the band it belongs to: centre it rather
+                 * than pick an edge to hang over. */
+                dx = (lo + hi) / 2f - r.centerX()
+            }
+            var dy = 0f
+            if (r.top < 0f) dy = -r.top
+            if (r.bottom > h) dy = h - r.bottom
+            r.offset(dx, dy)
+        }
+
+        clampRect(dpadRect)
+        for (c in controls) clampRect(c.rect)
+        for (st in sticks) {
+            val onLeft = st.centre.x < w / 2f
+            val lo = (if (onLeft) margin else w - sideBand + margin) + st.radius
+            val hi = (if (onLeft) sideBand - margin else w - margin) - st.radius
+            val x = if (lo <= hi) st.centre.x.coerceIn(lo, hi) else (lo + hi) / 2f
+            val y = st.centre.y.coerceIn(st.radius, h - st.radius)
+            st.centre.set(x, y)
+            if (!st.active) st.knob.set(st.centre)
         }
     }
 

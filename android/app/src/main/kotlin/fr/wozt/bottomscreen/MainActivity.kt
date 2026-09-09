@@ -994,6 +994,23 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     private fun loadPositions(overlay: PadOverlay, landscape: Boolean) {
         val prefs = getSharedPreferences(PREFS, MODE_PRIVATE)
+        /*
+         * Positions saved against a different layout are not positions.
+         *
+         * They are fractions of the view, arranged around a pad that was
+         * placed by other arithmetic -- so loading them into this one
+         * puts controls where nothing was meant to be, and the person
+         * who saved them sees a mess they did not make. A stamp is
+         * cheaper than trying to translate them, and the automatic
+         * layout it falls back to is the one being fixed.
+         */
+        if (prefs.getString("layout_version", null) != LAYOUT_VERSION) {
+            prefs.edit()
+                .also { e -> for (k in prefs.all.keys) if (k.startsWith("pos_")) e.remove(k) }
+                .putString("layout_version", LAYOUT_VERSION)
+                .apply()
+            return
+        }
         val codes = listOf(PadOverlay.DPAD, PadOverlay.FACE) + (-14..-11) + (1..15)
         for (code in codes) {
             val raw = prefs.getString(posKey(code, landscape), null) ?: continue
@@ -1315,5 +1332,15 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
 
     companion object {
         private const val PREFS = "bottom_screen"
+
+        /*
+         * Bumped whenever the automatic layout changes shape.
+         *
+         * Saved positions are fractions of the view arranged around a
+         * particular arrangement; carried into a different one they put
+         * controls where nothing was meant to be. The Switch client
+         * learned this the same way and stamps its layout files too.
+         */
+        private const val LAYOUT_VERSION = "v3"
     }
 }
