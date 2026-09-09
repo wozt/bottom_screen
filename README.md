@@ -2,9 +2,9 @@
 
 # Bottom Screen
 
-Stream a Nintendo console's bottom screen out of an emulator and onto a
-phone, a browser, or a Switch — with touch and buttons travelling back
-the other way.
+Stream a Nintendo console's screen out of an emulator and onto a phone,
+a browser, or a Switch — with touch and buttons travelling back the
+other way.
 
 <br clear="left">
 
@@ -24,6 +24,10 @@ own; this adds a bridge to one you already have.
 
 - **The bottom screen, live** — read inside the emulator before it is
   composited, so nothing depends on a window being visible.
+- **Or the top one**, chosen per client. Two people can watch two
+  different screens at once, each at its own size and bitrate. A screen
+  nobody has switched on costs the emulator nothing: it is not read back
+  at all.
 - **Touch and buttons back** — a tap on your phone is a stylus on the
   console. Your own pad on the host keeps working alongside it.
 - **Sound**, taken where the emulator makes it rather than where it
@@ -33,16 +37,32 @@ own; this adds a bridge to one you already have.
 - **Internal resolution followed live**, up to 1440 tall. Turn the
   emulator up and the stream grows with it, without dropping the
   clients watching.
-- **Four clients at once**, off one encoder. A second viewer costs
-  bandwidth, not a core.
+- **Four clients at once**, off one encoder per screen. A second viewer
+  costs bandwidth, not a core, and every client's status line says how
+  many are watching what.
+- **The machine's own questions, on your phone.** A 3DS or a Wii U stops
+  and asks for a name, a message, a Mii — and an emulator answers that
+  with a dialog on whatever desktop it is running on, which from another
+  room is a game that waits for ever. The question goes to whoever is
+  watching instead: the phone's own keyboard, the console's own
+  keyboard, or a box in the browser.
 
 ---
 
 ## The three clients
 
-The same options in all three: size as a multiple of the console's own
-screen, bitrate, volume, on-screen buttons that can be moved and saved
-per console, and — on a Wii U — which of its two audio outputs to hear.
+The same options in all three: which screen to watch, size as a multiple
+of that screen's own, bitrate, volume, on-screen buttons that can be
+moved and saved per console, and — on a Wii U — which of its two audio
+outputs to hear.
+
+The on-screen pad is solved rather than arranged. Each band's demand is
+counted from the console being served — how tall its controls are, how
+wide the widest is — and the buttons are made the largest size at which
+both sides still hold everything, stacked upward from the floor of the
+band where a thumb actually is. A wider picture leaves narrower bands
+and smaller buttons rather than a pad overlapping itself, and nothing
+may cross into the picture, saved layout or not.
 
 **Nintendo DS on the web client.** Nothing to install: open the port the
 emulator is listening on.
@@ -195,10 +215,15 @@ Still open:
 - **A requested bitrate is exceeded by about half again**, because the
   encoder is told a frame rate measured once at startup and never
   revisited.
+- **Cemu draws no GamePad view without its window**, so a client
+  watching the bottom screen of a game running on the television alone
+  sees nothing. The port is there; the picture is not.
+- **Separate quality and size per screen, and the round d-pad**, are
+  done on Android and not yet in the browser or on the Switch.
 - **The 3DS system titles**, which are not installed: the only route
   Azahar supports needs a second console.
 
-[ROADMAP.md](ROADMAP.md) has the detail, including the mistakes worth
+[PROGRESS.md](PROGRESS.md) has the detail, including the mistakes worth
 remembering.
 
 <details>
@@ -217,8 +242,10 @@ Two things that cost dearly when forgotten. Touch coordinates are in
 dividing by the latter puts every tap wrong by exactly the resolution
 scale, and it looks like a calibration problem when it is arithmetic.
 And no client may ask for a keyframe — there is one encoder behind all
-of them, so a client that is struggling would bill its repairs to
-everyone else.
+of them watching a screen, so a client that is struggling would bill its
+repairs to everyone else. The server issues one itself for the two cases
+where waiting is half a second of green: somebody joining a stream that
+is already running, and somebody moving between the screens.
 
 </details>
 
