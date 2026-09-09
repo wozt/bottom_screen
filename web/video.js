@@ -39,7 +39,30 @@ function startDecoder(codec) {
   decoder = new VideoDecoder({
     output: (frame) => {
       decoded++;
-      ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+      /*
+       * Drawn from the frame's visible rectangle, not from the whole
+       * frame.
+       *
+       * A hardware encoder codes in macroblocks of sixteen, and a Wii U
+       * GamePad is 854 across -- which is not a multiple of sixteen, so
+       * the picture is coded at 864 and the ten extra columns are told
+       * to be ignored. H.264 carries that as cropping in its parameter
+       * sets, ffmpeg honours it and hands back 854, and this browser
+       * hands back the coded frame with the crop as a rectangle beside
+       * it. Drawing the whole thing stretched those ten columns into
+       * view, and an untouched chroma plane is green.
+       *
+       * visibleRect is the answer either way: on a decoder that has
+       * already cropped it is the whole frame, and on one that has not
+       * it is the part that was meant to be seen.
+       */
+      const r = frame.visibleRect;
+      if (r) {
+        ctx.drawImage(frame, r.x, r.y, r.width, r.height,
+                      0, 0, canvas.width, canvas.height);
+      } else {
+        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+      }
       frame.close();
     },
     error: (e) => problem("decoder: " + e.message),
