@@ -194,6 +194,32 @@ BsEncoder *bs_encoder_create(const BsEncoderConfig *cfg, char *err, size_t errle
     out_h &= ~1;
     if (out_w < 16) out_w = 16;
     if (out_h < 16) out_h = 16;
+
+    /*
+     * A whole number of macroblocks, so nothing has to be cropped away.
+     *
+     * H.264 codes in blocks of sixteen. A Wii U GamePad is 854 across,
+     * which is 53.4 of them, so the picture is coded at 864 and the ten
+     * columns of padding are marked to be ignored -- as cropping in the
+     * parameter sets. Every decoder is meant to honour that. ffmpeg
+     * does. A browser's WebCodecs decoder handed the padding over
+     * anyway, and padding nobody wrote is chroma at zero, which is a
+     * green stripe down the side of the picture.
+     *
+     * Rather than trust every decoder, there is nothing to crop: the
+     * scaler already resizes, so it resizes to the nearest whole number
+     * of blocks instead. 854 becomes 848 -- six pixels, under one
+     * percent of the width, against a stripe that cannot be argued
+     * with.
+     *
+     * Nearest rather than up: 848 is six away and 864 is ten, and
+     * making a picture larger to encode it wastes bitrate on pixels
+     * that were invented.
+     */
+    out_w = ((out_w + 8) / 16) * 16;
+    out_h = ((out_h + 8) / 16) * 16;
+    if (out_w < 16) out_w = 16;
+    if (out_h < 16) out_h = 16;
     enc->out_width  = out_w;
     enc->out_height = out_h;
     enc->src_fmt = src_fmt;

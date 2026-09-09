@@ -31,13 +31,27 @@ PORT=$("$DIR/tests/wait_port.sh" "$OUT/server.log" "$SERVER_PID") || {
 # A quarter across and a quarter down, because the centre is the one
 # point that looks right whether or not the conversion happened.
 "$DIR/tests/smoke_client" --port "$PORT" --frames 90 --ask-size 426x240 \
-    --tap 250,250 --hold --dump-yuv "$OUT/frame.yuv" | grep -E "demande|decoded"
+    --tap 250,250 --hold --dump-yuv "$OUT/frame.yuv" >"$OUT/client.txt" 2>&1
+grep -E "demande|decoded" "$OUT/client.txt"
+
+# The size that arrived, not the size asked for.
+#
+# They are not always the same and the difference is deliberate: H.264
+# codes in blocks of sixteen, so the server rounds to a whole number of
+# them and says what it settled on. 426 becomes 432. Reading the dump at
+# the size that was asked for shears the picture, and a sheared picture
+# puts the crosshair somewhere that looks exactly like a touch fault --
+# which is what this test exists to catch, so it must not manufacture
+# one.
+got=$(grep -oE "recu [0-9]+x[0-9]+" "$OUT/client.txt" | tail -1 | cut -d' ' -f2)
+[ -n "$got" ] || got=426x240
+echo "  the picture arrived at $got"
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
     echo "ffmpeg missing, cannot check where the tap landed"
     exit 0
 fi
-ffmpeg -y -v error -f rawvideo -pix_fmt yuv420p -s 426x240 \
+ffmpeg -y -v error -f rawvideo -pix_fmt yuv420p -s "$got" \
     -i "$OUT/frame.yuv" "$OUT/frame.png"
 
 python3 - "$OUT/frame.png" <<'PY'
