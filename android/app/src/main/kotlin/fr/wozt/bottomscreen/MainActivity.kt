@@ -488,6 +488,16 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
     override fun onStreamInfo(info: BsProtocol.StreamInfo) {
         val old = ack ?: return
         if (info.width <= 0 || info.height <= 0) return
+        /*
+         * While nothing has been asked for, what arrives is what the
+         * emulator renders -- which is the ceiling every rung of the
+         * size ladder is measured against. It used to be recorded once,
+         * at the first connection, so after changing screens the ladder
+         * was still capped by the other screen's source and offered
+         * nothing at all. A Wii U's television picture is bigger than
+         * its GamePad's, so that is where it showed.
+         */
+        if (receiveScale == 0) { fullWidth = info.width; fullHeight = info.height }
         if (info.width == old.width && info.height == old.height) return
 
         val updated = old.copy(width = info.width, height = info.height,
@@ -563,6 +573,10 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
         play?.let { root.removeView(it) }
         play = null
         buildPlayUi(a)
+        /* The new layout goes in over everything, the settings included
+         * -- and turning the phone with them open is the ordinary case,
+         * not the exception. */
+        panel?.bringToFront()
     }
 
     override fun onFrame(
@@ -1095,6 +1109,11 @@ class MainActivity : AppCompatActivity(), BsClient.Listener, SurfaceHolder.Callb
                     this@MainActivity.shownScreen = v
                     screen?.touchEnabled = v == BsProtocol.SCREEN_BOTTOM
                     client?.sendScreen(v)
+                    /* The other screen is rendered at its own size, and
+                     * what was recorded belongs to the one being left.
+                     * Cleared so the next announcement sets it. */
+                    fullWidth = 0
+                    fullHeight = 0
                     /*
                      * The screen just joined has its own encoder, built
                      * on the server's defaults: it has never heard of
