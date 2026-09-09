@@ -18,6 +18,11 @@
  * browser overlay uses, so the two look and feel alike. */
 #define U 44.0f
 
+/* How much of the screen's height the stack of controls may use. The
+ * rest is above a thumb, and a control nobody can reach is the same as
+ * no control. */
+#define VPAD_THUMB_REACH 0.62f
+
 /* How far into a stick's circle counts as full deflection. Short of the
  * edge, because a thumb sliding to the rim of a circle it cannot see
  * would otherwise never quite reach 100. */
@@ -66,8 +71,26 @@ typedef struct {
  */
 static float g_scale = 1.0f;
 
+/* Defined below, beside the table of sizes it walks. */
+static float column_height_unscaled(void);
+
 void vpad_set_scale(float scale)
 {
+    /*
+     * Bounded by a thumb's reach as well as by the band's width.
+     *
+     * The scale came from the width of the black beside the picture and
+     * from nothing else, so a wide band meant big buttons meant a tall
+     * column -- and the topmost control, a shoulder, ended up in the
+     * upper third of the screen. Nobody holding a console reaches
+     * there. Whatever sits above that line may as well not be drawn, so
+     * the buttons are made smaller instead.
+     */
+    const float tall = column_height_unscaled();
+    if (tall > 0.0f) {
+        const float fits = (VPAD_H * VPAD_THUMB_REACH) / tall;
+        if (scale > fits) scale = fits;
+    }
     if (scale < 0.4f) scale = 0.4f;
     if (scale > 1.5f) scale = 1.5f;
     g_scale = scale;
@@ -88,6 +111,37 @@ static const VpadStyle STYLE_BASE[VPAD_COUNT] = {
     [VPAD_START]  = {SHAPE_PILL,   0, 1.8f * U, 0.9f * U, "+"},
     [VPAD_GUIDE]  = {SHAPE_CIRCLE, 0.50f * U, 0, 0, "H"},
 };
+
+/*
+ * How tall the busier column is at scale 1, in pixels.
+ *
+ * The same walk stack_column does, without placing anything: the bottom
+ * inset, then every control's own height with a gap between, and the
+ * face cluster's extra claimed on both sides. Counting it here rather
+ * than writing a number down means the two cannot drift apart.
+ */
+static float column_height_unscaled(void)
+{
+    const int cols[2][5] = {
+        { VPAD_SELECT, VPAD_DPAD, VPAD_LSTICK, VPAD_LB, VPAD_LT },
+        { VPAD_START,  VPAD_FACE, VPAD_RSTICK, VPAD_RB, VPAD_RT },
+    };
+    float tallest = 0.0f;
+    for (int c = 0; c < 2; c++) {
+        float total = 0.6f * U;
+        float pending = 0.0f;
+        for (int i = 0; i < 5; i++) {
+            const VpadStyle st = STYLE_BASE[cols[c][i]];
+            const float half = (st.shape == SHAPE_PILL) ? st.h / 2 : st.radius;
+            const float extra = (st.shape == SHAPE_CLUSTER) ? 0.45f * U : 0.0f;
+            total += half + pending + extra + half + 0.35f * U;
+            pending = extra;
+        }
+        if (total > tallest)
+            tallest = total;
+    }
+    return tallest;
+}
 
 /* The sizes actually used, which are the ones above scaled. */
 static VpadStyle style_of(int a)

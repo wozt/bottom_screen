@@ -1145,8 +1145,39 @@ function showBar() {
     if (!barEl.querySelector("details[open]")) barEl.classList.remove("visible");
   }, 2500);
 }
-["pointermove", "pointerdown", "keydown"].forEach(
-  (e) => window.addEventListener(e, showBar));
+
+/*
+ * Where the pointer has to be for the bar to come back.
+ *
+ * Not anywhere: the bar sits over the top of the picture, and on a
+ * screen you are drawing on with a stylus, a bar that reappears every
+ * time the pen moves is a bar permanently in the way. So it is the top
+ * tenth of the window, and only the black either side of the picture --
+ * the picture itself is the touch area and belongs to the game.
+ *
+ * The corner is the exception, and it exists for one case: a 16:9
+ * picture filling a fullscreen window with the on-screen buttons turned
+ * off leaves no black at all, which would leave no way back to the
+ * menu. Eight pixels of corner is enough to find with a mouse and small
+ * enough that nothing else will land there.
+ */
+function barZone(x, y) {
+  if (x < 8 && y < 8) return true;
+  if (y > innerHeight * 0.10) return false;
+  const r = canvas.getBoundingClientRect();
+  return x < r.left || x > r.right;
+}
+
+window.addEventListener("pointermove", (e) => {
+  /* Moving within the bar itself keeps it, or it would fade out from
+   * under the hand reaching for it. */
+  if (barEl.contains(e.target) || barZone(e.clientX, e.clientY)) showBar();
+});
+window.addEventListener("pointerdown", (e) => {
+  if (barEl.contains(e.target) || barZone(e.clientX, e.clientY)) showBar();
+});
+/* A keyboard has no pointer to put anywhere. */
+window.addEventListener("keydown", showBar);
 showBar();
 
 /* One menu at a time: two panels open at once overlap each other. */

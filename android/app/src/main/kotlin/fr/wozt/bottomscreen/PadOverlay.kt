@@ -232,8 +232,21 @@ class PadOverlay(context: Context) : View(context) {
         var u = Float.MAX_VALUE
         for (left in booleanArrayOf(true, false)) {
             val d = bandDemand(left)
+            /*
+             * The column is bounded by a thumb's reach, not by the
+             * window.
+             *
+             * Letting it use the full height meant that the wider the
+             * black band, the bigger the buttons, the taller the stack
+             * -- and the topmost control ended up by the corner of the
+             * phone. A hand holding a phone in landscape does not get
+             * there. Whatever is above this line is out of reach, so
+             * offering it is the same as offering nothing, and the
+             * buttons are smaller instead. Somebody who wants them
+             * bigger has the scale setting for it.
+             */
             if (d.vertical > 0f)
-                u = minOf(u, (h - d.reserve) / d.vertical)
+                u = minOf(u, (h - d.reserve) * THUMB_REACH / d.vertical)
             u = minOf(u, sideBand / (d.widest + 2f * MARGIN))
         }
         return if (u == Float.MAX_VALUE) 0f else maxOf(u, 1f)
@@ -304,6 +317,27 @@ class PadOverlay(context: Context) : View(context) {
      * gives room to the settings button, and a pad whose halves sit at
      * different heights looks broken.
      */
+    /*
+     * Landscape: a band down each side of the picture, which is where a
+     * console keeps them, so a thumb goes where it expects to.
+     *
+     * Everything is stacked upwards from the bottom of its own band.
+     * Menu buttons on the floor, then the arm -- d-pad on one side, face
+     * diamond on the other -- then the stick and the shoulders, with
+     * whatever room is left over ending up at the top, under the
+     * settings button.
+     *
+     * Packed from the bottom because that is where a thumb is. Pinning
+     * the shoulders to the top of the band and letting the rest settle
+     * beneath them put ZL and L up by the corner of the phone, which is
+     * where an index finger would be on a controller and nowhere near a
+     * thumb holding a phone. There is nothing at the top of the band
+     * that has to be at the top of the band.
+     *
+     * Each side stacks on its own, and the two do not have to agree.
+     * Holding them level meant the stick that sits below its buttons on
+     * one side lifted everything on the other by its height.
+     */
     private fun layoutBeside(w: Float, h: Float) {
         val u = unit()
         val band = sideBand
@@ -312,27 +346,8 @@ class PadOverlay(context: Context) : View(context) {
         val menuH = u * MENU_H
         val menuStep = menuH + u * MENU_GAP
 
-        val dLeft = bandDemand(true)
-        val dRight = bandDemand(false)
-
-        /* Under the settings button on the left, under the plain margin
-         * on the right. A flat 52dp reserve with nothing after it left
-         * ZL touching the gear; the margin is what separates them. */
-        val topLeft = dLeft.reserve + margin
-        val topRight = dRight.reserve + margin
-
-        val shoulderW = minOf(u * SHOULDER_W, band - margin * 2f)
-        addShoulders(w, margin, topLeft, shoulderW, shoulderH, true, topRight)
-
-        fun shouldersBottom(top: Float, left: Boolean): Float {
-            val n = profile.shoulders.count {
-                val isLeft = it.code == BsProtocol.BTN_L || it.code == BsProtocol.BTN_ZL
-                isLeft == left
-            }
-            return if (n == 0) top else top + n * shoulderH + (n - 1) * margin
-        }
-
-        /* Menu buttons stack upwards from the bottom of their own band. */
+        /* Menu buttons on the floor of their own band, alternating sides
+         * so a Wii U's three do not land two-on-one. */
         val mw = minOf(u * MENU_W, band - margin * 2f)
         val rows = intArrayOf(0, 0)
         profile.menuButtons.forEachIndexed { i, b ->
@@ -348,79 +363,78 @@ class PadOverlay(context: Context) : View(context) {
             h - margin - (rows[side] - 1).coerceAtLeast(0) * menuStep -
                 (if (rows[side] > 0) menuH else 0f)
 
-        /* The free span each side has between its two pinned groups, and
-         * then the one they can both live with. */
-        val stickL = if (profile.sticks.any { it.left }) u * (STICK_LABEL + 2f * STICK_R + MARGIN) else 0f
-        val stickR = if (profile.sticks.any { !it.left }) u * (STICK_LABEL + 2f * STICK_R + MARGIN) else 0f
-
-        val freeTopL = shouldersBottom(topLeft, true) + margin + (if (stickBelow[0]) 0f else stickL)
-        val freeTopR = shouldersBottom(topRight, false) + margin + (if (stickBelow[1]) 0f else stickR)
-        val freeBotL = menuTop(0) - margin - (if (stickBelow[0]) stickL else 0f)
-        val freeBotR = menuTop(1) - margin - (if (stickBelow[1]) stickR else 0f)
-
-        /*
-         * Each side as low as its own contents allow.
-         *
-         * A thumb rests at the bottom of the phone, so that is where the
-         * arm goes: the lowest place that still clears the menu buttons
-         * and whatever stick sits below it. Down first; up only far
-         * enough not to sit on the shoulders.
-         *
-         * Per side, and the two do not have to agree. Holding them level
-         * meant the right-hand stick -- which sits below its buttons by
-         * default -- lifted the left-hand d-pad by its own height, and
-         * left a quarter of the band empty underneath it. That is the
-         * gap, and holding two halves level is not worth it: a real
-         * controller does not have its d-pad and its face buttons at the
-         * same height either.
-         */
-        val armHalfL = minOf(u * DPAD_SPAN, band - margin * 2f) / 2f
-        val armHalfR = minOf(u, (band - margin * 2f) / FACE_SPAN) * (FACE_SPAN / 2f)
-        val midL = (freeBotL - armHalfL).coerceAtLeast(freeTopL + armHalfL)
-        val midR = (freeBotR - armHalfR).coerceAtLeast(freeTopR + armHalfR)
-
-        /* Both arms clamped to their band, so raising the button scale
-         * cannot push either over the picture. */
         val dpadSize = minOf(u * DPAD_SPAN, band - margin * 2f)
-        val dpadCx = band / 2f
-        dpadRect.set(dpadCx - dpadSize / 2f, midL - dpadSize / 2f,
-                     dpadCx + dpadSize / 2f, midL + dpadSize / 2f)
-
         val faceU = minOf(u, (band - margin * 2f) / FACE_SPAN)
-        addFaceDiamond(w - band / 2f, midR, faceU)
+        val labelH = u * STICK_LABEL
 
         /*
-         * Each stick in the gap on its own side, and shrunk into it.
-         *
-         * The gap above the arm and the gap below it are not the same
-         * size, and neither is the same on both sides. Placing a stick
-         * without measuring its gap is what drew the left one straight
-         * through the L button. It is never moved to the other side to
-         * make it fit: which side it sits on is a setting somebody
-         * chose, and a smaller circle is the better of the two
-         * disappointments.
+         * One side's stack, from the floor up. Returns where the arm and
+         * the stick ended up and how far up the shoulders reach, so the
+         * caller can place all three.
          */
-        val labelH = u * STICK_LABEL
-        fun place(left: Boolean): Pair<Float, Float> {
-            val mid = if (left) midL else midR
+        class Stack(val armCy: Float, val stickR: Float, val stickCy: Float,
+                    val shoulderTop: Float)
+
+        fun stackUp(left: Boolean): Stack {
+            val side = if (left) 0 else 1
             val armHalf = if (left) dpadSize / 2f else faceU * (FACE_SPAN / 2f)
-            val below = stickBelow[if (left) 0 else 1]
-            val slot = if (below)
-                           (menuTop(if (left) 0 else 1) - margin) - (mid + armHalf + margin + labelH)
-                       else
-                           (mid - armHalf - margin) -
-                               (shouldersBottom(if (left) topLeft else topRight, left) + margin + labelH)
-            var r = minOf(u * STICK_R, band / 2f - margin, maxOf(slot, 0f) / 2f)
-            if (r < u * 0.45f) r = u * 0.45f      /* a circle nobody can hit is worse */
-            val cy = if (below) mid + armHalf + margin + labelH + r
-                     else mid - armHalf - margin - r
-            return r to cy
+            val hasStick = profile.sticks.any { it.left == left }
+            val below = stickBelow[side]
+            val shoulders = profile.shoulders.count {
+                val isLeft = it.code == BsProtocol.BTN_L || it.code == BsProtocol.BTN_ZL
+                isLeft == left
+            }
+
+            /* The room a stick asks for, then what is actually left for
+             * it once everything above and below has taken its share. A
+             * stick is the one thing here that gives: which side of the
+             * arm it sits on is a setting somebody chose, so it shrinks
+             * rather than moving. */
+            var r = minOf(u * STICK_R, band / 2f - margin)
+            val reserve = if (!hasStick) 0f else labelH + 2f * r + margin
+
+            var cursor = menuTop(side) - margin
+            var stickCy = 0f
+            if (hasStick && below) {
+                stickCy = cursor - r
+                cursor -= reserve
+            }
+            val armCy = cursor - armHalf
+            cursor -= 2f * armHalf + margin
+            if (hasStick && !below) {
+                stickCy = cursor - r
+                cursor -= reserve
+            }
+            val shoulderTop = cursor -
+                (if (shoulders == 0) 0f
+                 else shoulders * shoulderH + (shoulders - 1) * margin)
+            return Stack(armCy, r, stickCy, shoulderTop)
         }
-        val (rl, yl) = place(true)
-        val (rr, yr) = place(false)
+
+        val sl = stackUp(true)
+        val sr = stackUp(false)
+
+        /* Pushed back down only if the stack overran the top of the band
+         * -- which unitBeside is meant to prevent, and does, unless a
+         * saved button scale has been raised past what fits. */
+        val liftL = maxOf(0f, (topReserve + margin) - sl.shoulderTop)
+        val liftR = maxOf(0f, margin - sr.shoulderTop)
+
+        val shoulderW = minOf(u * SHOULDER_W, band - margin * 2f)
+        addShoulders(w, margin, sl.shoulderTop + liftL, shoulderW, shoulderH, true,
+                     sr.shoulderTop + liftR)
+
+        val dpadCx = band / 2f
+        val dpadCy = sl.armCy + liftL
+        dpadRect.set(dpadCx - dpadSize / 2f, dpadCy - dpadSize / 2f,
+                     dpadCx + dpadSize / 2f, dpadCy + dpadSize / 2f)
+
+        addFaceDiamond(w - band / 2f, sr.armCy + liftR, faceU)
+
         /* One radius for both, for the same reason as one unit. */
-        val r = minOf(rl, rr)
-        placeSticksPerSide(w, band / 2f, w - band / 2f, r, yl, yr)
+        val r = minOf(sl.stickR, sr.stickR)
+        placeSticksPerSide(w, band / 2f, w - band / 2f, r,
+                           sl.stickCy + liftL, sr.stickCy + liftR)
     }
 
     private fun addShoulders(
@@ -1021,6 +1035,10 @@ class PadOverlay(context: Context) : View(context) {
 
         /* The still middle of the cross, as a fraction of its radius. */
         const val DPAD_DEAD = 0.22f
+
+        /* How much of the height below the settings button the stack of
+         * controls may use. The rest is above a thumb. */
+        const val THUMB_REACH = 0.78f
         const val MENU_H = 0.7f
         const val MENU_GAP = 0.27f
         const val STICK_R = 1.05f

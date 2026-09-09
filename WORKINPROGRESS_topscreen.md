@@ -130,11 +130,22 @@ tests.** `bs_server.c` is linked into each emulator, so a server left
 running from before a change is the old code wearing the new binary's
 name, and it produces a pass that means nothing.
 
+### 9. The browser's menu gets out of the way
+
+**Done.** The bar hides itself, and comes back only when the pointer is
+in the top tenth of the window *and* over the black beside the picture
+-- the picture is the touch area and belongs to the game. A 16:9 picture
+filling a fullscreen window with the buttons turned off leaves no black
+at all, so an eight-pixel corner works everywhere as the way back.
+
 ## Working
 
 Kept here so it is clear what must not regress.
 
-- DS, both screens, switching either way: correct.
-- Cemu, both screens, switching either way: correct, subject to item 4.
-- Azahar serves both screens; the browser and the Android client both
-  show them.
+- All three emulators, all three clients, switching either way between
+  the two screens: correct.
+- The pad packs upward from the floor of its band, bounded by a thumb's
+  reach: measured on a 2400x1080 phone, the top of the stack sits
+  between 31% and 44% down, where it used to reach 11%.
+
+
