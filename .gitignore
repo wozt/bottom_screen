@@ -34,3 +34,8 @@ games/
 # project's.
 .mcp.json
 .claude/
+
+# Editor scratch files, which are not the project.
+*.kate-swp
+*.swp
+*~
