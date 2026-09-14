@@ -136,6 +136,18 @@ the three run together. Files it edits are backed up beside themselves.
 make launcher/bs_launcher && ./launcher/bs_launcher
 ```
 
+Or `scripts/bottom-screen`, which is one way in to all of it and builds
+what it is about to run before running it — waiting a few seconds beats
+starting the binary from before the last change, which this project has
+done to itself more than once:
+
+```sh
+scripts/bottom-screen              # the launcher
+scripts/bottom-screen pad --stats  # an emulator's screen on a real GamePad
+scripts/bottom-screen server       # the standalone server, on a test pattern
+scripts/bottom-screen test         # the whole suite
+```
+
 `--set-resolution <emulator> <n>` does the same with no window.
 
 <br clear="right">

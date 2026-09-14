@@ -390,6 +390,26 @@ int main(int argc, char **argv)
         if (!strcmp(a, "--host") && next) { host = next; i++; }
         else if (!strcmp(a, "--port") && next) { port = (uint16_t)atoi(next); i++; }
         else if (!strcmp(a, "--no-pad")) { no_pad = true; }
+        /*
+         * The picture, as the GamePad sees it.
+         *
+         * libdrc reads these from the environment, so this sets them
+         * rather than passing them -- which also means anything already
+         * in the environment is left alone, and a value given here wins
+         * over the default but not over one exported by hand.
+         *
+         * They are worth having on the command line because the one
+         * that matters is not obvious: the preset decides whether the
+         * pad can decode a game at all, and the difference between
+         * medium and fast is a frozen picture and a clean one.
+         */
+        else if (!strcmp(a, "--preset") && next)  { setenv("DRC_PRESET", next, 1); i++; }
+        else if (!strcmp(a, "--qp") && next)      { setenv("DRC_QP", next, 1); i++; }
+        else if (!strcmp(a, "--keyint") && next)  { setenv("DRC_KEYINT", next, 1); i++; }
+        else if (!strcmp(a, "--refresh") && next) { setenv("DRC_REFRESH", next, 1); i++; }
+        else if (!strcmp(a, "--deblock") && next) { setenv("DRC_DEBLOCK", next, 1); i++; }
+        else if (!strcmp(a, "--aq") && next)      { setenv("DRC_AQ", next, 1); i++; }
+        else if (!strcmp(a, "--stats"))           { setenv("DRC_STATS", "1", 1); }
         else if (!strcmp(a, "--screen") && next) {
             screen = strcmp(next, "top") ? BS_SCREEN_BOTTOM : BS_SCREEN_TOP;
             i++;
@@ -401,6 +421,19 @@ int main(int argc, char **argv)
                 "  --port N        default %d\n"
                 "  --screen top|bottom\n"
                 "  --no-pad        decode and scale, send nothing to a pad\n"
+                "\n"
+                "The picture, as the pad sees it:\n"
+                "  --preset NAME   x264 preset; fast by default because\n"
+                "                  medium asks for a keyframe every frame\n"
+                "                  on a game, and the picture then freezes\n"
+                "  --qp N          quantiser; the protocol assumes 32 and\n"
+                "                  anything else decodes as noise\n"
+                "  --keyint N      frames between keyframes\n"
+                "  --refresh N     intra refresh period, 0 to turn it off\n"
+                "  --deblock 0|1   the deblocking filter\n"
+                "  --aq N          adaptive quantisation mode\n"
+                "  --stats         one line a second; resync is the number\n"
+                "                  that says whether the pad can decode\n"
                 "\n"
                 "Needs a paired GamePad and the driver loaded with\n"
                 "disable_ips=1; see WIIU_GAMEPAD.md in rtw88_TSF.\n",

@@ -1,0 +1,52 @@
+#!/bin/sh
+# One way in.
+#
+# With no argument it opens the launcher, which is what this is for: the
+# three settings that have to be right before every run -- the stream,
+# the port, the internal resolution -- live in three different places,
+# two of them with a trap in them.
+#
+# It builds what it is about to run, and only that. Waiting a few seconds
+# for a build is better than running the binary from before the last
+# change, which this project has done to itself more than once.
+#
+#   bottom-screen              the launcher
+#   bottom-screen pad [args]   an emulator's screen on a real GamePad
+#   bottom-screen server [..]  the standalone server, on a test pattern
+#   bottom-screen client [..]  the plain SDL client
+#   bottom-screen test         the whole suite
+set -e
+
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+cd "$DIR"
+
+case "${1:-launcher}" in
+    launcher|"")
+        make launcher/bs_launcher >/dev/null
+        exec ./launcher/bs_launcher
+        ;;
+    pad)
+        shift
+        # Its own build: it needs libdrc and a C++ compiler, which the
+        # top-level make deliberately does not.
+        make -C gamepad >/dev/null
+        exec ./gamepad/bs_gamepad "$@"
+        ;;
+    server)
+        shift
+        make bottom_screen_server >/dev/null
+        exec ./bottom_screen_server "$@"
+        ;;
+    client)
+        shift
+        make bottom_screen_client >/dev/null
+        exec ./bottom_screen_client "$@"
+        ;;
+    test)
+        exec make test
+        ;;
+    *)
+        echo "bottom-screen [launcher|pad|server|client|test] [arguments]" >&2
+        exit 1
+        ;;
+esac
