@@ -39,3 +39,7 @@ games/
 *.kate-swp
 *.swp
 *~
+
+# The GamePad client builds in place; its own outputs are not the project.
+gamepad/bs_gamepad
+gamepad/*.o

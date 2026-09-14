@@ -1,0 +1,94 @@
+// Copyright (c) 2013, Mema Hacking, All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are met:
+//
+// 1. Redistributions of source code must retain the above copyright notice,
+// this list of conditions and the following disclaimer.
+//
+// 2. Redistributions in binary form must reproduce the above copyright
+// notice, this list of conditions and the following disclaimer in the
+// documentation and/or other materials provided with the distribution.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+// AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+// IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+// ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE
+// LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+// CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+// SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+// INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+// CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+// ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+// POSSIBILITY OF SUCH DAMAGE.
+
+#pragma once
+
+#include <array>
+#include <cstddef>
+#include <drc/types.h>
+#include <vector>
+
+namespace drc {
+
+const size_t kVstrmHeaderSize = 16;
+
+// Limit our payload size to around 1400 bytes (DRC MTU is about 1800 bytes, so
+// increasing this could help performance in the future).
+// Measured: at 1700 the GamePad stops decoding outright and asks for a
+// keyframe on every frame, so its reassembly gives out somewhere below that.
+// The ~1793-byte frames a real console sends must be its audio rather than its
+// video. At 1400 the packet rate lands within a few of the console's own.
+const size_t kMaxVstrmPayloadSize = 1400;
+
+enum class VstrmFrameRate {
+  k59_94Hz = 0,
+  k50Hz = 1,
+  k29_97Hz = 2,
+  k25Hz = 3,
+
+  kUnknown = -1,
+};
+
+class VstrmPacket {
+ public:
+  VstrmPacket();
+  explicit VstrmPacket(const std::vector<byte>& packet);
+  virtual ~VstrmPacket();
+
+  u16 SeqId() const;
+  u32 Timestamp() const;
+  bool InitFlag() const;
+  bool FrameBeginFlag() const;
+  bool ChunkEndFlag() const;
+  bool FrameEndFlag() const;
+  bool IdrFlag() const;
+  VstrmFrameRate FrameRate() const;
+  const byte* Payload() const;
+  size_t PayloadSize() const;
+
+  void SetSeqId(u16 seqid);
+  void SetTimestamp(u32 ts);
+  void SetInitFlag(bool flag);
+  void SetFrameBeginFlag(bool flag);
+  void SetChunkEndFlag(bool flag);
+  void SetFrameEndFlag(bool flag);
+  void SetIdrFlag(bool flag);
+  void SetFrameRate(VstrmFrameRate framerate);
+  void SetPayload(const byte* payload, size_t size);
+
+  const byte* GetBytes() const { return pkt_.data(); }
+  size_t GetSize() const { return kVstrmHeaderSize + PayloadSize(); }
+
+  // Reset the packet to use default values for everything.
+  void ResetPacket();
+
+ private:
+  bool GetExtOption(u8 opt, u8* val = NULL) const;
+  void SetExtOption(u8 opt, u8* val = NULL);
+  void ClearExtOption(u8 opt, bool has_val);
+
+  std::array<byte, kVstrmHeaderSize + kMaxVstrmPayloadSize> pkt_;
+};
+
+}  // namespace drc
