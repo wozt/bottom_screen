@@ -323,10 +323,17 @@ void InputLoop(drc::Streamer *streamer, Link *link)
                 SendEvent(link, BS_INPUT_AXIS, static_cast<uint8_t>(code),
                           static_cast<int16_t>(val), 0);
             };
+            /*
+             * Not negated. libdrc already reports a stick the way this
+             * protocol wants it -- up is positive on both sides -- and
+             * flipping it here made both sticks answer up with down.
+             * The screen's y grows downward and a stick's does not, and
+             * that is a rule about screens, not about sticks.
+             */
             axis(BS_AXIS_LEFT_X, in.left_stick_x);
-            axis(BS_AXIS_LEFT_Y, -in.left_stick_y);
+            axis(BS_AXIS_LEFT_Y, in.left_stick_y);
             axis(BS_AXIS_RIGHT_X, in.right_stick_x);
-            axis(BS_AXIS_RIGHT_Y, -in.right_stick_y);
+            axis(BS_AXIS_RIGHT_Y, in.right_stick_y);
 
             /*
              * Touch, in the space the server announced -- never the
@@ -418,6 +425,28 @@ int main(int argc, char **argv)
      * Whether that is enough to diagnose from is a question for a
      * machine with a pad on it.
      */
+    /*
+     * The encoder preset, chosen because the GamePad cannot decode what
+     * a heavier one produces from real video.
+     *
+     * Measured against a running game, twenty seconds each, counting
+     * the keyframe requests the pad sends when it cannot decode:
+     *
+     *     medium     60 resync/s   -- a keyframe asked for every frame
+     *     fast        0
+     *     veryfast    0            -- but 8 packets an image, not 5
+     *     ultrafast   0
+     *
+     * libdrc's own note says medium or below, which was measured on a
+     * flat test pattern; this project's picture is a game, and a game is
+     * heavier. The same bridge fed the built-in test pattern decodes
+     * perfectly at medium, which is what makes this a property of the
+     * content rather than of this code.
+     *
+     * setenv without overwriting, so DRC_PRESET set by hand still wins.
+     */
+    setenv("DRC_PRESET", "fast", 0);
+
     drc::Streamer streamer;
     if (!no_pad && !streamer.Start()) {
         fprintf(stderr, "bs_gamepad: libdrc would not start -- is the AP up "
