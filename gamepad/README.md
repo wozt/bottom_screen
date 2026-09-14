@@ -10,11 +10,12 @@ Which closes a circle worth naming: a Wii U GamePad, driven by an
 emulator running a Wii U game, on a PC, with no console anywhere. Or a
 3DS on a GamePad, if that is what the emulator happens to be.
 
-**This is a skeleton.** It compiles, it connects, it decodes, it scales,
-and the shape is right. What it has never done is talk to a GamePad —
-there is none on the machine it was written on. The parts that are
-unknown rather than merely unwritten are marked `TODO` in the source,
-each saying what is unknown.
+**It works**, and it was a skeleton for about an hour. A game running in
+Cemu reaches a real GamePad with no keyframe requests sustained, which
+is the number that decides whether a picture holds or freezes. What is
+still untried is listed at the end, and the parts that are unknown
+rather than merely unwritten are marked `TODO` in the source, each
+saying which it is.
 
 ---
 
@@ -118,7 +119,6 @@ stays buildable everywhere.
 
 ## What is left
 
-- **Everything involving an actual GamePad.** See the table above.
 - **A dead zone on the sticks.** Every axis is sent on every poll,
   including whatever a stick at rest drifts by. The other clients here
   send on change only.
