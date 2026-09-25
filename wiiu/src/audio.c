@@ -582,134 +582,119 @@ void audio_exit(void)
 }
 
 
-void audio_push_pcm_s16le(const uint8_t *data,
-                          uint32_t size)
+static void audio_push_native_core(const int16_t *samples,
+                                   uint32_t frames)
 {
     if (!g_pcm[0] ||
         !g_pcm[1] ||
-        !data ||
-        !size) {
+        !samples ||
+        !frames) {
         return;
     }
 
-    if ((size & 3u) != 0) {
-        g_failed++;
-        return;
-    }
-
-    const uint32_t frames =
-        size / 4u;
-
-    if (!frames ||
-        frames >
-            AUDIO_MAX_PUSH_FRAMES) {
-
+    if (frames > AUDIO_MAX_PUSH_FRAMES) {
         g_failed++;
         return;
     }
 
     audio_sync_position();
 
-    /*
-     * For this diagnostic version, a drop means ONLY a genuine full
-     * hardware ring. No artificial target trimming exists anymore.
-     */
-    if (frames >
-        AUDIO_RING_FRAMES -
-        g_count) {
-
+    if (frames > AUDIO_RING_FRAMES - g_count) {
         g_dropped++;
-
         return;
     }
 
-    const uint32_t start =
-        g_write_pos;
+    const uint32_t start = g_write_pos;
 
-    for (uint32_t i = 0;
-         i < frames;
-         ++i) {
-
+    for (uint32_t i = 0; i < frames; ++i) {
         const uint32_t dst =
-            (start + i) %
-            AUDIO_RING_FRAMES;
-
-        const size_t at =
-            (size_t)i * 4u;
-
-        const uint16_t left =
-            (uint16_t)data[at] |
-            ((uint16_t)data[
-                at + 1u] << 8);
-
-        const uint16_t right =
-            (uint16_t)data[
-                at + 2u] |
-            ((uint16_t)data[
-                at + 3u] << 8);
+            (start + i) % AUDIO_RING_FRAMES;
 
         /*
-         * PPC is big-endian; assigning the numeric sample produces the
-         * LPCM16 byte order AX expects.
+         * Numeric assignment is intentional. AX wants the PowerPC
+         * native LPCM16 representation in its sample buffer.
          */
-        g_pcm[0][dst] =
-            (int16_t)left;
-
-        g_pcm[1][dst] =
-            (int16_t)right;
+        g_pcm[0][dst] = samples[i * 2 + 0];
+        g_pcm[1][dst] = samples[i * 2 + 1];
     }
 
-    /*
-     * Flush only the regions just written.
-     */
     const uint32_t first =
-        frames <
-            AUDIO_RING_FRAMES -
-            start
-        ? frames
-        : AUDIO_RING_FRAMES -
-            start;
+        frames < AUDIO_RING_FRAMES - start
+            ? frames
+            : AUDIO_RING_FRAMES - start;
 
     DCFlushRange(
         &g_pcm[0][start],
-        first *
-        sizeof(int16_t));
+        first * sizeof(int16_t));
 
     DCFlushRange(
         &g_pcm[1][start],
-        first *
-        sizeof(int16_t));
+        first * sizeof(int16_t));
 
     if (frames > first) {
-        const uint32_t second =
-            frames -
-            first;
+        const uint32_t second = frames - first;
 
         DCFlushRange(
             &g_pcm[0][0],
-            second *
-            sizeof(int16_t));
+            second * sizeof(int16_t));
 
         DCFlushRange(
             &g_pcm[1][0],
-            second *
-            sizeof(int16_t));
+            second * sizeof(int16_t));
     }
 
     g_write_pos =
-        (g_write_pos +
-         frames) %
+        (g_write_pos + frames) %
         AUDIO_RING_FRAMES;
 
-    g_count +=
-        frames;
-
+    g_count += frames;
     g_packets++;
-
-    g_input_total +=
-        frames;
+    g_input_total += frames;
 
     start_if_ready();
+}
+
+void audio_push_pcm_s16_native(const int16_t *samples,
+                               uint32_t frames)
+{
+    audio_push_native_core(samples, frames);
+}
+
+void audio_push_pcm_s16le(const uint8_t *data,
+                          uint32_t size)
+{
+    if (!data || !size)
+        return;
+
+    if ((size & 3u) != 0) {
+        g_failed++;
+        return;
+    }
+
+    const uint32_t frames = size / 4u;
+
+    if (!frames || frames > AUDIO_MAX_PUSH_FRAMES) {
+        g_failed++;
+        return;
+    }
+
+    int16_t native[AUDIO_MAX_PUSH_FRAMES * 2];
+
+    for (uint32_t i = 0; i < frames; ++i) {
+        const size_t at = (size_t)i * 4u;
+
+        native[i * 2 + 0] =
+            (int16_t)(
+                (uint16_t)data[at + 0] |
+                ((uint16_t)data[at + 1] << 8));
+
+        native[i * 2 + 1] =
+            (int16_t)(
+                (uint16_t)data[at + 2] |
+                ((uint16_t)data[at + 3] << 8));
+    }
+
+    audio_push_native_core(native, frames);
 }
 
 

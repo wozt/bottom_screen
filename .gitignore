@@ -48,3 +48,10 @@ gamepad/*.o
 /tests/launcher_session
 
 /gamepad/test_pad_menu
+
+# Native Wii U console client
+/wiiu/build/
+/wiiu/bottomscreen_wiiu.elf
+/wiiu/bottomscreen_wiiu.rpx
+/wiiu/bottomscreen_wiiu.wuhb
+/wiiu/bottomscreen_wiiu.map

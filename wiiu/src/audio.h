@@ -19,6 +19,15 @@ void audio_exit(void);
 void audio_push_pcm_s16le(const uint8_t *data,
                           uint32_t size);
 
+/*
+ * Host-native interleaved stereo samples.
+ *
+ * Use this for opus_decode() output. PowerPC is big-endian, so treating
+ * opus_int16 memory as a little-endian byte stream swaps every sample.
+ */
+void audio_push_pcm_s16_native(const int16_t *samples,
+                               uint32_t frames);
+
 void audio_stats(unsigned long *packets,
                  unsigned long *failed,
                  unsigned long *dropped);

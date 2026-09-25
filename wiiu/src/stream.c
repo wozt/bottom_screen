@@ -20,6 +20,7 @@
 #ifdef __WIIU__
 
 #include <coreinit/condition.h>
+#include <coreinit/core.h>
 #include <coreinit/mutex.h>
 #include <coreinit/thread.h>
 #include <coreinit/time.h>
@@ -39,11 +40,32 @@ typedef OSCondition bs_cnd;
 #define BS_CND_INIT(c)    OSInitCond(&(c))
 #define BS_CND_SIGNAL(c)  OSSignalCond(&(c))
 
-/* Milliseconds rather than the host's absolute timespec: coreinit's
- * timed wait takes a duration from now. */
+/*
+ * WUT exposes OSWaitCond(), but no timed condition-variable wait.
+ *
+ * This helper is only used when the compressed-video queue is full.
+ * Temporarily release the queue mutex, sleep for the requested short
+ * interval, then reacquire it so the consumer can make progress.
+ *
+ * The caller checks the queue condition again after this returns.
+ */
 static int bs_cnd_wait_ms(bs_cnd *c, bs_mtx *m, int ms)
 {
-    return OSWaitCondWithTimeout(c, m, OSMillisecondsToTicks((uint32_t)ms));
+    (void)c;
+
+    OSUnlockMutex(m);
+
+    if (ms > 0) {
+        OSSleepTicks(
+            OSMillisecondsToTicks(
+                (uint32_t)ms));
+    } else {
+        OSYieldThread();
+    }
+
+    OSLockMutex(m);
+
+    return 1;
 }
 
 static OSThread g_thread;
