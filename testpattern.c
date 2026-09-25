@@ -6,6 +6,7 @@
 #include <math.h>
 #include <string.h>
 #include <time.h>
+#include <pthread.h>
 
 /*
  * A synthetic bottom screen, so the whole pipeline -- encode, framing,
@@ -22,7 +23,7 @@
  *     cannot be compared;
  *   - whatever input the client last sent, drawn where it landed. That
  *     turns the test pattern into a loopback for the input path too: if
- *     the crosshair follows your finger on the phone, touch works end to
+ *     the circle follows your finger on the phone, touch works end to
  *     end, and no emulator was needed to prove it.
  */
 
@@ -33,11 +34,13 @@ typedef struct {
     uint32_t     frame;
     struct timespec next;
 
-    /* A quiet tone, so the sound path can be exercised without an
-     * emulator -- the same reason the picture is a moving bar rather
-     * than a still image. 440 Hz at a tenth of full scale: audible
-     * enough to confirm, gentle enough to leave running. */
-    double   phase;
+    /* Independent voices with smoothed envelopes for buttons and touch. */
+    double phase[15], envelope[15];
+    double touch_phase, touch_envelope;
+    int octave;
+    int axes[4];
+    uint64_t audio_epoch_ns, audio_frames;
+    pthread_mutex_t lock;
 
     /* last input seen, drawn into the frame */
     int touch_x, touch_y, touching;
@@ -67,6 +70,11 @@ static void draw(TestPattern *tp)
 {
     const int w = tp->info.width, h = tp->info.height;
 
+    const int red = (tp->axes[0] + 32767) * 90 / 65534;
+    const int green = (tp->axes[1] + 32767) * 60 / 65534;
+    const int blue = (tp->axes[2] + 32767) * 90 / 65534;
+    const int light = (tp->axes[3] + 32767) * 25 / 65534;
+
     /* Background: a gradient, so banding from a too-low bitrate shows up
      * immediately instead of hiding in flat colour. */
     for (int y = 0; y < h; y++) {
@@ -77,7 +85,8 @@ static void draw(TestPattern *tp)
             ? (0xFFu << 24) | ((b / 2) << 16) | (b << 8) | (b + 70)
             : (0xFFu << 24) | (b << 16) | (b << 8) | (b + 20);
         for (int x = 0; x < w; x++) {
-            uint32_t g = row + (uint32_t)((90 * x / w) << 8);
+            uint32_t g = row + (uint32_t)((60 * x / w + green + light) << 8)
+                + (uint32_t)((red + light) << 16) + blue + light;
             memcpy(tp->pixels + (size_t)y * tp->stride + (size_t)x * 4, &g, 4);
         }
     }
@@ -101,12 +110,15 @@ static void draw(TestPattern *tp)
     /* Last touch from the client. Never on the top screen: there is no
      * touch panel there, and the server drops what a client sends
      * anyway. A crosshair drawn here would say the opposite. */
-    if (tp->touching && !tp->is_top) {
-        for (int d = -8; d <= 8; d++) {
-            put_px(tp, tp->touch_x + d, tp->touch_y, 0xFF0000FFu);
-            put_px(tp, tp->touch_x, tp->touch_y + d, 0xFF0000FFu);
-        }
-        fill_rect(tp, tp->touch_x - 2, tp->touch_y - 2, 5, 5, 0xFF0000FFu);
+    if (!tp->is_top) {
+        const int radius = h / 16;
+        for (int y = -radius; y <= radius; ++y)
+            for (int x = -radius; x <= radius; ++x) {
+                int d = x*x + y*y;
+                if (d <= radius*radius && (tp->touching || d >= (radius-2)*(radius-2)))
+                    put_px(tp, tp->touch_x+x, tp->touch_y+y,
+                           tp->touching ? 0xFFFFCC40u : 0xFFFFFFFFu);
+            }
     }
 
     /* Held buttons, as a row of lamps along the bottom. */
@@ -115,6 +127,9 @@ static void draw(TestPattern *tp)
         fill_rect(tp, 4 + i * 10, h - 14, 8, 10,
                   held ? 0xFF00FFFFu : 0xFF282828u);
     }
+    for (int i = -1; i <= 2; i++)
+        fill_rect(tp, w - 39 + (i + 1) * 9, h - 14, 6, 10,
+                  i == tp->octave ? 0xFFFFCC40u : 0xFF282828u);
 }
 
 static void tp_get_info(void *self, BsSourceInfo *out)
@@ -129,8 +144,11 @@ static const uint8_t *tp_acquire(void *self, int *stride, uint32_t *timestamp_us
     /* Absolute-deadline pacing: sleeping for a fixed interval would
      * accumulate the render time as drift and slowly fall behind. */
     long period_ns = 1000000000L / tp->info.fps;
-    if (tp->next.tv_sec == 0)
-        clock_gettime(CLOCK_MONOTONIC, &tp->next);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if ((int64_t)(now.tv_sec - tp->next.tv_sec) * 1000000000L +
+        now.tv_nsec - tp->next.tv_nsec > period_ns)
+        tp->next = now;
     tp->next.tv_nsec += period_ns;
     while (tp->next.tv_nsec >= 1000000000L) {
         tp->next.tv_nsec -= 1000000000L;
@@ -138,7 +156,9 @@ static const uint8_t *tp_acquire(void *self, int *stride, uint32_t *timestamp_us
     }
     clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &tp->next, NULL);
 
+    pthread_mutex_lock(&tp->lock);
     draw(tp);
+    pthread_mutex_unlock(&tp->lock);
     tp->frame++;
 
     if (stride)       *stride = tp->stride;
@@ -155,30 +175,67 @@ static int tp_take_audio(void *self, int16_t *out, int max_frames)
     if (max_frames <= 0)
         return 0;
 
-    /* Generated on demand rather than queued: a synthetic source has no
-     * reason to buffer, and this way it never drifts from the rate the
-     * server actually drains at. */
-    const double step = 2.0 * 3.14159265358979 * 440.0 / TP_AUDIO_RATE;
+    /* The server drains until we return zero. Generate only elapsed real
+     * time, otherwise minutes of silence queue up before a button is heard. */
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    uint64_t ns = (uint64_t)now.tv_sec * 1000000000u + now.tv_nsec;
+    if (!tp->audio_epoch_ns) tp->audio_epoch_ns = ns;
+    uint64_t due = (ns - tp->audio_epoch_ns) * TP_AUDIO_RATE / 1000000000u;
+    if (due - tp->audio_frames > TP_AUDIO_RATE / 10)
+        tp->audio_frames = due - TP_AUDIO_RATE / 100;
+    uint64_t available = due - tp->audio_frames;
+    if (available < (uint64_t)max_frames) max_frames = (int)available;
+    if (!max_frames) return 0;
+    tp->audio_frames += max_frames;
+
+    pthread_mutex_lock(&tp->lock);
+    double steps[15];
+    for (int b = 0; b < 15; b++)
+        steps[b] = 2.0 * 3.14159265358979 * 440.0 *
+            pow(2.0, b / 12.0 + tp->octave) / TP_AUDIO_RATE;
+    double touch_step = 2.0 * 3.14159265358979 * 440.0 *
+        pow(2.0, 2.0 * tp->touch_x / (tp->info.width - 1) + tp->octave) / TP_AUDIO_RATE;
+    double harmonic = (double)tp->touch_y / (tp->info.height - 1);
     for (int i = 0; i < max_frames; i++) {
-        const int16_t v = (int16_t)(sin(tp->phase) * 3200.0);
-        tp->phase += step;
-        if (tp->phase > 2.0 * 3.14159265358979)
-            tp->phase -= 2.0 * 3.14159265358979;
+        double sample = 0, gain_sum = 0;
+        for (int b = 0; b < 15; b++) {
+            // One semitone per button; a short release avoids clicks.
+            double target = (tp->buttons & (1u << b)) ? 1.0 : 0.0;
+            tp->envelope[b] += (target - tp->envelope[b]) * 0.004;
+            sample += sin(tp->phase[b]) * tp->envelope[b] * 8000.0;
+            gain_sum += tp->envelope[b];
+            tp->phase[b] += steps[b];
+            if (tp->phase[b] >= 2.0 * 3.14159265358979)
+                tp->phase[b] -= 2.0 * 3.14159265358979;
+        }
+        tp->touch_envelope += ((tp->touching ? 1.0 : 0.0) - tp->touch_envelope) * 0.004;
+        sample += 8000.0 * tp->touch_envelope *
+            (sin(tp->touch_phase) + harmonic * 0.5 * sin(2 * tp->touch_phase)) /
+            (1.0 + harmonic * 0.5);
+        gain_sum += tp->touch_envelope;
+        tp->touch_phase += touch_step;
+        if (tp->touch_phase >= 2.0 * 3.14159265358979)
+            tp->touch_phase -= 2.0 * 3.14159265358979;
+        // Bound the sum without clipping the waveform of held chords.
+        if (gain_sum > 3.5) sample *= 3.5 / gain_sum;
         for (int c = 0; c < TP_AUDIO_CHANNELS; c++)
-            out[(size_t)i * TP_AUDIO_CHANNELS + c] = v;
+            out[(size_t)i * TP_AUDIO_CHANNELS + c] = (int16_t)sample;
     }
+    pthread_mutex_unlock(&tp->lock);
     return max_frames;
 }
 
 static void tp_touch(void *self, BsInputType type, int x, int y)
 {
     TestPattern *tp = self;
+    pthread_mutex_lock(&tp->lock);
     switch (type) {
     case BS_INPUT_TOUCH_DOWN:
     case BS_INPUT_TOUCH_MOVE:
         tp->touching = 1;
-        tp->touch_x = x;
-        tp->touch_y = y;
+        tp->touch_x = x < 0 ? 0 : x >= tp->info.width ? tp->info.width-1 : x;
+        tp->touch_y = y < 0 ? 0 : y >= tp->info.height ? tp->info.height-1 : y;
         break;
     case BS_INPUT_TOUCH_UP:
         tp->touching = 0;
@@ -186,6 +243,7 @@ static void tp_touch(void *self, BsInputType type, int x, int y)
     default:
         break;
     }
+    pthread_mutex_unlock(&tp->lock);
 }
 
 static void tp_button(void *self, BsButton code, int pressed)
@@ -193,9 +251,15 @@ static void tp_button(void *self, BsButton code, int pressed)
     TestPattern *tp = self;
     if (code < 1 || code > 15)
         return;
+    pthread_mutex_lock(&tp->lock);
     uint32_t bit = 1u << (code - 1);
+    if (pressed && !(tp->buttons & bit)) {
+        if (code == BS_BTN_UP && tp->octave < 2) tp->octave++;
+        if (code == BS_BTN_DOWN && tp->octave > -1) tp->octave--;
+    }
     if (pressed) tp->buttons |= bit;
     else         tp->buttons &= ~bit;
+    pthread_mutex_unlock(&tp->lock);
 
     /*
      * Drawn as a lamp, and named here as well. A button held long enough
@@ -209,15 +273,14 @@ static void tp_button(void *self, BsButton code, int pressed)
 
 static void tp_axis(void *self, BsAxis code, int value)
 {
-    (void)self;
-    /* Not drawn, but reported: a stick that appears to do nothing is
-     * indistinguishable from one whose events never left the client. */
-    static int announced = 0;
-    if (!announced && value != 0) {
-        announced = 1;
-        fprintf(stderr, "bottom_screen: first axis from a client: %d = %d\n",
-                (int)code, value);
-    }
+    TestPattern *tp = self;
+    if (code < BS_AXIS_LEFT_X || code > BS_AXIS_RIGHT_Y) return;
+    if (value > 32767) value = 32767;
+    if (value < -32767) value = -32767;
+    if (abs(value) < 3000) value = 0;
+    pthread_mutex_lock(&tp->lock);
+    tp->axes[code - BS_AXIS_LEFT_X] = value;
+    pthread_mutex_unlock(&tp->lock);
 }
 
 static void tp_destroy(void *self)
@@ -225,6 +288,7 @@ static void tp_destroy(void *self)
     TestPattern *tp = self;
     if (!tp)
         return;
+    pthread_mutex_destroy(&tp->lock);
     free(tp->pixels);
     free(tp);
 }
@@ -268,7 +332,7 @@ static BsSource *testpattern_new(BsConsole console, int fps, int is_top)
         break;
     default: return NULL;
     }
-    if (fps <= 0)
+    if (fps < 2)
         fps = 60;
 
     TestPattern *tp = calloc(1, sizeof(*tp));
@@ -292,6 +356,10 @@ static BsSource *testpattern_new(BsConsole console, int fps, int is_top)
         free(tp); free(src);
         return NULL;
     }
+
+    pthread_mutex_init(&tp->lock, NULL);
+    tp->touch_x = w / 2;
+    tp->touch_y = h / 2;
 
     src->self     = tp;
     src->get_info = tp_get_info;

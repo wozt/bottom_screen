@@ -153,7 +153,24 @@ accept that and then produce nothing from it.
 **Touch coordinates are in the space the server announced**, never the
 console's native size. Dividing by the latter puts every tap wrong by
 exactly the resolution scale, and it reads as a calibration problem when
-it is arithmetic.
+it is arithmetic. The GamePad bridge has a second copy of the same
+mistake to avoid: its panel is 864 wide and a 4:3 screen is drawn 640 of
+that, so a tap read across the panel is a fifth off there too.
+
+**A client asks for the screen before it asks for the size.** The server
+files a size under whichever screen the client is on when it arrives, so
+the other order sizes the screen being left -- which is invisible on a
+DS or a Wii U, where both screens are the same shape, and stretches a
+3DS top screen into the bottom one's 4:3 box. The size is recomputed on
+every change rather than kept from the handshake, and the bitrate goes
+with it, because each screen has its own encoder built on the server's
+defaults.
+
+**Changing screen is a menu control on every client**, never a button
+combination: a dropdown in the browser, a settings row on the Switch, a
+menu toggle on Android, a button on the GamePad's own menu. A shortcut
+on one of the four would be a fifth way to do the same thing, and a
+combination over a game is a combination the game wanted.
 
 **The source list lives beside the sources.** `bottom_screen.cmake`
 names the files, and all three emulators include it. It used to be

@@ -22,6 +22,18 @@
 struct BsConn {
     int  fd;
     char peer[64];
+    /*
+     * An optional limit on how long a *message* may fail to begin.
+     *
+     * It is deliberately not a read timeout. A timeout that can fire in
+     * the middle of a message leaves the stream one header out of step
+     * and every message after it is garbage -- worse than whatever
+     * silence it was meant to detect. So it is armed before the first
+     * byte and disarmed for the rest, which makes it exactly what it is
+     * for: noticing that nothing is arriving at all.
+     */
+    int  idle_ms;
+    int  timed_out;
 };
 
 static void __attribute__((format(printf, 3, 4)))
@@ -224,9 +236,31 @@ int bs_write_all(BsConn *conn, const void *buf, size_t len)
     return 0;
 }
 
+/* Arms the socket's receive timeout, or clears it with 0. */
+static void arm_timeout(BsConn *conn, int ms)
+{
+    struct timeval tv = { ms / 1000, (ms % 1000) * 1000 };
+    setsockopt(conn->fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+}
+
+void bs_conn_set_idle_timeout(BsConn *conn, int ms)
+{
+    if (!conn)
+        return;
+    conn->idle_ms = ms > 0 ? ms : 0;
+    conn->timed_out = 0;
+    arm_timeout(conn, 0);
+}
+
+int bs_conn_timed_out(const BsConn *conn)
+{
+    return conn ? conn->timed_out : 0;
+}
+
 int bs_read_exact(BsConn *conn, void *buf, size_t len)
 {
     uint8_t *p = buf;
+    const size_t want = len;
     while (len > 0) {
         ssize_t n = recv(conn->fd, p, len, 0);
         if (n == 0)
@@ -234,8 +268,17 @@ int bs_read_exact(BsConn *conn, void *buf, size_t len)
         if (n < 0) {
             if (errno == EINTR)
                 continue;
+            /* Only before the first byte, and only when armed. */
+            if ((errno == EAGAIN || errno == EWOULDBLOCK) &&
+                conn->idle_ms && len == want) {
+                conn->timed_out = 1;
+                arm_timeout(conn, 0);
+                return -1;
+            }
             return -1;
         }
+        if (len == want && conn->idle_ms)
+            arm_timeout(conn, 0);   /* the message has begun: no more giving up */
         p += n;
         len -= (size_t)n;
     }
@@ -300,6 +343,10 @@ int bs_send_msg(BsConn *conn, uint8_t type,
     return 0;
 }
 
+/*
+ * The timeout is armed here, around the header only, because that is
+ * where a message begins.
+ */
 int bs_recv_msg(BsConn *conn, uint8_t *type, void *buf, size_t bufcap,
                 size_t *out_len)
 {
@@ -307,6 +354,9 @@ int bs_recv_msg(BsConn *conn, uint8_t *type, void *buf, size_t bufcap,
         return -1;
 
     BsMsgHeader h;
+    conn->timed_out = 0;
+    if (conn->idle_ms)
+        arm_timeout(conn, conn->idle_ms);
     int rc = bs_read_exact(conn, &h, sizeof(h));
     if (rc != 0)
         return rc;

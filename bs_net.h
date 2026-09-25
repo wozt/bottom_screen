@@ -27,6 +27,18 @@ BsConn *bs_connect(const char *host, uint16_t port, char *err, size_t errlen);
 
 void bs_conn_close(BsConn *conn);
 int  bs_conn_fd(const BsConn *conn);
+
+/*
+ * Give up waiting for a message that never starts.
+ *
+ * With this set, bs_recv_msg returns non-zero after `ms` of complete
+ * silence and bs_conn_timed_out says that is what happened, so a caller
+ * can tell "nothing is arriving" from "the connection is gone" and act
+ * on it. A message already begun is always read to its end: a timeout
+ * mid-message would desynchronise the stream. 0 restores blocking.
+ */
+void bs_conn_set_idle_timeout(BsConn *conn, int ms);
+int  bs_conn_timed_out(const BsConn *conn);
 const char *bs_conn_peer(const BsConn *conn);
 
 /*

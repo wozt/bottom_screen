@@ -89,8 +89,23 @@ tests/switch_client: tests/switch_client.c switch/source/stream.c \
 	  -o $@ tests/switch_client.c switch/source/stream.c bs_decoder.c bs_net.c \
 	  $(shell pkg-config --libs opus) -lavcodec -lavutil -lpthread
 
-test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_flip \
+tests/launcher_session: tests/launcher_session.c launcher/bs_launcher.c bs_protocol.h
+	$(CC) $(CFLAGS) $(LAUNCHER_CFLAGS) -o $@ tests/launcher_session.c $(LAUNCHER_LIBS)
+
+tests/launcher_settings: tests/launcher_settings.c launcher/bs_launcher.c bs_protocol.h
+	$(CC) $(CFLAGS) $(LAUNCHER_CFLAGS) -o $@ tests/launcher_settings.c $(LAUNCHER_LIBS)
+
+tests/testpattern_input: tests/testpattern_input.c testpattern.c bs_net.c bs_source.h
+	$(CC) $(CFLAGS) $(SERVER_CFLAGS) -o $@ tests/testpattern_input.c testpattern.c bs_net.c -lpthread -lm
+
+tests/idle_timeout: tests/idle_timeout.c bs_net.c bs_net.h bs_protocol.h
+	$(CC) $(CFLAGS) -o $@ tests/idle_timeout.c bs_net.c -lpthread
+
+test: tests/launcher_session tests/launcher_settings tests/testpattern_input tests/idle_timeout bottom_screen_server tests/smoke_client tests/input_merge tests/resize_flip \
       $(SWITCH_TEST)
+	xvfb-run -a ./tests/launcher_session
+	xvfb-run -a ./tests/launcher_settings
+	./tests/testpattern_input
 	./tests/run_smoke.sh
 	./tests/run_multiclient.sh
 	./tests/run_receive_size.sh
@@ -99,6 +114,8 @@ test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_fli
 	./tests/run_prompt.sh
 	./tests/run_hardware_encoder.sh
 	./tests/run_switch_client.sh
+	./tests/idle_timeout
+	./tests/run_gamepad_aspect.sh
 	./tests/input_merge
 	./tests/resize_flip
 	./tests/run_patches_fresh.sh
@@ -107,6 +124,7 @@ test: bottom_screen_server tests/smoke_client tests/input_merge tests/resize_fli
 
 clean:
 	rm -f $(BINARIES) tests/smoke_client tests/input_merge tests/resize_flip \
-	      tests/switch_client web_page.h
+	      tests/switch_client tests/testpattern_input tests/launcher_session \
+	      tests/idle_timeout tests/launcher_settings web_page.h
 
 .PHONY: all clean test

@@ -1663,6 +1663,22 @@ void bs_server_set_top_source(BsServer *srv, BsSource *top)
         top->get_info(top->self, &st->info);
 
     announce_screens(srv);
+
+    /*
+     * And wake the pump, because the source is half of what it sleeps
+     * on: it idles while `stream_live_clients(st) == 0 || !st->source`.
+     *
+     * An emulator that drops its top screen and attaches it again -- a
+     * renderer rebuilt, a state reloaded -- put the pump to sleep on the
+     * first call and had nothing to wake it on the second. Every other
+     * path that changes either half of that condition broadcasts; this
+     * one did not, and the result was a client still connected, its
+     * socket open and empty, receiving nothing ever again. It froze a
+     * GamePad watching a 3DS top screen with no error anywhere.
+     */
+    pthread_mutex_lock(&srv->roster);
+    pthread_cond_broadcast(&srv->roster_cond);
+    pthread_mutex_unlock(&srv->roster);
 }
 
 int bs_server_wants_screen(const BsServer *srv, int screen)

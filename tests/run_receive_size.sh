@@ -40,7 +40,7 @@ grep -E "demande|decoded" "$OUT/client.txt"
 # codes in blocks of sixteen, so the server rounds to a whole number of
 # them and says what it settled on. 426 becomes 432. Reading the dump at
 # the size that was asked for shears the picture, and a sheared picture
-# puts the crosshair somewhere that looks exactly like a touch fault --
+# puts the marker somewhere that looks exactly like a touch fault --
 # which is what this test exists to catch, so it must not manufacture
 # one.
 got=$(grep -oE "recu [0-9]+x[0-9]+" "$OUT/client.txt" | tail -1 | cut -d' ' -f2)
@@ -65,12 +65,15 @@ except ImportError:
 im = Image.open(sys.argv[1]).convert("RGB")
 w, h = im.size
 px = im.load()
-# The test pattern draws the last touch as a blue crosshair, and nothing
-# else in it is that colour.
+# The test pattern draws a held touch as a filled amber disc, and
+# nothing else in it is that colour. The client holds the press rather
+# than tapping, so the disc is certain to be in the dumped frame -- a
+# released touch leaves a white ring, and the pattern has other white in
+# it.
 pts = [(x, y) for y in range(h) for x in range(w)
-       if px[x, y][2] > 140 and px[x, y][0] < 90 and px[x, y][1] < 90]
+       if px[x, y][0] > 200 and 150 < px[x, y][1] < 235 and px[x, y][2] < 110]
 if not pts:
-    print("FAILED: no crosshair, so the touch never arrived")
+    print("FAILED: no touch marker, so the touch never arrived")
     sys.exit(1)
 
 fx = sum(p[0] for p in pts) / len(pts) / w

@@ -12,21 +12,9 @@
  * And a 3DS or a DS on a GamePad, if that is what the emulator happens
  * to be.
  *
- * ---------------------------------------------------------------------
- * A SKELETON, and the parts that are not yet honest are marked TODO.
- *
- * Everything here compiles and the shape is right, but only the pieces
- * this machine can test have been tested -- which does not include a
- * GamePad. See the notes on each TODO for what is unknown rather than
- * merely unwritten.
- * ---------------------------------------------------------------------
- *
- * The three halves, each on its own thread, because they have three
- * different clocks:
- *
- *   video   the server's frames, decoded, scaled to the panel, pushed
- *   audio   Opus in, 48 kHz stereo out, in the 8 ms chunks libdrc wants
- *   input   the GamePad's own buttons, sticks and touch, sent back
+ * The receive loop decodes A/V while libdrc clocks radio transmission.
+ * Input and reassociation run independently, so a WPA handshake cannot
+ * accumulate stale frames or seconds of sound in the TCP receive queue.
  *
  * The GamePad's panel is 864x480. A Wii U GamePad screen out of Cemu is
  * 848x480 and a 3DS is 400x240, so something always has to scale; doing
@@ -35,11 +23,19 @@
  * more than one client's convenience.
  */
 
+#include "pad_menu.h"
 #include <drc/input.h>
 #include <drc/pixel-format.h>
 #include <drc/streamer.h>
 
 #include <atomic>
+#include <csignal>
+#include <glob.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/prctl.h>
+#include <cerrno>
+#include <sstream>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -62,6 +58,66 @@ namespace {
 constexpr int kPanelW = 864;
 constexpr int kPanelH = 480;
 
+/*
+ * The native shape of one screen of one console.
+ *
+ * Not the size on the wire -- an emulator renders at a multiple of this
+ * and the ceiling is 1440 tall -- but the shape, which is all that a
+ * letterbox needs and the one thing the handshake cannot say about a
+ * screen nobody has asked for yet.
+ *
+ * A DS is 4:3 twice. A Wii U is 16:9 twice. A 3DS is the odd one: 4:3
+ * below and 5:3 above, which is why the request has to be recomputed
+ * when the screen changes rather than kept from the handshake.
+ */
+void NativeShape(int console, int screen, int *w, int *h)
+{
+    const bool top = screen == BS_SCREEN_TOP;
+    switch (console) {
+    case BS_CONSOLE_DS:
+        *w = top ? BS_DS_TOP_WIDTH : BS_DS_WIDTH;
+        *h = top ? BS_DS_TOP_HEIGHT : BS_DS_HEIGHT;
+        break;
+    case BS_CONSOLE_3DS:
+        *w = top ? BS_3DS_TOP_WIDTH : BS_3DS_WIDTH;
+        *h = top ? BS_3DS_TOP_HEIGHT : BS_3DS_HEIGHT;
+        break;
+    default:
+        *w = top ? BS_WIIU_TOP_WIDTH : BS_WIIU_WIDTH;
+        *h = top ? BS_WIIU_TOP_HEIGHT : BS_WIIU_HEIGHT;
+        break;
+    }
+}
+
+/*
+ * The largest box of that shape which fits the panel, in whole
+ * macroblocks -- what the server is asked to encode.
+ *
+ * Asking for the panel itself whatever the console is makes the server
+ * do the stretching, and a 4:3 screen then arrives a fifth too wide
+ * with no way back: the circles are ovals before this program sees
+ * them.
+ */
+void PanelFit(int sw, int sh, int *rw, int *rh)
+{
+    int w = kPanelW, h = kPanelH;
+    if (sw > 0 && sh > 0) {
+        if ((long long)sw * kPanelH > (long long)sh * kPanelW) {
+            w = kPanelW;
+            h = (int)((long long)kPanelW * sh / sw);
+        } else {
+            h = kPanelH;
+            w = (int)((long long)kPanelH * sw / sh);
+        }
+        w = ((w + 8) / 16) * 16;
+        h = ((h + 8) / 16) * 16;
+        if (w > kPanelW) w = kPanelW;
+        if (h > kPanelH) h = kPanelH;
+    }
+    *rw = w;
+    *rh = h;
+}
+
 /* What libdrc consumes: 384 stereo samples, which is 8 ms at 48 kHz.
  * Pushing more per call does not make it faster, it makes the queue
  * grow -- and libdrc drops everything in silence once its 16 seconds
@@ -79,6 +135,9 @@ struct Link {
      * once the emulator's internal resolution moves or somebody changes
      * screen. Touch is aimed in this space. */
     std::atomic<int> width{0}, height{0};
+    /* Which screen is being watched. Touch belongs to the bottom one
+     * only -- a top screen has no digitiser to pretend to be. */
+    std::atomic<int> screen{BS_SCREEN_BOTTOM};
 };
 
 bool Connect(Link *link, const char *host, uint16_t port, std::string *err)
@@ -113,6 +172,106 @@ bool Connect(Link *link, const char *host, uint16_t port, std::string *err)
     return true;
 }
 
+/* ----------------------------------------------- waking the decoder */
+
+/*
+ * Deauthenticate the pad, and wait for it to come back.
+ *
+ * The GamePad's decoder holds the last frame it understood. Point a new
+ * stream at it without dropping the association first and it sits on
+ * that frame for ever -- it is not waiting for a keyframe, it has
+ * stopped listening. Dropping the association makes it start again from
+ * nothing, which is the only thing that reliably moves it.
+ *
+ * Through hostapd's control socket, which needs no root: the socket
+ * belongs to a group, and anybody who can run the AP is already in it.
+ *
+ * Failure is reported to the receive loop: continuing would leave a pad
+ * holding the previous source and make the launcher claim it was working.
+ */
+class PadLink {
+public:
+    PadLink(const char *cli, const char *iface) : cli_(cli ? cli : ""), iface_(iface ? iface : "") {}
+
+    std::string Station() const
+    {
+        std::istringstream lines(Run({"all_sta"}));
+        std::string line;
+        while (std::getline(lines, line)) {
+            unsigned int m[6];
+            int n = 0;
+            if (sscanf(line.c_str(), "%2x:%2x:%2x:%2x:%2x:%2x%n",
+                       &m[0], &m[1], &m[2], &m[3], &m[4], &m[5], &n) == 6
+                && n == 17 && line.size() == 17) return line;
+        }
+        return "";
+    }
+
+    bool Cycle(int wait_seconds)
+    {
+        const std::string mac = Station();
+        if (mac.empty()) {
+            fprintf(stderr, "bs_gamepad: no associated pad or inaccessible hostapd control socket\n");
+            return false;
+        }
+        fprintf(stderr, "bs_gamepad: deauthenticating %s\n", mac.c_str());
+        if (Run({"deauthenticate", mac}).find("OK") == std::string::npos) {
+            fprintf(stderr, "bs_gamepad: deauthentication failed\n");
+            return false;
+        }
+        // hostapd removes the old association before acknowledging deauth.
+        // Wait for WPA authorization, not just a station entry or a strictly
+        // smaller connected_time (which fails when it was already zero).
+        for (int i = 0; i < wait_seconds * 5 && !g_stop; ++i) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            std::string state = Run({"sta", mac});
+            if (state.find("[AUTHORIZED]") != std::string::npos) {
+                fprintf(stderr, "bs_gamepad: WPA reauthorized after %.1fs\n", (i + 1) * .2);
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                return !g_stop;
+            }
+        }
+        fprintf(stderr, "bs_gamepad: reauthorization timed out\n");
+        return false;
+    }
+
+private:
+    std::string Run(std::initializer_list<std::string> args) const
+    {
+        if (cli_.empty() || iface_.empty()) return "";
+        std::vector<std::string> words{cli_, "-p", "/var/run/hostapd", "-i", iface_};
+        words.insert(words.end(), args.begin(), args.end());
+        std::vector<char *> argv;
+        for (auto &word : words) argv.push_back(&word[0]);
+        argv.push_back(nullptr);
+        int fd[2];
+        if (pipe(fd)) return "";
+        const pid_t parent = getpid();
+        pid_t child = fork();
+        if (child == 0) {
+            prctl(PR_SET_PDEATHSIG, SIGKILL);
+            if (getppid() != parent) _exit(127);
+            dup2(fd[1], STDOUT_FILENO);
+            close(fd[0]); close(fd[1]);
+            execvp(argv[0], argv.data());
+            _exit(127);
+        }
+        close(fd[1]);
+        std::string out;
+        if (child > 0) {
+            char buf[1024];
+            ssize_t n;
+            while ((n = read(fd[0], buf, sizeof(buf))) > 0) out.append(buf, n);
+            int status;
+            while (waitpid(child, &status, 0) < 0 && errno == EINTR) {}
+        }
+        close(fd[0]);
+        return out;
+    }
+
+    std::string cli_, iface_;
+};
+
 /* -------------------------------------------------------------- video */
 
 /*
@@ -145,6 +304,34 @@ public:
     }
 
     /* Returns true when a frame came out and `rgba` holds the panel. */
+    /*
+     * The shape to letterbox to, which is the console's and not the
+     * arriving frame's.
+     *
+     * They differ because a request is rounded to whole macroblocks:
+     * three quarters of a 4:3 box is 480x360, and 360 is not a multiple
+     * of sixteen, so 480x368 arrives -- 1.30 where the screen is 1.33.
+     * Letterboxing to what arrives carries that 2% into the picture;
+     * letterboxing to the console's own shape does not, and costs a
+     * stretch of eight pixels nobody can see.
+     */
+    void SetShape(int w, int h)
+    {
+        if (w == shape_w_ && h == shape_h_) return;
+        shape_w_ = w; shape_h_ = h;
+        if (sws_) { sws_freeContext(sws_); sws_ = nullptr; }
+        src_w_ = src_h_ = 0;
+    }
+
+    /* Rebuilds the scaler if the menu's choice changed under it. */
+    void SetFilter(int filter)
+    {
+        if (filter == filter_) return;
+        filter_ = filter;
+        if (sws_) { sws_freeContext(sws_); sws_ = nullptr; }
+        src_w_ = src_h_ = 0;
+    }
+
     bool Decode(const uint8_t *data, size_t size, std::vector<drc::byte> *rgba)
     {
         BsDecodedFrame f{};
@@ -153,34 +340,102 @@ public:
 
         if (f.width != src_w_ || f.height != src_h_) {
             if (sws_) sws_freeContext(sws_);
-            /* Bilinear, not point: this is nearly always a resize --
-             * 848 or 400 across into 864 -- and dropping pixels from a
-             * picture being resized loses thin lines and text, which on
-             * a menu is most of what is there. */
+
+            /*
+             * The picture keeps its shape; the panel gets black beside
+             * it.
+             *
+             * The panel is 864x480, which is 16:9. A Wii U GamePad
+             * screen is the same shape and fills it. A DS is 256x192 and
+             * a 3DS touch screen is 320x240 -- both 4:3 -- and stretching
+             * either across a 16:9 panel makes everything a fifth too
+             * wide. Circles become ovals and it is obvious the moment
+             * you look at it.
+             *
+             * So the largest rectangle of the right shape that fits,
+             * centred, and the rest left black. 4:3 into this panel is
+             * 640x480 with 112 pixels of black down each side.
+             *
+             * Rounded to even numbers because the conversion is to
+             * 4:2:0 and an odd width has half a chroma sample at the
+             * edge, which swscale is entitled to dislike.
+             */
+            const int aw = shape_w_ > 0 ? shape_w_ : f.width;
+            const int ah = shape_h_ > 0 ? shape_h_ : f.height;
+            int w = kPanelW, h = kPanelH;
+            if ((long long)aw * kPanelH != (long long)ah * kPanelW) {
+                if ((long long)aw * kPanelH > (long long)ah * kPanelW) {
+                    w = kPanelW;
+                    h = (int)((long long)kPanelW * ah / aw);
+                } else {
+                    h = kPanelH;
+                    w = (int)((long long)kPanelH * aw / ah);
+                }
+                w &= ~1;
+                h &= ~1;
+            }
+            fit_w_ = w;
+            fit_h_ = h;
+            fit_x_ = (kPanelW - w) / 2 & ~1;
+            fit_y_ = (kPanelH - h) / 2 & ~1;
+
             sws_ = sws_getContext(f.width, f.height, AV_PIX_FMT_YUV420P,
-                                  kPanelW, kPanelH, AV_PIX_FMT_RGBA,
-                                  SWS_BILINEAR, nullptr, nullptr, nullptr);
+                                  w, h, AV_PIX_FMT_RGBA,
+                                  (f.width == w && f.height == h)
+                                      ? SWS_POINT      /* colour only */
+                                      : ImageScaleFlags(filter_),
+                                  nullptr, nullptr, nullptr);
             src_w_ = f.width;
             src_h_ = f.height;
-            fprintf(stderr, "bs_gamepad: picture is %dx%d, scaling to %dx%d\n",
-                    f.width, f.height, kPanelW, kPanelH);
+
+            if (said_ != std::pair<int,int>(w, h)) {
+                said_ = {w, h};
+            if (w == kPanelW && h == kPanelH)
+                fprintf(stderr, "bs_gamepad: %dx%d fills the panel%s\n",
+                        f.width, f.height,
+                        (f.width == kPanelW) ? " -- converting colour only" : "");
+            else
+                fprintf(stderr, "bs_gamepad: %dx%d is %d:%d, drawn as %dx%d at "
+                                "%d,%d with black beside it\n",
+                        f.width, f.height,
+                        aw / Gcd(aw, ah), ah / Gcd(aw, ah),
+                        w, h, fit_x(), fit_y());
+            }
         }
         if (!sws_) return false;
 
-        rgba->resize(static_cast<size_t>(kPanelW) * kPanelH * 4);
+        rgba->assign(static_cast<size_t>(kPanelW) * kPanelH * 4, 0);
+
         const uint8_t *planes[4] = { f.y, f.u, f.v, nullptr };
         int strides[4] = { f.y_stride, f.u_stride, f.v_stride, 0 };
-        uint8_t *dst[4] = { reinterpret_cast<uint8_t *>(rgba->data()),
-                            nullptr, nullptr, nullptr };
+        uint8_t *base = reinterpret_cast<uint8_t *>(rgba->data()) +
+                        (static_cast<size_t>(fit_y()) * kPanelW + fit_x()) * 4;
+        uint8_t *dst[4] = { base, nullptr, nullptr, nullptr };
         int dst_stride[4] = { kPanelW * 4, 0, 0, 0 };
         sws_scale(sws_, planes, strides, 0, f.height, dst, dst_stride);
         return true;
     }
 
+    /* Only to say the shape out loud in the line above. */
+    static int Gcd(int a, int b) { return b ? Gcd(b, a % b) : (a ? a : 1); }
+
+    /* Where the picture sits on the panel, for anything that has to aim
+     * at it -- a touch, or a menu drawn beside it. Atomic because the
+     * input thread reads them while this one is rebuilding a scaler. */
+    int fit_x() const { return fit_x_.load(std::memory_order_relaxed); }
+    int fit_y() const { return fit_y_.load(std::memory_order_relaxed); }
+    int fit_w() const { return fit_w_.load(std::memory_order_relaxed); }
+    int fit_h() const { return fit_h_.load(std::memory_order_relaxed); }
+
 private:
     BsDecoder *dec_ = nullptr;
     SwsContext *sws_ = nullptr;
     int src_w_ = 0, src_h_ = 0;
+    int filter_ = 2;            /* Lanczos, which is what it always was */
+    int shape_w_ = 0, shape_h_ = 0;
+    std::pair<int,int> said_{0, 0};   /* the last rectangle announced */
+    std::atomic<int> fit_x_{0}, fit_y_{0};
+    std::atomic<int> fit_w_{kPanelW}, fit_h_{kPanelH};
 };
 
 /* -------------------------------------------------------------- audio */
@@ -213,7 +468,14 @@ public:
         std::vector<drc::s16> pcm(5760 * channels_);
         const int frames = opus_decode(dec_, data, static_cast<opus_int32>(size),
                                        pcm.data(), 5760, 0);
-        if (frames <= 0) return;
+        if (frames <= 0) {
+            fprintf(stderr, "bs_gamepad: Opus decode failed: %s\n", opus_strerror(frames));
+            return;
+        }
+        packets_++;
+        samples_ += frames;
+        for (int i = 0; i < frames * channels_; ++i)
+            peak_ = std::max(peak_, abs(static_cast<int>(pcm[i])));
 
         /*
          * TODO(mono): a source with one channel is upmixed by repeating
@@ -239,7 +501,15 @@ public:
         }
     }
 
+    void Report()
+    {
+        fprintf(stderr, "[bs_audio] %ld packets, %ld samples, peak %d\n", packets_, samples_, peak_);
+        packets_ = samples_ = 0; peak_ = 0;
+    }
+
 private:
+    long packets_ = 0, samples_ = 0;
+    int peak_ = 0;
     OpusDecoder *dec_ = nullptr;
     int channels_ = 2;
     std::vector<drc::s16> held_;
@@ -288,14 +558,17 @@ void SendEvent(Link *link, uint8_t type, uint8_t code, int16_t x, int16_t y)
     bs_send_msg(link->conn, BS_MSG_INPUT, &ev, sizeof(ev), nullptr, 0);
 }
 
-void InputLoop(drc::Streamer *streamer, Link *link)
+void InputLoop(drc::Streamer *streamer, Link *link, PadMenu *menu, Video *video)
 {
     uint32_t held = 0;
     bool touching = false;
+    int last_axis[4] = {0,0,0,0};
 
     while (!g_stop) {
         drc::InputData in;
         streamer->PollInput(&in);
+        menu->Filter(in);
+        if (!in.valid) { in = drc::InputData(); in.valid = true; }
         if (in.valid) {
             const uint32_t now = static_cast<uint32_t>(in.buttons);
             for (const auto &m : kButtons) {
@@ -307,19 +580,13 @@ void InputLoop(drc::Streamer *streamer, Link *link)
             }
             held = now;
 
-            /* Sticks: libdrc gives -1..1 and the protocol wants a signed
-             * 16-bit deflection. Y is negated because a stick reports up
-             * as positive and so does this protocol -- but libdrc's y
-             * grows downward.
-             *
-             * TODO(deadzone): sent on every poll, including the drift a
-             * stick at rest produces. Every other client here sends on
-             * change only. Whether this pad's rest position is clean
-             * enough to need a dead zone is a question for a pad. */
+            // Forward corrected axes only when their quantized value changes.
             auto axis = [&](int code, float v) {
                 int val = static_cast<int>(v * 32767.0f);
                 if (val > 32767) val = 32767;
                 if (val < -32767) val = -32767;
+                if (val == last_axis[code-BS_AXIS_LEFT_X]) return;
+                last_axis[code-BS_AXIS_LEFT_X] = val;
                 SendEvent(link, BS_INPUT_AXIS, static_cast<uint8_t>(code),
                           static_cast<int16_t>(val), 0);
             };
@@ -344,9 +611,25 @@ void InputLoop(drc::Streamer *streamer, Link *link)
              */
             const int w = link->width.load();
             const int h = link->height.load();
-            if (in.ts_pressed && w > 0 && h > 0) {
-                const int16_t x = static_cast<int16_t>(in.ts_x * (w - 1));
-                const int16_t y = static_cast<int16_t>(in.ts_y * (h - 1));
+            /*
+             * And in the part of the panel the picture actually
+             * occupies. A 4:3 screen is drawn 640 wide with 112 pixels
+             * of black down each side, so a touch read across the whole
+             * 864 lands a fifth of the way off and gets worse towards
+             * the edges -- the same arithmetic mistake as the one
+             * above, one letterbox further along. A touch in the black
+             * is not in the picture at all, so it is dropped.
+             */
+            const int fx = video->fit_x(), fw = video->fit_w();
+            const int fy = video->fit_y(), fh = video->fit_h();
+            float px = fw > 0 ? (in.ts_x * kPanelW - fx) / fw : -1.f;
+            float py = fh > 0 ? (in.ts_y * kPanelH - fy) / fh : -1.f;
+            const bool inside = px >= 0 && px <= 1 && py >= 0 && py <= 1;
+            /* The top screen has no digitiser to pretend to be. */
+            const bool touchable = link->screen.load() == BS_SCREEN_BOTTOM;
+            if (in.ts_pressed && inside && touchable && w > 0 && h > 0) {
+                const int16_t x = static_cast<int16_t>(px * (w - 1));
+                const int16_t y = static_cast<int16_t>(py * (h - 1));
                 SendEvent(link, touching ? BS_INPUT_TOUCH_MOVE : BS_INPUT_TOUCH_DOWN,
                           0, x, y);
                 touching = true;
@@ -383,6 +666,15 @@ int main(int argc, char **argv)
      * second.
      */
     bool no_pad = false;
+    bool deauth = true;
+    const char *iface = getenv("BS_PAD_IFACE");
+    const char *cli = getenv("BS_HOSTAPD_CLI");
+    /* What the server should encode at before libdrc re-encodes it.
+     * Twelve megabits at 864x480 is more than the picture needs, which
+     * is the point: whatever is lost here is lost twice. */
+    int bitrate = 12000000;
+    /* -1 means: leave whatever the settings file holds. */
+    int res_bottom = -1, res_top = -1, filter = -1, sharpness = -1;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -390,6 +682,10 @@ int main(int argc, char **argv)
         if (!strcmp(a, "--host") && next) { host = next; i++; }
         else if (!strcmp(a, "--port") && next) { port = (uint16_t)atoi(next); i++; }
         else if (!strcmp(a, "--no-pad")) { no_pad = true; }
+        else if (!strcmp(a, "--no-deauth")) { deauth = false; }
+        else if (!strcmp(a, "--bitrate") && next) { bitrate = atoi(next); i++; }
+        else if (!strcmp(a, "--iface") && next) { iface = next; i++; }
+        else if (!strcmp(a, "--hostapd-cli") && next) { cli = next; i++; }
         /*
          * The picture, as the GamePad sees it.
          *
@@ -410,6 +706,10 @@ int main(int argc, char **argv)
         else if (!strcmp(a, "--deblock") && next) { setenv("DRC_DEBLOCK", next, 1); i++; }
         else if (!strcmp(a, "--aq") && next)      { setenv("DRC_AQ", next, 1); i++; }
         else if (!strcmp(a, "--stats"))           { setenv("DRC_STATS", "1", 1); }
+        else if (!strcmp(a, "--resolution") && next)     { res_bottom = atoi(next); i++; }
+        else if (!strcmp(a, "--top-resolution") && next) { res_top = atoi(next); i++; }
+        else if (!strcmp(a, "--filter") && next)         { filter = atoi(next); i++; }
+        else if (!strcmp(a, "--sharpness") && next)      { sharpness = atoi(next); i++; }
         else if (!strcmp(a, "--screen") && next) {
             screen = strcmp(next, "top") ? BS_SCREEN_BOTTOM : BS_SCREEN_TOP;
             i++;
@@ -421,6 +721,15 @@ int main(int argc, char **argv)
                 "  --port N        default %d\n"
                 "  --screen top|bottom\n"
                 "  --no-pad        decode and scale, send nothing to a pad\n"
+                "  --no-deauth     do not drop the pad's association first\n"
+                "  --bitrate N     what the server should encode at, before\n"
+                "                  libdrc encodes it again (default 12M)\n"
+                "  --resolution N      0..4: x1/2, x3/4, x1, x3/2, x2 of the box\n"
+                "  --top-resolution N  the same, for the top screen\n"
+                "  --filter N          0..3: bilinear, bicubic, Lanczos, nearest\n"
+                "  --sharpness N       0..4, quarter steps\n"
+                "  --iface NAME    the AP's interface (or BS_PAD_IFACE)\n"
+                "  --hostapd-cli P where hostapd_cli is (or BS_HOSTAPD_CLI)\n"
                 "\n"
                 "The picture, as the pad sees it:\n"
                 "  --preset NAME   x264 preset; fast by default because\n"
@@ -441,15 +750,6 @@ int main(int argc, char **argv)
             return 1;
         }
     }
-
-    Link link;
-    std::string err;
-    if (!Connect(&link, host, port, &err)) {
-        fprintf(stderr, "bs_gamepad: %s\n", err.c_str());
-        return 1;
-    }
-    fprintf(stderr, "bs_gamepad: console %u, %ux%u @%u fps\n",
-            link.ack.console, link.ack.width, link.ack.height, link.ack.fps);
 
     /*
      * TODO(streamer): Start() brings up the whole libdrc stack -- video,
@@ -480,7 +780,54 @@ int main(int argc, char **argv)
      */
     setenv("DRC_PRESET", "fast", 0);
 
+    // A source switch requires a new association while the new streamer
+    // is already alive, as in rtw88_TSF's drc_lab. In particular, audio
+    // stays silent if its transport only starts after reauthorization.
+    std::signal(SIGTERM, [](int) { _exit(0); });
+    std::signal(SIGINT, [](int) { _exit(0); });
+    std::string detected_iface;
+    if (!iface) {
+        glob_t sockets{};
+        if (glob("/var/run/hostapd/*", 0, nullptr, &sockets) == 0 && sockets.gl_pathc == 1) {
+            const char *name = strrchr(sockets.gl_pathv[0], '/');
+            detected_iface = name + 1;
+            iface = detected_iface.c_str();
+        }
+        globfree(&sockets);
+    }
+    std::string detected_cli;
+    if (!cli) {
+        const char *home = getenv("HOME");
+        detected_cli = std::string(home ? home : "") + "/rtw88_TSF/drc-hostap/hostapd/hostapd_cli";
+        cli = access(detected_cli.c_str(), X_OK) == 0 ? detected_cli.c_str() : "hostapd_cli";
+    }
+    if (!no_pad && deauth && !iface) {
+        fprintf(stderr, "bs_gamepad: cannot reset pad; check --iface and --hostapd-cli\n");
+        return 1;
+    }
+
+    Link link;
+    std::string err;
+    if (!Connect(&link, host, port, &err)) {
+        fprintf(stderr, "bs_gamepad: %s\n", err.c_str());
+        return 1;
+    }
+    fprintf(stderr, "bs_gamepad: console %u, %ux%u @%u fps\n",
+            link.ack.console, link.ack.width, link.ack.height, link.ack.fps);
+
     drc::Streamer streamer;
+    /*
+     * Installed again here, and unblocked, because libdrc's threads are
+     * started by the call below and the mask they are created with is
+     * this thread's.
+     *
+     * A bridge that had been streaming for a while stopped answering
+     * SIGTERM entirely: it kept libdrc's UDP ports, pushed nothing, and
+     * needed SIGKILL -- which on a pad looks like the picture simply
+     * stopping and never coming back, with no replacement able to
+     * start. Whoever ends up owning the signal, the main thread has to
+     * be able to take it.
+     */
     if (!no_pad && !streamer.Start()) {
         fprintf(stderr, "bs_gamepad: libdrc would not start -- is the AP up "
                         "and the pad paired?\n");
@@ -489,13 +836,137 @@ int main(int argc, char **argv)
     if (no_pad)
         fprintf(stderr, "bs_gamepad: no pad, decoding only\n");
 
-    if (screen != BS_SCREEN_BOTTOM) {
+    /*
+     * Ask for the size this panel will actually draw, and for a generous
+     * bitrate.
+     *
+     * Two lossy passes sit between the game and the pad: the server's
+     * encoder, and libdrc's at a quantiser the protocol pins to 32. The
+     * second cannot be moved, so everything handed to it should be as
+     * clean as the first can make it.
+     *
+     * The size matters more than it sounds. Left alone, a Wii U GamePad
+     * screen arrives at 848x480 and is resampled twice -- once by the
+     * server into 848, once here into the panel -- and the second is an
+     * upscale of an already compressed picture, which is where softness
+     * and blocking come from. Asking for the size that will be drawn
+     * leaves the bridge only a colour conversion to do.
+     *
+     * The bitrate is asked for rather than assumed because the server
+     * derives one from the size and caps it at six megabits. On a link
+     * that is usually a loopback, there is no reason to be shy.
+     */
+    /*
+     * Both are sent per screen rather than once, because each screen has
+     * its own encoder on the server, built on the server's defaults: one
+     * that has just been joined has never heard of this client's size or
+     * bitrate. And on a 3DS the size is not even the same number -- 4:3
+     * below, 5:3 above -- so a request kept from the handshake would
+     * stretch the top screen into the bottom one's box.
+     */
+    /*
+     * Built before the first request, not after it: the menu is where
+     * the saved resolution and bitrate live, and a request made before
+     * it exists is a request at the defaults. The setting then only
+     * took effect the first time somebody changed it by hand.
+     */
+    PadMenu menu;
+    menu.Override(res_bottom, res_top, filter, sharpness);
+    menu.SetScreen(screen == BS_SCREEN_TOP ? 1 : 0);
+    ImageSettings image = menu.Image();
+    int shape_w = 0, shape_h = 0;   /* filled in by request(), read by the decoder */
+    auto request = [&](int want, const ImageSettings &img) {
+        int sw = 0, sh = 0, fw = 0, fh = 0;
+        NativeShape(link.ack.console, want, &sw, &sh);
+        PanelFit(sw, sh, &fw, &fh);
+
+        /*
+         * The menu's multiplier, applied to the box this screen gets on
+         * the panel. Above 1 it is supersampling: the server renders
+         * and encodes more than the panel can show and the scaler here
+         * brings it down, which beats asking the server's scaler for
+         * the same picture -- but only while the emulator is rendering
+         * above the panel, and the server's own 1440 ceiling still
+         * applies whatever is asked here.
+         */
+        int rw = fw * img.Num() / img.Den();
+        int rh = fh * img.Num() / img.Den();
+        rw = ((rw + 8) / 16) * 16;
+        rh = ((rh + 8) / 16) * 16;
+        if (rh > BS_MAX_STREAM_HEIGHT) {
+            rw = (int)((long long)rw * BS_MAX_STREAM_HEIGHT / rh);
+            rh = BS_MAX_STREAM_HEIGHT;
+        }
+        if (rw < 16) rw = 16;
+        if (rh < 16) rh = 16;
+
+        fprintf(stderr, "bs_gamepad: asking for %dx%d, which is %dx%d's shape "
+                        "at %sthe panel's size\n", rw, rh, sw, sh,
+                img.Num() == img.Den() ? "" :
+                img.Num() > img.Den() ? "more than " : "less than ");
+
+        BsSize sz;
+        sz.width = static_cast<uint16_t>(rw);
+        sz.height = static_cast<uint16_t>(rh);
+        bs_send_msg(link.conn, BS_MSG_SET_SIZE, &sz, sizeof(sz), nullptr, 0);
+
+        /* Auto means the one the command line gave. */
+        BsQuality q{};
+        q.bitrate = static_cast<uint32_t>(img.Bitrate() ? img.Bitrate() : bitrate);
+        bs_send_msg(link.conn, BS_MSG_SET_QUALITY, &q, sizeof(q), nullptr, 0);
+        shape_w = sw;
+        shape_h = sh;
+        return std::pair<int,int>(fw, fh);
+    };
+
+    auto go_to = [&](int want) {
+        screen = want;
+        link.screen = want;
         BsScreenChoice ch{};
-        ch.screen = static_cast<uint8_t>(screen);
+        ch.screen = static_cast<uint8_t>(want);
         bs_send_msg(link.conn, BS_MSG_SET_SCREEN, &ch, sizeof(ch), nullptr, 0);
+        return request(want, image);
+    };
+
+    /*
+     * Through the same path as a later change, and in that order: the
+     * server files a size under whichever screen the client is on when
+     * it arrives, so a size sent before the screen sizes the screen
+     * being left. Starting on the top screen sized the bottom one and
+     * left the top at whatever it already was.
+     */
+    auto fit = go_to(screen);
+
+    {
+        sigset_t unblock;
+        sigemptyset(&unblock);
+        sigaddset(&unblock, SIGTERM);
+        sigaddset(&unblock, SIGINT);
+        pthread_sigmask(SIG_UNBLOCK, &unblock, nullptr);
+        std::signal(SIGTERM, [](int) { _exit(0); });
+        std::signal(SIGINT, [](int) { _exit(0); });
     }
 
+    /*
+     * A receive that gives up, so that silence is something the loop
+     * can see.
+     *
+     * Blocking for ever was right while the only way to stop receiving
+     * was the server going away, which closes the socket. It is not
+     * right for a stream that simply stops: a pump left asleep, an
+     * emulator paused, a screen whose source was detached. The socket
+     * stays open and empty and the picture on the pad stays frozen with
+     * nothing anywhere saying why.
+     *
+     * One second, and the message boundary is safe because the timeout
+     * is cleared for the rest of a message once its first byte has
+     * arrived -- a partial read that gave up here would leave the
+     * stream one header out of step, which is worse than the freeze.
+     */
+    bs_conn_set_idle_timeout(link.conn, 1000);
+
     Video video;
+    video.SetShape(shape_w, shape_h);
     if (!video.Ensure(&err)) {
         fprintf(stderr, "bs_gamepad: %s\n", err.c_str());
         return 1;
@@ -504,30 +975,105 @@ int main(int argc, char **argv)
     if (link.ack.audio_rate > 0 && !audio.Start(link.ack.audio_channels, &err))
         fprintf(stderr, "bs_gamepad: no sound (%s)\n", err.c_str());
 
+    std::thread reset;
+    std::atomic<bool> reset_failed{false};
+    bool reset_started = false;
+    menu.SetFit(fit.first, fit.second);
+    std::mutex frame_mutex;
+    std::vector<drc::byte> latest_frame;
+    std::thread output;
     std::thread input;
-    if (!no_pad)
-        input = std::thread(InputLoop, &streamer, &link);
+    if (!no_pad) {
+        input = std::thread(InputLoop, &streamer, &link, &menu, &video);
+        // The local menu must remain usable when the emulator stops producing
+        // frames. It is composited into the same running libdrc stream.
+        output = std::thread([&] {
+            auto next = std::chrono::steady_clock::now();
+            while (!g_stop) {
+                std::vector<drc::byte> frame;
+                { std::lock_guard<std::mutex> lock(frame_mutex); frame = latest_frame; }
+                /* Before the menu is drawn, so the menu's own text is
+                 * never sharpened along with the game. */
+                ProcessImage(frame, menu.Image());
+                menu.Draw(frame);
+                streamer.PushVidFrame(&frame,kPanelW,kPanelH,drc::PixelFormat::kRGBA);
+                next += std::chrono::microseconds(16683);
+                auto now = std::chrono::steady_clock::now();
+                if (next < now) next = now;
+                std::this_thread::sleep_until(next);
+            }
+        });
+    }
 
     std::vector<uint8_t> buf(BS_MAX_PAYLOAD);
     std::vector<drc::byte> rgba;
+    /* Seconds of silence before each step of getting the picture back. */
+    constexpr int kQuietAsk = 2, kQuietRetry = 4, kQuietGiveUp = 30;
+    int quiet = 0;
     long frames = 0;
     auto last = std::chrono::steady_clock::now();
 
-    while (!g_stop) {
+    while (!g_stop && !reset_failed) {
         uint8_t type = 0;
         size_t n = 0;
         if (bs_recv_msg(link.conn, &type, buf.data(), buf.size(), &n) != 0) {
+            if (bs_conn_timed_out(link.conn)) {
+                /*
+                 * Nothing for a second. Ask once, gently: a keyframe
+                 * costs one packet and covers the common case of a
+                 * decoder that lost its reference.
+                 *
+                 * If that changes nothing, say the screen and the size
+                 * again. That is what wakes a server whose pump went to
+                 * sleep on a screen change, which is the fault this was
+                 * written for -- and it is harmless when the silence had
+                 * another cause, because it is what a client says on
+                 * arrival anyway.
+                 */
+                if (++quiet == kQuietAsk) {
+                    fprintf(stderr, "bs_gamepad: nothing for %d s, "
+                                    "asking for a keyframe\n", kQuietAsk);
+                    bs_send_msg(link.conn, BS_MSG_REQUEST_KEYFRAME,
+                                nullptr, 0, nullptr, 0);
+                } else if (quiet == kQuietRetry) {
+                    fprintf(stderr, "bs_gamepad: still nothing, asking for "
+                                    "the %s screen again\n",
+                            screen == BS_SCREEN_TOP ? "top" : "bottom");
+                    go_to(screen);
+                } else if (quiet >= kQuietGiveUp) {
+                    fprintf(stderr, "bs_gamepad: %d s of silence, giving up "
+                                    "on this connection\n", kQuietGiveUp);
+                    break;
+                }
+                continue;
+            }
             fprintf(stderr, "bs_gamepad: the stream ended\n");
             break;
+        }
+        if (quiet) {
+            if (quiet >= kQuietAsk)
+                fprintf(stderr, "bs_gamepad: the picture is back\n");
+            quiet = 0;
         }
 
         if (type == BS_MSG_VIDEO && n > sizeof(BsVideoHeader)) {
             if (video.Decode(buf.data() + sizeof(BsVideoHeader),
                              n - sizeof(BsVideoHeader), &rgba)) {
-                if (!no_pad)
-                    streamer.PushVidFrame(&rgba, kPanelW, kPanelH,
-                                          drc::PixelFormat::kRGBA);
-                frames++;
+                if (!no_pad) {
+                    std::lock_guard<std::mutex> lock(frame_mutex);
+                    latest_frame.swap(rgba);
+                }
+                if (frames++ == 0)
+                    fprintf(stderr, "bs_gamepad: streaming %s screen\n",
+                            screen == BS_SCREEN_TOP ? "top" : "bottom");
+                if (!no_pad && deauth && !reset_started && frames >= 3) {
+                    reset_started = true;
+                    // Keep receiving and feeding both clocks during the
+                    // handshake; sleeping here would queue stale A/V in TCP.
+                    reset = std::thread([&] {
+                        reset_failed = !PadLink(cli, iface).Cycle(20);
+                    });
+                }
             }
         } else if (type == BS_MSG_AUDIO && n > sizeof(BsAudioHeader)) {
             if (!no_pad)
@@ -558,17 +1104,53 @@ int main(int argc, char **argv)
          * does not offer and this would have to draw itself.
          */
 
+        /* The menu only records the choice; the connection is owned
+         * here, so the messages go out here. */
+        int want = 0;
+        if (menu.TakeScreenChange(&want)) {
+            const int target = want ? BS_SCREEN_TOP : BS_SCREEN_BOTTOM;
+            if (target != screen) {
+                fit = go_to(target);
+                menu.SetFit(fit.first, fit.second);
+            }
+        }
+        /* A resolution or a bitrate chosen in the menu is a new request
+         * on the same screen. Only when it actually changed: each one
+         * rebuilds an encoder that every viewer of this screen shares. */
+        const ImageSettings now_image = menu.Image();
+        if (now_image.detail != image.detail ||
+            now_image.bitrate != image.bitrate) {
+            image = now_image;
+            fit = request(screen, image);
+            menu.SetFit(fit.first, fit.second);
+        } else {
+            image = now_image;
+        }
+        video.SetFilter(image.filter);
+        video.SetShape(shape_w, shape_h);
+
+        /*
+         * A line a second for as long as it runs is not information, it
+         * is a wall -- and it buried the two lines that matter, the
+         * freeze and the recovery. The rate is still there behind
+         * --stats, where somebody is looking for it.
+         */
         const auto now = std::chrono::steady_clock::now();
         if (now - last >= std::chrono::seconds(1)) {
-            fprintf(stderr, "[bs_gamepad] %ld frames/s\n", frames);
+            if (getenv("DRC_STATS")) {
+                fprintf(stderr, "[bs_gamepad] %ld frames/s\n", frames);
+                audio.Report();
+            }
             frames = 0;
             last = now;
         }
     }
 
     g_stop = true;
+    if (reset.joinable()) reset.join();
     if (input.joinable()) input.join();
+    if (output.joinable()) output.join();
     if (!no_pad) streamer.Stop();
     bs_conn_close(link.conn);
-    return 0;
+    return reset_failed ? 1 : 0;
 }

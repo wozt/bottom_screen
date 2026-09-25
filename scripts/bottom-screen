@@ -22,7 +22,8 @@ cd "$DIR"
 
 case "${1:-launcher}" in
     launcher|"")
-        make launcher/bs_launcher >/dev/null
+        make launcher/bs_launcher bottom_screen_server >/dev/null
+        make -C gamepad >/dev/null
         exec ./launcher/bs_launcher
         ;;
     pad)

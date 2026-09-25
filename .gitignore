@@ -43,3 +43,8 @@ games/
 # The GamePad client builds in place; its own outputs are not the project.
 gamepad/bs_gamepad
 gamepad/*.o
+
+/tests/testpattern_input
+/tests/launcher_session
+
+/gamepad/test_pad_menu
