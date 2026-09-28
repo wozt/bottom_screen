@@ -67,10 +67,10 @@ index b509e722..c916790e 100644
 +endif()
 diff --git a/src/Cafe/HW/Latte/Core/BottomScreenBridge.cpp b/src/Cafe/HW/Latte/Core/BottomScreenBridge.cpp
 new file mode 100644
-index 00000000..bb8e45c9
+index 00000000..33d2a0d2
 --- /dev/null
 +++ b/src/Cafe/HW/Latte/Core/BottomScreenBridge.cpp
-@@ -0,0 +1,654 @@
+@@ -0,0 +1,689 @@
 +#include "Cafe/HW/Latte/Core/BottomScreenBridge.h"
 +
 +#include <cstdlib>
@@ -104,6 +104,8 @@ index 00000000..bb8e45c9
 +{
 +    BsSource* g_source = nullptr;
 +    BsServer* g_server = nullptr;
++    std::recursive_mutex g_state_mutex;
++    bool      g_suspended = false;
 +    bool      g_tried  = false;
 +    int       g_width  = 0;
 +    int       g_height = 0;
@@ -180,6 +182,9 @@ index 00000000..bb8e45c9
 +
 +void Start()
 +{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
++	if (g_suspended)
++		return;
 +    if (g_tried)
 +        return;
 +    g_tried = true;
@@ -239,6 +244,7 @@ index 00000000..bb8e45c9
 +
 +void Stop()
 +{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
 +    if (g_server)
 +    {
 +        bs_server_destroy(g_server);
@@ -266,7 +272,18 @@ index 00000000..bb8e45c9
 +
 +bool IsRunning()
 +{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
 +    return g_server != nullptr;
++}
++
++void SetSuspended(bool suspended)
++{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
++	if (g_suspended == suspended)
++		return;
++	g_suspended = suspended;
++	if (suspended)
++		Stop();
 +}
 +
 +/*
@@ -311,6 +328,9 @@ index 00000000..bb8e45c9
 +
 +void SubmitPadView(LatteTextureView* texView)
 +{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
++	if (g_suspended)
++		return;
 +    if (!GetConfig().bottom_screen_enabled || !texView)
 +        return;
 +
@@ -387,6 +407,9 @@ index 00000000..bb8e45c9
 + */
 +void SubmitTvView(LatteTextureView* texView)
 +{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
++	if (g_suspended)
++		return;
 +    if (!GetConfig().bottom_screen_enabled || !texView)
 +        return;
 +
@@ -516,6 +539,9 @@ index 00000000..bb8e45c9
 +
 +void ApplyInput()
 +{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
++	if (g_suspended)
++		return;
 +    if (!g_server)
 +        return;
 +
@@ -657,6 +683,9 @@ index 00000000..bb8e45c9
 +
 +void SubmitAudio(const sint16* samples, int frames, int channels, bool padOutput)
 +{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
++	if (g_suspended)
++		return;
 +    if (!g_server || !samples || frames <= 0 || channels < 1)
 +        return;
 +
@@ -677,6 +706,9 @@ index 00000000..bb8e45c9
 +
 +bool GetStick(int index, float& x, float& y)
 +{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
++	if (g_suspended)
++		return false;
 +    if (!g_server || index < 0 || index > 1)
 +        return false;
 +
@@ -706,6 +738,9 @@ index 00000000..bb8e45c9
 +
 +bool IsButtonHeld(int vpadButtonId)
 +{
++	std::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);
++	if (g_suspended)
++		return false;
 +    if (!g_server || vpadButtonId <= 0 || vpadButtonId >= 64)
 +        return false;
 +    const bool held = (g_held & (1ull << vpadButtonId)) != 0;
@@ -727,10 +762,10 @@ index 00000000..bb8e45c9
 +}
 diff --git a/src/Cafe/HW/Latte/Core/BottomScreenBridge.h b/src/Cafe/HW/Latte/Core/BottomScreenBridge.h
 new file mode 100644
-index 00000000..4874f3cc
+index 00000000..0e3fe081
 --- /dev/null
 +++ b/src/Cafe/HW/Latte/Core/BottomScreenBridge.h
-@@ -0,0 +1,99 @@
+@@ -0,0 +1,100 @@
 +#pragma once
 +
 +#include <cstdint>
@@ -765,6 +800,7 @@ index 00000000..4874f3cc
 +void Start();
 +void Stop();
 +bool IsRunning();
++void SetSuspended(bool suspended);
 +
 +/*
 + * Reads the pad view back off the GPU and hands it to the server.
@@ -1186,6 +1222,143 @@ index 2909440f..929a75d1 100644
  	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;
  
  	void QueryMemoryInfo();
+diff --git a/src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp b/src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp
+index bae0dca8..49cf3337 100644
+--- a/src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp
++++ b/src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp
+@@ -793,18 +793,45 @@ namespace coreinit
+ 
+ 	void OSReleaseForeground()
+ 	{
++		if (LaunchSettings::IsSystemOverlayChild())
++		{
++			// A system applet asks Cafe OS to complete its hand-off before it can
++			// become the active foreground process. The parent Cemu process has
++			// already released the foreground, so acknowledge that hand-off here.
++			StartForegroundTransition();
++			return;
++		}
+ 		cemuLog_logDebug(LogType::Force, "OSReleaseForeground not implemented");
+ 	}
+ 
+-	bool s_transitionToBackground = false;
+-	bool s_transitionToForeground = false;
++	uint32 OSGetCallArgs(uint32be* argsOut, void*, void*)
++	{
++		// Home Button Menu expects the main application process as its caller.
++		// Keep the menu process as the default for any other system applet.
++		argsOut[0] = LaunchSettings::IsSystemOverlayChild() ? 15 : 2;
++		argsOut[1] = 0;
++		return 0;
++	}
++
++	std::atomic_bool s_transitionToBackground = false;
++	std::atomic_bool s_transitionToForeground = false;
+ 
+-	void StartBackgroundForegroundTransition()
++	void StartBackgroundTransition()
+ 	{
+ 		s_transitionToBackground = true;
++	}
++
++	void StartForegroundTransition()
++	{
+ 		s_transitionToForeground = true;
+ 	}
+ 
++	void StartBackgroundForegroundTransition()
++	{
++		StartBackgroundTransition();
++		StartForegroundTransition();
++	}
++
+ 	// called at the beginning of OSReceiveMessage if the queue is the system message queue
+ 	void UpdateSystemMessageQueue()
+ 	{
+@@ -909,6 +936,7 @@ namespace coreinit
+ 		cafeExportRegister("coreinit", OSRestartGame, LogType::Placeholder);
+ 
+ 		cafeExportRegister("coreinit", OSReleaseForeground, LogType::Placeholder);
++		cafeExportRegister("coreinit", OSGetCallArgs, LogType::Placeholder);
+ 
+ 		cafeExportRegister("coreinit", OSDriver_Register, LogType::Placeholder);
+ 		cafeExportRegister("coreinit", OSDriver_Deregister, LogType::Placeholder);
+diff --git a/src/Cafe/OS/libs/coreinit/coreinit_Misc.h b/src/Cafe/OS/libs/coreinit/coreinit_Misc.h
+index 5e7d52b8..fc49683b 100644
+--- a/src/Cafe/OS/libs/coreinit/coreinit_Misc.h
++++ b/src/Cafe/OS/libs/coreinit/coreinit_Misc.h
+@@ -10,8 +10,12 @@ namespace coreinit
+ 	uint32 OSRestartGame(uint32 argc, MEMPTR<char>* argv);
+ 
+ 	void OSReleaseForeground();
++	bool OSIsHomeButtonMenuEnabled();
+ 
++	void StartBackgroundTransition();
++	void StartForegroundTransition();
+ 	void StartBackgroundForegroundTransition();
++	void UpdateSystemMessageQueue();
+ 
+ 	struct OSDriverInterface
+ 	{
+@@ -43,4 +47,4 @@ namespace coreinit
+ 	sint32 ppc_vprintf(const char* formatStr, char* strOut, sint32 maxLength, ppc_va_list* vargs);
+ 
+ 	void miscInit();
+-};
+\ No newline at end of file
++};
+diff --git a/src/Cafe/OS/libs/nn_acp/nn_acp.cpp b/src/Cafe/OS/libs/nn_acp/nn_acp.cpp
+index de4c90d3..b6be2d09 100644
+--- a/src/Cafe/OS/libs/nn_acp/nn_acp.cpp
++++ b/src/Cafe/OS/libs/nn_acp/nn_acp.cpp
+@@ -10,6 +10,7 @@
+ #include <fstream>
+ 
+ #include "config/ActiveSettings.h"
++#include "config/LaunchSettings.h"
+ #include "Cafe/IOSU/legacy/iosu_acp.h"
+ #include "Cafe/IOSU/legacy/iosu_ioctl.h"
+ 
+@@ -240,14 +241,28 @@ namespace acp
+ 		// for applets we return the menu titleId
+ 		if (((currentTitleId >> 32) & 0xFF) == 0x30)
+ 		{
+-			// get menu titleId
+-			uint64 menuTitleId = _SYSGetSystemApplicationTitleId(0);
+-			*titleId = menuTitleId;
++			if (const auto caller = LaunchSettings::GetSystemOverlayCallerTitleId())
++				*titleId = *caller;
++			else
++				*titleId = _SYSGetSystemApplicationTitleId(0);
+ 		}
+ 
+ 		osLib_returnFromFunction(hCPU, 0);
+ 	}
+ 
++	void export_ACPGetTitleInfoOfMainApplication(PPCInterpreter_t* hCPU)
++	{
++		ppcDefineParamTypePtr(titleId, uint64be, 0);
++		ppcDefineParamU32BEPtr(deviceType, 1);
++		ppcDefineParamU32BEPtr(applicationType, 2);
++
++		const uint64 callerTitleId = LaunchSettings::GetSystemOverlayCallerTitleId().value_or(CafeSystem::GetForegroundTitleId());
++		*titleId = callerTitleId;
++		*deviceType = 3; // MLC
++		*applicationType = 0;
++		osLib_returnFromFunction(hCPU, 0);
++	}
++
+ 	void export_ACPGetTitleMetaDirByDevice(PPCInterpreter_t* hCPU)
+ 	{
+ 		ppcDefineParamU64(titleId, 0);
+@@ -358,6 +373,7 @@ namespace acp
+ 			osLib_addFunction("nn_acp", "ACPGetLaunchMetaData", export_ACPGetLaunchMetaData);
+ 			osLib_addFunction("nn_acp", "ACPGetLaunchMetaXml", export_ACPGetLaunchMetaXml);
+ 			osLib_addFunction("nn_acp", "ACPGetTitleIdOfMainApplication", export_ACPGetTitleIdOfMainApplication);
++			osLib_addFunction("nn_acp", "ACPGetTitleInfoOfMainApplication", export_ACPGetTitleInfoOfMainApplication);
+ 
+ 			osLib_addFunction("nn_acp", "ACPGetTitleMetaDirByDevice", export_ACPGetTitleMetaDirByDevice);
+ 			osLib_addFunction("nn_acp", "ACPGetTitleMetaXmlByDevice", export_ACPGetTitleMetaXmlByDevice);
 diff --git a/src/Cafe/OS/libs/snd_core/ax_out.cpp b/src/Cafe/OS/libs/snd_core/ax_out.cpp
 index 6cb1599a..9c8dfbcf 100644
 --- a/src/Cafe/OS/libs/snd_core/ax_out.cpp
@@ -1246,6 +1419,163 @@ index 6cb1599a..9c8dfbcf 100644
  		tempDRCAudioBlockCounter++;
  		if (tempDRCAudioBlockCounter == AX_FRAMES_PER_GROUP)
  		{
+diff --git a/src/Cafe/OS/libs/sysapp/sysapp.cpp b/src/Cafe/OS/libs/sysapp/sysapp.cpp
+index cfeeb5b4..7759da57 100644
+--- a/src/Cafe/OS/libs/sysapp/sysapp.cpp
++++ b/src/Cafe/OS/libs/sysapp/sysapp.cpp
+@@ -3,6 +3,8 @@
+ #include "Cafe/CafeSystem.h"
+ #include "Cafe/OS/libs/coreinit/coreinit_FG.h"
+ #include "Cafe/OS/libs/coreinit/coreinit_Misc.h"
++#include "config/LaunchSettings.h"
++#include "WindowSystem.h"
+ 
+ typedef struct  
+ {
+@@ -455,9 +457,30 @@ void sysappExport__SYSReturnToCallerWithStandardResult(PPCInterpreter_t* hCPU)
+ {
+ 	ppcDefineParamU32BEPtr(resultPtr, 0);
+ 	cemuLog_log(LogType::Force, "_SYSReturnToCallerWithStandardResult(0x{:08x}) result: 0x{:08x}", hCPU->gpr[3], (uint32)*resultPtr);
++	if (LaunchSettings::IsSystemOverlayChild())
++	{
++		const sint32 result = static_cast<sint32>((uint32)*resultPtr);
++		std::thread shutdown_thread([result]() {
++			CafeSystem::ShutdownTitle();
++			CafeSystem::NotifyPPCProcessExit(result);
++		});
++		shutdown_thread.detach();
++		coreinit::OSSuspendThread(coreinit::OSGetCurrentThread());
++		return;
++	}
+ 	while (true) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+ }
+ 
++void sysappExport__SYSSwitchToOverlayFromHBM(PPCInterpreter_t* hCPU)
++{
++	if (LaunchSettings::IsSystemOverlayChild())
++	{
++		WindowSystem::RequestHomeMenu();
++		coreinit::OSSuspendThread(coreinit::OSGetCurrentThread());
++	}
++	osLib_returnFromFunction(hCPU, 0);
++}
++
+ void sysappExport__SYSGetEShopArgs(PPCInterpreter_t* hCPU)
+ {
+ 	ppcDefineParamStructPtr(args, eshopArguments_t, 0);
+@@ -566,6 +589,30 @@ struct SysLauncherArgs28
+ 
+ static_assert(sizeof(SysLauncherArgs28) == 0x28);
+ 
++struct SysHBMArgs
++{
++	uint32be callerTitleIdHigh;
++	uint32be callerTitleIdLow;
++	uint32be mode;
++	uint32be callerUpid;
++	uint32be ukn10;
++	uint32be ukn14;
++	uint32be ukn18;
++};
++
++static_assert(sizeof(SysHBMArgs) == 0x1C);
++
++uint32 _SYSGetHBMArgs(SysHBMArgs* argsOut)
++{
++	memset(argsOut, 0, sizeof(*argsOut));
++	const uint64 callerTitleId = LaunchSettings::GetSystemOverlayCallerTitleId().value_or(0);
++	argsOut->callerTitleIdHigh = callerTitleId >> 32;
++	argsOut->callerTitleIdLow = callerTitleId;
++	argsOut->mode = 0;
++	argsOut->callerUpid = 15;
++	return 0;
++}
++
+ uint32 _SYSGetLauncherArgs(void* argsOut)
+ {
+ 	uint32 sdkVersion = coreinit::__OSGetProcessSDKVersion();
+@@ -580,6 +627,11 @@ uint32 _SYSGetLauncherArgs(void* argsOut)
+ 		// new format
+ 		SysLauncherArgs28* launcherArgs28 = (SysLauncherArgs28*)argsOut;
+ 		memset(launcherArgs28, 0, sizeof(SysLauncherArgs28));
++		if (const auto caller = LaunchSettings::GetSystemOverlayCallerTitleId())
++		{
++			launcherArgs28->caller_id = *caller;
++			launcherArgs28->launch_title = CafeSystem::GetForegroundTitleId();
++		}
+ 	}
+ 	return 0; // return argument is todo
+ }
+@@ -697,6 +749,8 @@ namespace sysapp
+ 			osLib_addFunction("sysapp", "SYSGetStandardResult", sysappExport_SYSGetStandardResult);
+ 
+ 			cafeExportRegisterFunc(_SYSGetLauncherArgs, "sysapp", "_SYSGetLauncherArgs", LogType::Placeholder);
++			cafeExportRegisterFunc(_SYSGetHBMArgs, "sysapp", "_SYSGetHBMArgs", LogType::Placeholder);
++			osLib_addFunction("sysapp", "_SYSSwitchToOverlayFromHBM", sysappExport__SYSSwitchToOverlayFromHBM);
+ 			cafeExportRegisterFunc(_SYSGetAccountArgs, "sysapp", "_SYSGetAccountArgs", LogType::Placeholder);
+ 
+ 			sysapp::load();
+@@ -708,4 +762,4 @@ namespace sysapp
+ 	{
+ 		return &s_COSsysappModule;
+ 	}
+-}
+\ No newline at end of file
++}
+diff --git a/src/Cafe/OS/libs/vpad/vpad.cpp b/src/Cafe/OS/libs/vpad/vpad.cpp
+index dc6b6adb..ccf608ae 100644
+--- a/src/Cafe/OS/libs/vpad/vpad.cpp
++++ b/src/Cafe/OS/libs/vpad/vpad.cpp
+@@ -5,6 +5,8 @@
+ #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
+ #include "config/ActiveSettings.h"
+ #include "Cafe/OS/libs/coreinit/coreinit_Alarm.h"
++#include "Cafe/OS/libs/coreinit/coreinit_Misc.h"
++#include "config/LaunchSettings.h"
+ #include "input/InputManager.h"
+ #include "WindowSystem.h"
+ 
+@@ -286,6 +288,15 @@ namespace vpad
+ 				}
+ 			}
+ 			controller->VPADRead(*status, vpad::g_vpad.controller_data[channel].btn_repeat);
++			// Many retail titles (including the Home Button Menu itself) poll
++			// VPAD directly instead of installing a sampling callback. Detect
++			// HOME on that path as well.
++			if (controller->was_home_button_down() &&
++				(LaunchSettings::IsSystemOverlayChild() ||
++				 coreinit::OSIsHomeButtonMenuEnabled()))
++			{
++				WindowSystem::RequestHomeMenu();
++			}
+ 			if (error)
+ 				*error = VPAD_READ_ERR_NONE;
+ 			return 1;
+@@ -1128,6 +1139,11 @@ namespace vpad
+ {
+ 	void TickFunction(PPCInterpreter_t* hCPU)
+ 	{
++		// A foreground-acquire request can arrive while ProcUI is already
++		// blocked on the system queue. Pump it from this periodic PPC alarm
++		// so the queued message wakes the background receiver.
++		coreinit::UpdateSystemMessageQueue();
++
+ 		// check if homebutton is pressed
+ 		// check connection to drc
+ 		const auto& instance = InputManager::instance();
+@@ -1138,6 +1154,12 @@ namespace vpad
+ 			
+ 			if(const auto controller = instance.get_vpad_controller(i))
+ 			{
++				if (controller->was_home_button_down() &&
++					(LaunchSettings::IsSystemOverlayChild() ||
++					 coreinit::OSIsHomeButtonMenuEnabled()))
++				{
++					WindowSystem::RequestHomeMenu();
++				}
+ 				cemuLog_log(LogType::InputAPI, "Calling VPADSamplingCallback({})", i);
+ 				PPCCoreCallback(g_vpad.controller_data[i].sampling_callback, i);
+ 			}
 diff --git a/src/config/CemuConfig.cpp b/src/config/CemuConfig.cpp
 index 139c290c..a9c23f08 100644
 --- a/src/config/CemuConfig.cpp
@@ -1287,6 +1617,76 @@ index 48c396f2..195b6127 100644
  	std::vector<std::string> game_paths;
  	std::mutex game_cache_entries_mutex;
  	std::vector<GameEntry> game_cache_entries;
+diff --git a/src/config/LaunchSettings.cpp b/src/config/LaunchSettings.cpp
+index e12fdc62..6322371f 100644
+--- a/src/config/LaunchSettings.cpp
++++ b/src/config/LaunchSettings.cpp
+@@ -84,6 +84,8 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
+ 	hidden.add_options()
+ 		("nsight", po::value<bool>()->implicit_value(true), "NSight debugging options")
+ 		("legacy", po::value<bool>()->implicit_value(true), "Intel legacy graphic mode")
++		("system-overlay-child", po::value<bool>()->implicit_value(true), "Run a Wii U system overlay for another Cemu instance")
++		("system-overlay-caller-title-id", po::value<std::string>(), "Title ID of the application below a system overlay")
+ 		("ppcrec-lower-addr", po::value<std::string>(), "For debugging: Lower address allowed for PPC recompilation")
+ 		("ppcrec-upper-addr", po::value<std::string>(), "For debugging: Upper address allowed for PPC recompilation");
+ 
+@@ -197,6 +199,22 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
+ 		if (vm.count("open-debugger"))
+ 			s_open_debugger = vm["open-debugger"].as<bool>();
+ 
++		if (vm.count("system-overlay-child"))
++			s_system_overlay_child = vm["system-overlay-child"].as<bool>();
++		if (vm.count("system-overlay-caller-title-id"))
++		{
++			const auto title_id = vm["system-overlay-caller-title-id"].as<std::string>();
++			try
++			{
++				s_system_overlay_caller_title_id = std::stoull(title_id, nullptr, 16);
++			}
++			catch (const std::exception&)
++			{
++				std::cerr << "Expected system overlay caller title ID as an unsigned 64-bit hexadecimal string\n";
++				return 1;
++			}
++		}
++
+ 		if (vm.count("forward-console-logging"))
+ 		{
+ 			requireConsole();
+diff --git a/src/config/LaunchSettings.h b/src/config/LaunchSettings.h
+index d23c8454..deeabf8f 100644
+--- a/src/config/LaunchSettings.h
++++ b/src/config/LaunchSettings.h
+@@ -38,6 +38,8 @@ public:
+ 	static bool ForceMultiCoreInterpreter() { return s_force_multicore_interpreter; }
+ 
+ 	static std::optional<uint32> GetPersistentId() { return s_persistent_id; }
++	static bool IsSystemOverlayChild() { return s_system_overlay_child; }
++	static std::optional<uint64> GetSystemOverlayCallerTitleId() { return s_system_overlay_caller_title_id; }
+ 
+ 	static uint32 GetPPCRecLowerAddr() { return ppcRec_limitLowerAddr; };
+ 	static uint32 GetPPCRecUpperAddr() { return ppcRec_limitUpperAddr; };
+@@ -64,6 +66,8 @@ private:
+ 	inline static bool s_force_multicore_interpreter = false;
+ 	
+ 	inline static std::optional<uint32> s_persistent_id{};
++	inline static bool s_system_overlay_child = false;
++	inline static std::optional<uint64> s_system_overlay_caller_title_id{};
+ 
+ 	// for recompiler debugging
+ 	inline static uint32 ppcRec_limitLowerAddr{};
+diff --git a/src/gui/interface/WindowSystem.h b/src/gui/interface/WindowSystem.h
+index b2346c17..95d37ecf 100644
+--- a/src/gui/interface/WindowSystem.h
++++ b/src/gui/interface/WindowSystem.h
+@@ -117,6 +117,7 @@ namespace WindowSystem
+ 
+ 	void NotifyGameLoaded();
+ 	void NotifyGameExited();
++	void RequestHomeMenu();
+ 
+ 	void RefreshGameList();
+ 
 diff --git a/src/gui/wxgui/GeneralSettings2.cpp b/src/gui/wxgui/GeneralSettings2.cpp
 index f1435fba..9292188c 100644
 --- a/src/gui/wxgui/GeneralSettings2.cpp
@@ -1341,6 +1741,212 @@ index 2f7e3b68..fbff8116 100644
  #if BOOST_OS_WINDOWS
  	wxChoice* m_msw_theme;
  #endif
+diff --git a/src/gui/wxgui/MainWindow.cpp b/src/gui/wxgui/MainWindow.cpp
+index 9eec7dd3..c7e9b275 100644
+--- a/src/gui/wxgui/MainWindow.cpp
++++ b/src/gui/wxgui/MainWindow.cpp
+@@ -60,12 +60,19 @@
+ //Cafe libs
+ #include "Cafe/OS/libs/nfc/nfc.h"
+ #include "Cafe/OS/libs/swkbd/swkbd.h"
++#include "Cafe/HW/Latte/Core/BottomScreenBridge.h"
+ 
+ #include "Cafe/HW/Latte/Renderer/Renderer.h" // For renderer API checks
+ 
+ extern WindowSystem::WindowInfo g_window_info;
+ extern std::shared_mutex g_mutex;
+ 
++namespace coreinit
++{
++	void StartBackgroundTransition();
++	void StartForegroundTransition();
++}
++
+ enum
+ {
+ 	// ui elements
+@@ -156,6 +163,7 @@ enum
+ 	MAINFRAME_MENU_ID_HELP_UPDATE,
+ 	// custom
+ 	MAINFRAME_ID_TIMER1 = 21800,
++	MAINFRAME_ID_HOME_MENU_PROCESS,
+ };
+ 
+ wxDEFINE_EVENT(wxEVT_SET_WINDOW_TITLE, wxCommandEvent);
+@@ -163,6 +171,7 @@ wxDEFINE_EVENT(wxEVT_REQUEST_GAMELIST_REFRESH, wxCommandEvent);
+ wxDEFINE_EVENT(wxEVT_LAUNCH_GAME, wxLaunchGameEvent);
+ wxDEFINE_EVENT(wxEVT_REQUEST_RECREATE_CANVAS, wxCommandEvent);
+ wxDEFINE_EVENT(wxEVT_REQUEST_GAME_EXIT, wxCommandEvent);
++wxDEFINE_EVENT(wxEVT_REQUEST_HOME_MENU, wxCommandEvent);
+ 
+ wxBEGIN_EVENT_TABLE(MainWindow, wxFrame)
+ EVT_TIMER(MAINFRAME_ID_TIMER1, MainWindow::OnTimer)
+@@ -245,6 +254,8 @@ EVT_COMMAND(wxID_ANY, wxEVT_SET_WINDOW_TITLE, MainWindow::OnSetWindowTitle)
+ 
+ EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_RECREATE_CANVAS, MainWindow::OnRequestRecreateCanvas)
+ EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_GAME_EXIT, MainWindow::OnRequestGameExit)
++EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_HOME_MENU, MainWindow::OnRequestHomeMenu)
++EVT_END_PROCESS(MAINFRAME_ID_HOME_MENU_PROCESS, MainWindow::OnHomeMenuProcessEnded)
+ 
+ wxEND_EVENT_TABLE()
+ 
+@@ -437,6 +448,15 @@ wxString MainWindow::GetInitialWindowTitle()
+ 
+ void MainWindow::OnClose(wxCloseEvent& event)
+ {
++	if (m_home_menu_process)
++	{
++		wxProcess::Kill(m_home_menu_pid, wxSIGTERM, wxKILL_CHILDREN);
++		m_home_menu_process->Detach();
++		delete m_home_menu_process;
++		m_home_menu_process = nullptr;
++		m_home_menu_pid = 0;
++	}
++
+ 	if (m_debugger_window)
+ 	{
+ 		m_debugger_window->CleanupForDestroy();
+@@ -2506,6 +2526,101 @@ void MainWindow::OnRequestGameExit(wxCommandEvent& event)
+ 	}
+ }
+ 
++void MainWindow::RequestHomeMenu()
++{
++	wxQueueEvent(this, new wxCommandEvent(wxEVT_REQUEST_HOME_MENU));
++}
++
++void MainWindow::OnRequestHomeMenu(wxCommandEvent& event)
++{
++	if (LaunchSettings::IsSystemOverlayChild())
++	{
++		Close();
++		return;
++	}
++
++	if (!m_game_launched || m_home_menu_process)
++		return;
++
++	const uint64 caller_title_id = CafeSystem::GetForegroundTitleId();
++	const bool japanese = CafeSystem::GetPlatformRegion() == CafeConsoleRegion::JPN;
++	const std::array<uint64, 2> candidates = japanese
++		? std::array<uint64, 2>{0x0005003010010209ULL, 0x000500301001020AULL}
++		: std::array<uint64, 2>{0x000500301001020AULL, 0x0005003010010209ULL};
++
++	uint64 home_menu_title_id = 0;
++	TitleInfo home_menu_info;
++	for (const uint64 title_id : candidates)
++	{
++		if (CafeTitleList::GetFirstByTitleId(title_id, home_menu_info))
++		{
++			home_menu_title_id = title_id;
++			break;
++		}
++	}
++
++	if (home_menu_title_id == 0)
++	{
++		wxMessageBox(_("The Wii U HOME Button Menu title is not installed in the configured MLC."),
++			_("HOME Menu"), wxOK | wxCENTRE | wxICON_ERROR, this);
++		return;
++	}
++
++	auto quote = [](wxString value) {
++		value.Replace("\\", "\\\\");
++		value.Replace("\"", "\\\"");
++		return "\"" + value + "\"";
++	};
++
++	wxString command = quote(wxHelper::FromPath(ActiveSettings::GetExecutablePath()));
++	command += wxString::FromUTF8(fmt::format(" --title-id {:016x}", home_menu_title_id));
++	command += " --mlc " + quote(wxHelper::FromPath(ActiveSettings::GetMlcPath()));
++	command += wxString::FromUTF8(fmt::format(" --account {:08x}", ActiveSettings::GetPersistentId()));
++	command += wxString::FromUTF8(fmt::format(" --system-overlay-child=true --system-overlay-caller-title-id {:016x}", caller_title_id));
++	if (FullscreenEnabled())
++		command += " --fullscreen=true";
++
++	BottomScreen::SetSuspended(true);
++	coreinit::StartBackgroundTransition();
++
++	m_home_menu_process = new wxProcess(this, MAINFRAME_ID_HOME_MENU_PROCESS);
++	m_home_menu_pid = wxExecute(command, wxEXEC_ASYNC, m_home_menu_process);
++	if (m_home_menu_pid == 0)
++	{
++		delete m_home_menu_process;
++		m_home_menu_process = nullptr;
++		BottomScreen::SetSuspended(false);
++		coreinit::StartForegroundTransition();
++		wxMessageBox(_("Cemu could not start the Wii U HOME Button Menu title."),
++			_("HOME Menu"), wxOK | wxCENTRE | wxICON_ERROR, this);
++		return;
++	}
++
++	m_home_menu_pad_was_shown = m_padView && m_padView->IsShown();
++	if (m_padView)
++		m_padView->Hide();
++	Hide();
++}
++
++void MainWindow::OnHomeMenuProcessEnded(wxProcessEvent& event)
++{
++	if (!m_home_menu_process || event.GetPid() != m_home_menu_pid)
++		return;
++
++	delete m_home_menu_process;
++	m_home_menu_process = nullptr;
++	m_home_menu_pid = 0;
++
++	BottomScreen::SetSuspended(false);
++	coreinit::StartForegroundTransition();
++
++	Show();
++	if (m_home_menu_pad_was_shown && m_padView)
++		m_padView->Show();
++	m_home_menu_pad_was_shown = false;
++	Raise();
++}
++
+ bool MainWindow::FullscreenEnabled() const
+ {
+ 	return LaunchSettings::FullscreenEnabled().value_or(GetWxGUIConfig().fullscreen);
+diff --git a/src/gui/wxgui/MainWindow.h b/src/gui/wxgui/MainWindow.h
+index deb656ce..7a0b9553 100644
+--- a/src/gui/wxgui/MainWindow.h
++++ b/src/gui/wxgui/MainWindow.h
+@@ -3,6 +3,7 @@
+ #include <wx/wx.h>
+ #include <wx/dataview.h>
+ #include <wx/infobar.h>
++#include <wx/process.h>
+ 
+ #include "wxgui/PadViewFrame.h"
+ #include "wxgui/MemorySearcherTool.h"
+@@ -133,6 +134,7 @@ public:
+ 	void OnGesturePan(wxPanGestureEvent& event);
+ 
+ 	void OnGameLoaded();
++	void RequestHomeMenu();
+ 
+ 	void AsyncSetTitle(std::string_view windowTitle);
+ 
+@@ -162,6 +164,8 @@ private:
+ 
+ 	void OnRequestRecreateCanvas(wxCommandEvent& event);
+ 	void OnRequestGameExit(wxCommandEvent& event);
++	void OnRequestHomeMenu(wxCommandEvent& event);
++	void OnHomeMenuProcessEnded(wxProcessEvent& event);
+ 
+ 	wxRect GetDesktopRect();
+ 
+@@ -179,6 +183,9 @@ private:
+ 
+ 	bool m_menu_visible = false;
+ 	bool m_game_launched = false;
++	wxProcess* m_home_menu_process = nullptr;
++	long m_home_menu_pid = 0;
++	bool m_home_menu_pad_was_shown = false;
+ 
+ 	#ifdef ENABLE_DISCORD_RPC
+ 	std::unique_ptr<DiscordPresence> m_discord;
 diff --git a/src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp b/src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp
 index b1b5205c..299364d8 100644
 --- a/src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp
@@ -1461,6 +2067,24 @@ index 676d70eb..eef1de60 100644
  
  	//////////////////////////////////////////////////////////////////
  
+diff --git a/src/gui/wxgui/wxWindowSystem.cpp b/src/gui/wxgui/wxWindowSystem.cpp
+index bb730db8..6a760b40 100644
+--- a/src/gui/wxgui/wxWindowSystem.cpp
++++ b/src/gui/wxgui/wxWindowSystem.cpp
+@@ -332,6 +332,13 @@ void WindowSystem::NotifyGameExited()
+ 		g_mainFrame->RestoreSettingsAfterGameExited();
+ }
+ 
++void WindowSystem::RequestHomeMenu()
++{
++	std::shared_lock lock(g_mutex);
++	if (g_mainFrame)
++		g_mainFrame->RequestHomeMenu();
++}
++
+ void WindowSystem::RefreshGameList()
+ {
+ 	std::shared_lock lock(g_mutex);
 diff --git a/src/input/CMakeLists.txt b/src/input/CMakeLists.txt
 index 4978ef0a..03bb0474 100644
 --- a/src/input/CMakeLists.txt

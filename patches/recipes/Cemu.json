@@ -39,6 +39,8 @@
     "{",
     "    BsSource* g_source = nullptr;",
     "    BsServer* g_server = nullptr;",
+    "    std::recursive_mutex g_state_mutex;",
+    "    bool      g_suspended = false;",
     "    bool      g_tried  = false;",
     "    int       g_width  = 0;",
     "    int       g_height = 0;",
@@ -115,6 +117,9 @@
     "",
     "void Start()",
     "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
+    "\tif (g_suspended)",
+    "\t\treturn;",
     "    if (g_tried)",
     "        return;",
     "    g_tried = true;",
@@ -174,6 +179,7 @@
     "",
     "void Stop()",
     "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
     "    if (g_server)",
     "    {",
     "        bs_server_destroy(g_server);",
@@ -201,7 +207,18 @@
     "",
     "bool IsRunning()",
     "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
     "    return g_server != nullptr;",
+    "}",
+    "",
+    "void SetSuspended(bool suspended)",
+    "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
+    "\tif (g_suspended == suspended)",
+    "\t\treturn;",
+    "\tg_suspended = suspended;",
+    "\tif (suspended)",
+    "\t\tStop();",
     "}",
     "",
     "/*",
@@ -246,6 +263,9 @@
     "",
     "void SubmitPadView(LatteTextureView* texView)",
     "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
+    "\tif (g_suspended)",
+    "\t\treturn;",
     "    if (!GetConfig().bottom_screen_enabled || !texView)",
     "        return;",
     "",
@@ -322,6 +342,9 @@
     " */",
     "void SubmitTvView(LatteTextureView* texView)",
     "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
+    "\tif (g_suspended)",
+    "\t\treturn;",
     "    if (!GetConfig().bottom_screen_enabled || !texView)",
     "        return;",
     "",
@@ -451,6 +474,9 @@
     "",
     "void ApplyInput()",
     "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
+    "\tif (g_suspended)",
+    "\t\treturn;",
     "    if (!g_server)",
     "        return;",
     "",
@@ -592,6 +618,9 @@
     "",
     "void SubmitAudio(const sint16* samples, int frames, int channels, bool padOutput)",
     "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
+    "\tif (g_suspended)",
+    "\t\treturn;",
     "    if (!g_server || !samples || frames <= 0 || channels < 1)",
     "        return;",
     "",
@@ -612,6 +641,9 @@
     "",
     "bool GetStick(int index, float& x, float& y)",
     "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
+    "\tif (g_suspended)",
+    "\t\treturn false;",
     "    if (!g_server || index < 0 || index > 1)",
     "        return false;",
     "",
@@ -641,6 +673,9 @@
     "",
     "bool IsButtonHeld(int vpadButtonId)",
     "{",
+    "\tstd::lock_guard<std::recursive_mutex> state_lock(g_state_mutex);",
+    "\tif (g_suspended)",
+    "\t\treturn false;",
     "    if (!g_server || vpadButtonId <= 0 || vpadButtonId >= 64)",
     "        return false;",
     "    const bool held = (g_held & (1ull << vpadButtonId)) != 0;",
@@ -699,6 +734,7 @@
     "void Start();",
     "void Stop();",
     "bool IsRunning();",
+    "void SetSuspended(bool suspended);",
     "",
     "/*",
     " * Reads the pad view back off the GPU and hands it to the server.",
@@ -1264,6 +1300,234 @@
    ]
   },
   {
+   "file": "src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp",
+   "in": "namespace coreinit",
+   "find": [
+    "",
+    "\tvoid OSReleaseForeground()",
+    "\t{",
+    "\t\tcemuLog_logDebug(LogType::Force, \"OSReleaseForeground not implemented\");",
+    "\t}",
+    "",
+    "\tbool s_transitionToBackground = false;",
+    "\tbool s_transitionToForeground = false;",
+    "",
+    "\tvoid StartBackgroundForegroundTransition()",
+    "\t{",
+    "\t\ts_transitionToBackground = true;",
+    "\t\ts_transitionToForeground = true;",
+    "\t}",
+    "",
+    "\t// called at the beginning of OSReceiveMessage if the queue is the system message queue",
+    "\tvoid UpdateSystemMessageQueue()",
+    "\t{"
+   ],
+   "replace": [
+    "",
+    "\tvoid OSReleaseForeground()",
+    "\t{",
+    "\t\tif (LaunchSettings::IsSystemOverlayChild())",
+    "\t\t{",
+    "\t\t\t// A system applet asks Cafe OS to complete its hand-off before it can",
+    "\t\t\t// become the active foreground process. The parent Cemu process has",
+    "\t\t\t// already released the foreground, so acknowledge that hand-off here.",
+    "\t\t\tStartForegroundTransition();",
+    "\t\t\treturn;",
+    "\t\t}",
+    "\t\tcemuLog_logDebug(LogType::Force, \"OSReleaseForeground not implemented\");",
+    "\t}",
+    "",
+    "\tuint32 OSGetCallArgs(uint32be* argsOut, void*, void*)",
+    "\t{",
+    "\t\t// Home Button Menu expects the main application process as its caller.",
+    "\t\t// Keep the menu process as the default for any other system applet.",
+    "\t\targsOut[0] = LaunchSettings::IsSystemOverlayChild() ? 15 : 2;",
+    "\t\targsOut[1] = 0;",
+    "\t\treturn 0;",
+    "\t}",
+    "",
+    "\tstd::atomic_bool s_transitionToBackground = false;",
+    "\tstd::atomic_bool s_transitionToForeground = false;",
+    "",
+    "\tvoid StartBackgroundTransition()",
+    "\t{",
+    "\t\ts_transitionToBackground = true;",
+    "\t}",
+    "",
+    "\tvoid StartForegroundTransition()",
+    "\t{",
+    "\t\ts_transitionToForeground = true;",
+    "\t}",
+    "",
+    "\tvoid StartBackgroundForegroundTransition()",
+    "\t{",
+    "\t\tStartBackgroundTransition();",
+    "\t\tStartForegroundTransition();",
+    "\t}",
+    "",
+    "\t// called at the beginning of OSReceiveMessage if the queue is the system message queue",
+    "\tvoid UpdateSystemMessageQueue()",
+    "\t{"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp",
+   "in": "namespace coreinit",
+   "find": [
+    "\t\tcafeExportRegister(\"coreinit\", OSRestartGame, LogType::Placeholder);",
+    "",
+    "\t\tcafeExportRegister(\"coreinit\", OSReleaseForeground, LogType::Placeholder);",
+    "",
+    "\t\tcafeExportRegister(\"coreinit\", OSDriver_Register, LogType::Placeholder);",
+    "\t\tcafeExportRegister(\"coreinit\", OSDriver_Deregister, LogType::Placeholder);"
+   ],
+   "replace": [
+    "\t\tcafeExportRegister(\"coreinit\", OSRestartGame, LogType::Placeholder);",
+    "",
+    "\t\tcafeExportRegister(\"coreinit\", OSReleaseForeground, LogType::Placeholder);",
+    "\t\tcafeExportRegister(\"coreinit\", OSGetCallArgs, LogType::Placeholder);",
+    "",
+    "\t\tcafeExportRegister(\"coreinit\", OSDriver_Register, LogType::Placeholder);",
+    "\t\tcafeExportRegister(\"coreinit\", OSDriver_Deregister, LogType::Placeholder);"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/coreinit/coreinit_Misc.h",
+   "in": "namespace coreinit",
+   "find": [
+    "\tuint32 OSRestartGame(uint32 argc, MEMPTR<char>* argv);",
+    "",
+    "\tvoid OSReleaseForeground();",
+    "",
+    "\tvoid StartBackgroundForegroundTransition();",
+    "",
+    "\tstruct OSDriverInterface",
+    "\t{"
+   ],
+   "replace": [
+    "\tuint32 OSRestartGame(uint32 argc, MEMPTR<char>* argv);",
+    "",
+    "\tvoid OSReleaseForeground();",
+    "\tbool OSIsHomeButtonMenuEnabled();",
+    "",
+    "\tvoid StartBackgroundTransition();",
+    "\tvoid StartForegroundTransition();",
+    "\tvoid StartBackgroundForegroundTransition();",
+    "\tvoid UpdateSystemMessageQueue();",
+    "",
+    "\tstruct OSDriverInterface",
+    "\t{"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/coreinit/coreinit_Misc.h",
+   "in": "namespace coreinit",
+   "find": [
+    "\tsint32 ppc_vprintf(const char* formatStr, char* strOut, sint32 maxLength, ppc_va_list* vargs);",
+    "",
+    "\tvoid miscInit();",
+    "};"
+   ],
+   "replace": [
+    "\tsint32 ppc_vprintf(const char* formatStr, char* strOut, sint32 maxLength, ppc_va_list* vargs);",
+    "",
+    "\tvoid miscInit();",
+    "};"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/nn_acp/nn_acp.cpp",
+   "in": "",
+   "find": [
+    "#include <fstream>",
+    "",
+    "#include \"config/ActiveSettings.h\"",
+    "#include \"Cafe/IOSU/legacy/iosu_acp.h\"",
+    "#include \"Cafe/IOSU/legacy/iosu_ioctl.h\"",
+    ""
+   ],
+   "replace": [
+    "#include <fstream>",
+    "",
+    "#include \"config/ActiveSettings.h\"",
+    "#include \"config/LaunchSettings.h\"",
+    "#include \"Cafe/IOSU/legacy/iosu_acp.h\"",
+    "#include \"Cafe/IOSU/legacy/iosu_ioctl.h\"",
+    ""
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/nn_acp/nn_acp.cpp",
+   "in": "namespace acp",
+   "find": [
+    "\t\t// for applets we return the menu titleId",
+    "\t\tif (((currentTitleId >> 32) & 0xFF) == 0x30)",
+    "\t\t{",
+    "\t\t\t// get menu titleId",
+    "\t\t\tuint64 menuTitleId = _SYSGetSystemApplicationTitleId(0);",
+    "\t\t\t*titleId = menuTitleId;",
+    "\t\t}",
+    "",
+    "\t\tosLib_returnFromFunction(hCPU, 0);",
+    "\t}",
+    "",
+    "\tvoid export_ACPGetTitleMetaDirByDevice(PPCInterpreter_t* hCPU)",
+    "\t{",
+    "\t\tppcDefineParamU64(titleId, 0);"
+   ],
+   "replace": [
+    "\t\t// for applets we return the menu titleId",
+    "\t\tif (((currentTitleId >> 32) & 0xFF) == 0x30)",
+    "\t\t{",
+    "\t\t\tif (const auto caller = LaunchSettings::GetSystemOverlayCallerTitleId())",
+    "\t\t\t\t*titleId = *caller;",
+    "\t\t\telse",
+    "\t\t\t\t*titleId = _SYSGetSystemApplicationTitleId(0);",
+    "\t\t}",
+    "",
+    "\t\tosLib_returnFromFunction(hCPU, 0);",
+    "\t}",
+    "",
+    "\tvoid export_ACPGetTitleInfoOfMainApplication(PPCInterpreter_t* hCPU)",
+    "\t{",
+    "\t\tppcDefineParamTypePtr(titleId, uint64be, 0);",
+    "\t\tppcDefineParamU32BEPtr(deviceType, 1);",
+    "\t\tppcDefineParamU32BEPtr(applicationType, 2);",
+    "",
+    "\t\tconst uint64 callerTitleId = LaunchSettings::GetSystemOverlayCallerTitleId().value_or(CafeSystem::GetForegroundTitleId());",
+    "\t\t*titleId = callerTitleId;",
+    "\t\t*deviceType = 3; // MLC",
+    "\t\t*applicationType = 0;",
+    "\t\tosLib_returnFromFunction(hCPU, 0);",
+    "\t}",
+    "",
+    "\tvoid export_ACPGetTitleMetaDirByDevice(PPCInterpreter_t* hCPU)",
+    "\t{",
+    "\t\tppcDefineParamU64(titleId, 0);"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/nn_acp/nn_acp.cpp",
+   "in": "namespace acp",
+   "find": [
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetLaunchMetaData\", export_ACPGetLaunchMetaData);",
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetLaunchMetaXml\", export_ACPGetLaunchMetaXml);",
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetTitleIdOfMainApplication\", export_ACPGetTitleIdOfMainApplication);",
+    "",
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetTitleMetaDirByDevice\", export_ACPGetTitleMetaDirByDevice);",
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetTitleMetaXmlByDevice\", export_ACPGetTitleMetaXmlByDevice);"
+   ],
+   "replace": [
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetLaunchMetaData\", export_ACPGetLaunchMetaData);",
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetLaunchMetaXml\", export_ACPGetLaunchMetaXml);",
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetTitleIdOfMainApplication\", export_ACPGetTitleIdOfMainApplication);",
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetTitleInfoOfMainApplication\", export_ACPGetTitleInfoOfMainApplication);",
+    "",
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetTitleMetaDirByDevice\", export_ACPGetTitleMetaDirByDevice);",
+    "\t\t\tosLib_addFunction(\"nn_acp\", \"ACPGetTitleMetaXmlByDevice\", export_ACPGetTitleMetaXmlByDevice);"
+   ]
+  },
+  {
    "file": "src/Cafe/OS/libs/snd_core/ax_out.cpp",
    "in": "",
    "find": [
@@ -1359,6 +1623,284 @@
    ]
   },
   {
+   "file": "src/Cafe/OS/libs/sysapp/sysapp.cpp",
+   "in": "",
+   "find": [
+    "#include \"Cafe/CafeSystem.h\"",
+    "#include \"Cafe/OS/libs/coreinit/coreinit_FG.h\"",
+    "#include \"Cafe/OS/libs/coreinit/coreinit_Misc.h\"",
+    "",
+    "typedef struct  ",
+    "{"
+   ],
+   "replace": [
+    "#include \"Cafe/CafeSystem.h\"",
+    "#include \"Cafe/OS/libs/coreinit/coreinit_FG.h\"",
+    "#include \"Cafe/OS/libs/coreinit/coreinit_Misc.h\"",
+    "#include \"config/LaunchSettings.h\"",
+    "#include \"WindowSystem.h\"",
+    "",
+    "typedef struct  ",
+    "{"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/sysapp/sysapp.cpp",
+   "in": "void sysappExport__SYSReturnToCallerWithStandardResult(PPCInterpreter_t* hCPU)",
+   "find": [
+    "{",
+    "\tppcDefineParamU32BEPtr(resultPtr, 0);",
+    "\tcemuLog_log(LogType::Force, \"_SYSReturnToCallerWithStandardResult(0x{:08x}) result: 0x{:08x}\", hCPU->gpr[3], (uint32)*resultPtr);",
+    "\twhile (true) std::this_thread::sleep_for(std::chrono::milliseconds(10));",
+    "}",
+    "",
+    "void sysappExport__SYSGetEShopArgs(PPCInterpreter_t* hCPU)",
+    "{",
+    "\tppcDefineParamStructPtr(args, eshopArguments_t, 0);"
+   ],
+   "replace": [
+    "{",
+    "\tppcDefineParamU32BEPtr(resultPtr, 0);",
+    "\tcemuLog_log(LogType::Force, \"_SYSReturnToCallerWithStandardResult(0x{:08x}) result: 0x{:08x}\", hCPU->gpr[3], (uint32)*resultPtr);",
+    "\tif (LaunchSettings::IsSystemOverlayChild())",
+    "\t{",
+    "\t\tconst sint32 result = static_cast<sint32>((uint32)*resultPtr);",
+    "\t\tstd::thread shutdown_thread([result]() {",
+    "\t\t\tCafeSystem::ShutdownTitle();",
+    "\t\t\tCafeSystem::NotifyPPCProcessExit(result);",
+    "\t\t});",
+    "\t\tshutdown_thread.detach();",
+    "\t\tcoreinit::OSSuspendThread(coreinit::OSGetCurrentThread());",
+    "\t\treturn;",
+    "\t}",
+    "\twhile (true) std::this_thread::sleep_for(std::chrono::milliseconds(10));",
+    "}",
+    "",
+    "void sysappExport__SYSSwitchToOverlayFromHBM(PPCInterpreter_t* hCPU)",
+    "{",
+    "\tif (LaunchSettings::IsSystemOverlayChild())",
+    "\t{",
+    "\t\tWindowSystem::RequestHomeMenu();",
+    "\t\tcoreinit::OSSuspendThread(coreinit::OSGetCurrentThread());",
+    "\t}",
+    "\tosLib_returnFromFunction(hCPU, 0);",
+    "}",
+    "",
+    "void sysappExport__SYSGetEShopArgs(PPCInterpreter_t* hCPU)",
+    "{",
+    "\tppcDefineParamStructPtr(args, eshopArguments_t, 0);"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/sysapp/sysapp.cpp",
+   "in": "struct SysLauncherArgs28",
+   "find": [
+    "",
+    "static_assert(sizeof(SysLauncherArgs28) == 0x28);",
+    "",
+    "uint32 _SYSGetLauncherArgs(void* argsOut)",
+    "{",
+    "\tuint32 sdkVersion = coreinit::__OSGetProcessSDKVersion();"
+   ],
+   "replace": [
+    "",
+    "static_assert(sizeof(SysLauncherArgs28) == 0x28);",
+    "",
+    "struct SysHBMArgs",
+    "{",
+    "\tuint32be callerTitleIdHigh;",
+    "\tuint32be callerTitleIdLow;",
+    "\tuint32be mode;",
+    "\tuint32be callerUpid;",
+    "\tuint32be ukn10;",
+    "\tuint32be ukn14;",
+    "\tuint32be ukn18;",
+    "};",
+    "",
+    "static_assert(sizeof(SysHBMArgs) == 0x1C);",
+    "",
+    "uint32 _SYSGetHBMArgs(SysHBMArgs* argsOut)",
+    "{",
+    "\tmemset(argsOut, 0, sizeof(*argsOut));",
+    "\tconst uint64 callerTitleId = LaunchSettings::GetSystemOverlayCallerTitleId().value_or(0);",
+    "\targsOut->callerTitleIdHigh = callerTitleId >> 32;",
+    "\targsOut->callerTitleIdLow = callerTitleId;",
+    "\targsOut->mode = 0;",
+    "\targsOut->callerUpid = 15;",
+    "\treturn 0;",
+    "}",
+    "",
+    "uint32 _SYSGetLauncherArgs(void* argsOut)",
+    "{",
+    "\tuint32 sdkVersion = coreinit::__OSGetProcessSDKVersion();"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/sysapp/sysapp.cpp",
+   "in": "uint32 _SYSGetLauncherArgs(void* argsOut)",
+   "find": [
+    "\t\t// new format",
+    "\t\tSysLauncherArgs28* launcherArgs28 = (SysLauncherArgs28*)argsOut;",
+    "\t\tmemset(launcherArgs28, 0, sizeof(SysLauncherArgs28));",
+    "\t}",
+    "\treturn 0; // return argument is todo",
+    "}"
+   ],
+   "replace": [
+    "\t\t// new format",
+    "\t\tSysLauncherArgs28* launcherArgs28 = (SysLauncherArgs28*)argsOut;",
+    "\t\tmemset(launcherArgs28, 0, sizeof(SysLauncherArgs28));",
+    "\t\tif (const auto caller = LaunchSettings::GetSystemOverlayCallerTitleId())",
+    "\t\t{",
+    "\t\t\tlauncherArgs28->caller_id = *caller;",
+    "\t\t\tlauncherArgs28->launch_title = CafeSystem::GetForegroundTitleId();",
+    "\t\t}",
+    "\t}",
+    "\treturn 0; // return argument is todo",
+    "}"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/sysapp/sysapp.cpp",
+   "in": "namespace sysapp",
+   "find": [
+    "\t\t\tosLib_addFunction(\"sysapp\", \"SYSGetStandardResult\", sysappExport_SYSGetStandardResult);",
+    "",
+    "\t\t\tcafeExportRegisterFunc(_SYSGetLauncherArgs, \"sysapp\", \"_SYSGetLauncherArgs\", LogType::Placeholder);",
+    "\t\t\tcafeExportRegisterFunc(_SYSGetAccountArgs, \"sysapp\", \"_SYSGetAccountArgs\", LogType::Placeholder);",
+    "",
+    "\t\t\tsysapp::load();"
+   ],
+   "replace": [
+    "\t\t\tosLib_addFunction(\"sysapp\", \"SYSGetStandardResult\", sysappExport_SYSGetStandardResult);",
+    "",
+    "\t\t\tcafeExportRegisterFunc(_SYSGetLauncherArgs, \"sysapp\", \"_SYSGetLauncherArgs\", LogType::Placeholder);",
+    "\t\t\tcafeExportRegisterFunc(_SYSGetHBMArgs, \"sysapp\", \"_SYSGetHBMArgs\", LogType::Placeholder);",
+    "\t\t\tosLib_addFunction(\"sysapp\", \"_SYSSwitchToOverlayFromHBM\", sysappExport__SYSSwitchToOverlayFromHBM);",
+    "\t\t\tcafeExportRegisterFunc(_SYSGetAccountArgs, \"sysapp\", \"_SYSGetAccountArgs\", LogType::Placeholder);",
+    "",
+    "\t\t\tsysapp::load();"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/sysapp/sysapp.cpp",
+   "in": "namespace sysapp",
+   "find": [
+    "\t{",
+    "\t\treturn &s_COSsysappModule;",
+    "\t}",
+    "}"
+   ],
+   "replace": [
+    "\t{",
+    "\t\treturn &s_COSsysappModule;",
+    "\t}",
+    "}"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/vpad/vpad.cpp",
+   "in": "",
+   "find": [
+    "#include \"Cafe/OS/libs/coreinit/coreinit_Time.h\"",
+    "#include \"config/ActiveSettings.h\"",
+    "#include \"Cafe/OS/libs/coreinit/coreinit_Alarm.h\"",
+    "#include \"input/InputManager.h\"",
+    "#include \"WindowSystem.h\"",
+    ""
+   ],
+   "replace": [
+    "#include \"Cafe/OS/libs/coreinit/coreinit_Time.h\"",
+    "#include \"config/ActiveSettings.h\"",
+    "#include \"Cafe/OS/libs/coreinit/coreinit_Alarm.h\"",
+    "#include \"Cafe/OS/libs/coreinit/coreinit_Misc.h\"",
+    "#include \"config/LaunchSettings.h\"",
+    "#include \"input/InputManager.h\"",
+    "#include \"WindowSystem.h\"",
+    ""
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/vpad/vpad.cpp",
+   "in": "namespace vpad",
+   "find": [
+    "\t\t\t\t}",
+    "\t\t\t}",
+    "\t\t\tcontroller->VPADRead(*status, vpad::g_vpad.controller_data[channel].btn_repeat);",
+    "\t\t\tif (error)",
+    "\t\t\t\t*error = VPAD_READ_ERR_NONE;",
+    "\t\t\treturn 1;"
+   ],
+   "replace": [
+    "\t\t\t\t}",
+    "\t\t\t}",
+    "\t\t\tcontroller->VPADRead(*status, vpad::g_vpad.controller_data[channel].btn_repeat);",
+    "\t\t\t// Many retail titles (including the Home Button Menu itself) poll",
+    "\t\t\t// VPAD directly instead of installing a sampling callback. Detect",
+    "\t\t\t// HOME on that path as well.",
+    "\t\t\tif (controller->was_home_button_down() &&",
+    "\t\t\t\t(LaunchSettings::IsSystemOverlayChild() ||",
+    "\t\t\t\t coreinit::OSIsHomeButtonMenuEnabled()))",
+    "\t\t\t{",
+    "\t\t\t\tWindowSystem::RequestHomeMenu();",
+    "\t\t\t}",
+    "\t\t\tif (error)",
+    "\t\t\t\t*error = VPAD_READ_ERR_NONE;",
+    "\t\t\treturn 1;"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/vpad/vpad.cpp",
+   "in": "namespace vpad",
+   "find": [
+    "{",
+    "\tvoid TickFunction(PPCInterpreter_t* hCPU)",
+    "\t{",
+    "\t\t// check if homebutton is pressed",
+    "\t\t// check connection to drc",
+    "\t\tconst auto& instance = InputManager::instance();"
+   ],
+   "replace": [
+    "{",
+    "\tvoid TickFunction(PPCInterpreter_t* hCPU)",
+    "\t{",
+    "\t\t// A foreground-acquire request can arrive while ProcUI is already",
+    "\t\t// blocked on the system queue. Pump it from this periodic PPC alarm",
+    "\t\t// so the queued message wakes the background receiver.",
+    "\t\tcoreinit::UpdateSystemMessageQueue();",
+    "",
+    "\t\t// check if homebutton is pressed",
+    "\t\t// check connection to drc",
+    "\t\tconst auto& instance = InputManager::instance();"
+   ]
+  },
+  {
+   "file": "src/Cafe/OS/libs/vpad/vpad.cpp",
+   "in": "namespace vpad",
+   "find": [
+    "\t\t\t",
+    "\t\t\tif(const auto controller = instance.get_vpad_controller(i))",
+    "\t\t\t{",
+    "\t\t\t\tcemuLog_log(LogType::InputAPI, \"Calling VPADSamplingCallback({})\", i);",
+    "\t\t\t\tPPCCoreCallback(g_vpad.controller_data[i].sampling_callback, i);",
+    "\t\t\t}"
+   ],
+   "replace": [
+    "\t\t\t",
+    "\t\t\tif(const auto controller = instance.get_vpad_controller(i))",
+    "\t\t\t{",
+    "\t\t\t\tif (controller->was_home_button_down() &&",
+    "\t\t\t\t\t(LaunchSettings::IsSystemOverlayChild() ||",
+    "\t\t\t\t\t coreinit::OSIsHomeButtonMenuEnabled()))",
+    "\t\t\t\t{",
+    "\t\t\t\t\tWindowSystem::RequestHomeMenu();",
+    "\t\t\t\t}",
+    "\t\t\t\tcemuLog_log(LogType::InputAPI, \"Calling VPADSamplingCallback({})\", i);",
+    "\t\t\t\tPPCCoreCallback(g_vpad.controller_data[i].sampling_callback, i);",
+    "\t\t\t}"
+   ]
+  },
+  {
    "file": "src/config/CemuConfig.cpp",
    "in": "XMLConfigParser CemuConfig::Load(XMLConfigParser& parser)",
    "find": [
@@ -1428,6 +1970,129 @@
     "\tstd::vector<std::string> game_paths;",
     "\tstd::mutex game_cache_entries_mutex;",
     "\tstd::vector<GameEntry> game_cache_entries;"
+   ]
+  },
+  {
+   "file": "src/config/LaunchSettings.cpp",
+   "in": "std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr",
+   "find": [
+    "\thidden.add_options()",
+    "\t\t(\"nsight\", po::value<bool>()->implicit_value(true), \"NSight debugging options\")",
+    "\t\t(\"legacy\", po::value<bool>()->implicit_value(true), \"Intel legacy graphic mode\")",
+    "\t\t(\"ppcrec-lower-addr\", po::value<std::string>(), \"For debugging: Lower address allowed for PPC recompilation\")",
+    "\t\t(\"ppcrec-upper-addr\", po::value<std::string>(), \"For debugging: Upper address allowed for PPC recompilation\");",
+    ""
+   ],
+   "replace": [
+    "\thidden.add_options()",
+    "\t\t(\"nsight\", po::value<bool>()->implicit_value(true), \"NSight debugging options\")",
+    "\t\t(\"legacy\", po::value<bool>()->implicit_value(true), \"Intel legacy graphic mode\")",
+    "\t\t(\"system-overlay-child\", po::value<bool>()->implicit_value(true), \"Run a Wii U system overlay for another Cemu instance\")",
+    "\t\t(\"system-overlay-caller-title-id\", po::value<std::string>(), \"Title ID of the application below a system overlay\")",
+    "\t\t(\"ppcrec-lower-addr\", po::value<std::string>(), \"For debugging: Lower address allowed for PPC recompilation\")",
+    "\t\t(\"ppcrec-upper-addr\", po::value<std::string>(), \"For debugging: Upper address allowed for PPC recompilation\");",
+    ""
+   ]
+  },
+  {
+   "file": "src/config/LaunchSettings.cpp",
+   "in": "std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr",
+   "find": [
+    "\t\tif (vm.count(\"open-debugger\"))",
+    "\t\t\ts_open_debugger = vm[\"open-debugger\"].as<bool>();",
+    "",
+    "\t\tif (vm.count(\"forward-console-logging\"))",
+    "\t\t{",
+    "\t\t\trequireConsole();"
+   ],
+   "replace": [
+    "\t\tif (vm.count(\"open-debugger\"))",
+    "\t\t\ts_open_debugger = vm[\"open-debugger\"].as<bool>();",
+    "",
+    "\t\tif (vm.count(\"system-overlay-child\"))",
+    "\t\t\ts_system_overlay_child = vm[\"system-overlay-child\"].as<bool>();",
+    "\t\tif (vm.count(\"system-overlay-caller-title-id\"))",
+    "\t\t{",
+    "\t\t\tconst auto title_id = vm[\"system-overlay-caller-title-id\"].as<std::string>();",
+    "\t\t\ttry",
+    "\t\t\t{",
+    "\t\t\t\ts_system_overlay_caller_title_id = std::stoull(title_id, nullptr, 16);",
+    "\t\t\t}",
+    "\t\t\tcatch (const std::exception&)",
+    "\t\t\t{",
+    "\t\t\t\tstd::cerr << \"Expected system overlay caller title ID as an unsigned 64-bit hexadecimal string\\n\";",
+    "\t\t\t\treturn 1;",
+    "\t\t\t}",
+    "\t\t}",
+    "",
+    "\t\tif (vm.count(\"forward-console-logging\"))",
+    "\t\t{",
+    "\t\t\trequireConsole();"
+   ]
+  },
+  {
+   "file": "src/config/LaunchSettings.h",
+   "in": "public:",
+   "find": [
+    "\tstatic bool ForceMultiCoreInterpreter() { return s_force_multicore_interpreter; }",
+    "",
+    "\tstatic std::optional<uint32> GetPersistentId() { return s_persistent_id; }",
+    "",
+    "\tstatic uint32 GetPPCRecLowerAddr() { return ppcRec_limitLowerAddr; };",
+    "\tstatic uint32 GetPPCRecUpperAddr() { return ppcRec_limitUpperAddr; };"
+   ],
+   "replace": [
+    "\tstatic bool ForceMultiCoreInterpreter() { return s_force_multicore_interpreter; }",
+    "",
+    "\tstatic std::optional<uint32> GetPersistentId() { return s_persistent_id; }",
+    "\tstatic bool IsSystemOverlayChild() { return s_system_overlay_child; }",
+    "\tstatic std::optional<uint64> GetSystemOverlayCallerTitleId() { return s_system_overlay_caller_title_id; }",
+    "",
+    "\tstatic uint32 GetPPCRecLowerAddr() { return ppcRec_limitLowerAddr; };",
+    "\tstatic uint32 GetPPCRecUpperAddr() { return ppcRec_limitUpperAddr; };"
+   ]
+  },
+  {
+   "file": "src/config/LaunchSettings.h",
+   "in": "private:",
+   "find": [
+    "\tinline static bool s_force_multicore_interpreter = false;",
+    "\t",
+    "\tinline static std::optional<uint32> s_persistent_id{};",
+    "",
+    "\t// for recompiler debugging",
+    "\tinline static uint32 ppcRec_limitLowerAddr{};"
+   ],
+   "replace": [
+    "\tinline static bool s_force_multicore_interpreter = false;",
+    "\t",
+    "\tinline static std::optional<uint32> s_persistent_id{};",
+    "\tinline static bool s_system_overlay_child = false;",
+    "\tinline static std::optional<uint64> s_system_overlay_caller_title_id{};",
+    "",
+    "\t// for recompiler debugging",
+    "\tinline static uint32 ppcRec_limitLowerAddr{};"
+   ]
+  },
+  {
+   "file": "src/gui/interface/WindowSystem.h",
+   "in": "namespace WindowSystem",
+   "find": [
+    "",
+    "\tvoid NotifyGameLoaded();",
+    "\tvoid NotifyGameExited();",
+    "",
+    "\tvoid RefreshGameList();",
+    ""
+   ],
+   "replace": [
+    "",
+    "\tvoid NotifyGameLoaded();",
+    "\tvoid NotifyGameExited();",
+    "\tvoid RequestHomeMenu();",
+    "",
+    "\tvoid RefreshGameList();",
+    ""
    ]
   },
   {
@@ -1526,6 +2191,340 @@
     "#if BOOST_OS_WINDOWS",
     "\twxChoice* m_msw_theme;",
     "#endif"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.cpp",
+   "in": "",
+   "find": [
+    "//Cafe libs",
+    "#include \"Cafe/OS/libs/nfc/nfc.h\"",
+    "#include \"Cafe/OS/libs/swkbd/swkbd.h\"",
+    "",
+    "#include \"Cafe/HW/Latte/Renderer/Renderer.h\" // For renderer API checks",
+    "",
+    "extern WindowSystem::WindowInfo g_window_info;",
+    "extern std::shared_mutex g_mutex;",
+    "",
+    "enum",
+    "{",
+    "\t// ui elements"
+   ],
+   "replace": [
+    "//Cafe libs",
+    "#include \"Cafe/OS/libs/nfc/nfc.h\"",
+    "#include \"Cafe/OS/libs/swkbd/swkbd.h\"",
+    "#include \"Cafe/HW/Latte/Core/BottomScreenBridge.h\"",
+    "",
+    "#include \"Cafe/HW/Latte/Renderer/Renderer.h\" // For renderer API checks",
+    "",
+    "extern WindowSystem::WindowInfo g_window_info;",
+    "extern std::shared_mutex g_mutex;",
+    "",
+    "namespace coreinit",
+    "{",
+    "\tvoid StartBackgroundTransition();",
+    "\tvoid StartForegroundTransition();",
+    "}",
+    "",
+    "enum",
+    "{",
+    "\t// ui elements"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.cpp",
+   "in": "enum",
+   "find": [
+    "\tMAINFRAME_MENU_ID_HELP_UPDATE,",
+    "\t// custom",
+    "\tMAINFRAME_ID_TIMER1 = 21800,",
+    "};",
+    "",
+    "wxDEFINE_EVENT(wxEVT_SET_WINDOW_TITLE, wxCommandEvent);"
+   ],
+   "replace": [
+    "\tMAINFRAME_MENU_ID_HELP_UPDATE,",
+    "\t// custom",
+    "\tMAINFRAME_ID_TIMER1 = 21800,",
+    "\tMAINFRAME_ID_HOME_MENU_PROCESS,",
+    "};",
+    "",
+    "wxDEFINE_EVENT(wxEVT_SET_WINDOW_TITLE, wxCommandEvent);"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.cpp",
+   "in": "wxDEFINE_EVENT(wxEVT_REQUEST_GAMELIST_REFRESH, wxCommandEvent);",
+   "find": [
+    "wxDEFINE_EVENT(wxEVT_LAUNCH_GAME, wxLaunchGameEvent);",
+    "wxDEFINE_EVENT(wxEVT_REQUEST_RECREATE_CANVAS, wxCommandEvent);",
+    "wxDEFINE_EVENT(wxEVT_REQUEST_GAME_EXIT, wxCommandEvent);",
+    "",
+    "wxBEGIN_EVENT_TABLE(MainWindow, wxFrame)",
+    "EVT_TIMER(MAINFRAME_ID_TIMER1, MainWindow::OnTimer)"
+   ],
+   "replace": [
+    "wxDEFINE_EVENT(wxEVT_LAUNCH_GAME, wxLaunchGameEvent);",
+    "wxDEFINE_EVENT(wxEVT_REQUEST_RECREATE_CANVAS, wxCommandEvent);",
+    "wxDEFINE_EVENT(wxEVT_REQUEST_GAME_EXIT, wxCommandEvent);",
+    "wxDEFINE_EVENT(wxEVT_REQUEST_HOME_MENU, wxCommandEvent);",
+    "",
+    "wxBEGIN_EVENT_TABLE(MainWindow, wxFrame)",
+    "EVT_TIMER(MAINFRAME_ID_TIMER1, MainWindow::OnTimer)"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.cpp",
+   "in": "EVT_COMMAND(wxID_ANY, wxEVT_SET_WINDOW_TITLE, MainWindow::OnSetWindowTitle)",
+   "find": [
+    "",
+    "EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_RECREATE_CANVAS, MainWindow::OnRequestRecreateCanvas)",
+    "EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_GAME_EXIT, MainWindow::OnRequestGameExit)",
+    "",
+    "wxEND_EVENT_TABLE()",
+    ""
+   ],
+   "replace": [
+    "",
+    "EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_RECREATE_CANVAS, MainWindow::OnRequestRecreateCanvas)",
+    "EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_GAME_EXIT, MainWindow::OnRequestGameExit)",
+    "EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_HOME_MENU, MainWindow::OnRequestHomeMenu)",
+    "EVT_END_PROCESS(MAINFRAME_ID_HOME_MENU_PROCESS, MainWindow::OnHomeMenuProcessEnded)",
+    "",
+    "wxEND_EVENT_TABLE()",
+    ""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.cpp",
+   "in": "wxString MainWindow::GetInitialWindowTitle()",
+   "find": [
+    "",
+    "void MainWindow::OnClose(wxCloseEvent& event)",
+    "{",
+    "\tif (m_debugger_window)",
+    "\t{",
+    "\t\tm_debugger_window->CleanupForDestroy();"
+   ],
+   "replace": [
+    "",
+    "void MainWindow::OnClose(wxCloseEvent& event)",
+    "{",
+    "\tif (m_home_menu_process)",
+    "\t{",
+    "\t\twxProcess::Kill(m_home_menu_pid, wxSIGTERM, wxKILL_CHILDREN);",
+    "\t\tm_home_menu_process->Detach();",
+    "\t\tdelete m_home_menu_process;",
+    "\t\tm_home_menu_process = nullptr;",
+    "\t\tm_home_menu_pid = 0;",
+    "\t}",
+    "",
+    "\tif (m_debugger_window)",
+    "\t{",
+    "\t\tm_debugger_window->CleanupForDestroy();"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.cpp",
+   "in": "void MainWindow::OnRequestGameExit(wxCommandEvent& event)",
+   "find": [
+    "\t}",
+    "}",
+    "",
+    "bool MainWindow::FullscreenEnabled() const",
+    "{",
+    "\treturn LaunchSettings::FullscreenEnabled().value_or(GetWxGUIConfig().fullscreen);"
+   ],
+   "replace": [
+    "\t}",
+    "}",
+    "",
+    "void MainWindow::RequestHomeMenu()",
+    "{",
+    "\twxQueueEvent(this, new wxCommandEvent(wxEVT_REQUEST_HOME_MENU));",
+    "}",
+    "",
+    "void MainWindow::OnRequestHomeMenu(wxCommandEvent& event)",
+    "{",
+    "\tif (LaunchSettings::IsSystemOverlayChild())",
+    "\t{",
+    "\t\tClose();",
+    "\t\treturn;",
+    "\t}",
+    "",
+    "\tif (!m_game_launched || m_home_menu_process)",
+    "\t\treturn;",
+    "",
+    "\tconst uint64 caller_title_id = CafeSystem::GetForegroundTitleId();",
+    "\tconst bool japanese = CafeSystem::GetPlatformRegion() == CafeConsoleRegion::JPN;",
+    "\tconst std::array<uint64, 2> candidates = japanese",
+    "\t\t? std::array<uint64, 2>{0x0005003010010209ULL, 0x000500301001020AULL}",
+    "\t\t: std::array<uint64, 2>{0x000500301001020AULL, 0x0005003010010209ULL};",
+    "",
+    "\tuint64 home_menu_title_id = 0;",
+    "\tTitleInfo home_menu_info;",
+    "\tfor (const uint64 title_id : candidates)",
+    "\t{",
+    "\t\tif (CafeTitleList::GetFirstByTitleId(title_id, home_menu_info))",
+    "\t\t{",
+    "\t\t\thome_menu_title_id = title_id;",
+    "\t\t\tbreak;",
+    "\t\t}",
+    "\t}",
+    "",
+    "\tif (home_menu_title_id == 0)",
+    "\t{",
+    "\t\twxMessageBox(_(\"The Wii U HOME Button Menu title is not installed in the configured MLC.\"),",
+    "\t\t\t_(\"HOME Menu\"), wxOK | wxCENTRE | wxICON_ERROR, this);",
+    "\t\treturn;",
+    "\t}",
+    "",
+    "\tauto quote = [](wxString value) {",
+    "\t\tvalue.Replace(\"\\\\\", \"\\\\\\\\\");",
+    "\t\tvalue.Replace(\"\\\"\", \"\\\\\\\"\");",
+    "\t\treturn \"\\\"\" + value + \"\\\"\";",
+    "\t};",
+    "",
+    "\twxString command = quote(wxHelper::FromPath(ActiveSettings::GetExecutablePath()));",
+    "\tcommand += wxString::FromUTF8(fmt::format(\" --title-id {:016x}\", home_menu_title_id));",
+    "\tcommand += \" --mlc \" + quote(wxHelper::FromPath(ActiveSettings::GetMlcPath()));",
+    "\tcommand += wxString::FromUTF8(fmt::format(\" --account {:08x}\", ActiveSettings::GetPersistentId()));",
+    "\tcommand += wxString::FromUTF8(fmt::format(\" --system-overlay-child=true --system-overlay-caller-title-id {:016x}\", caller_title_id));",
+    "\tif (FullscreenEnabled())",
+    "\t\tcommand += \" --fullscreen=true\";",
+    "",
+    "\tBottomScreen::SetSuspended(true);",
+    "\tcoreinit::StartBackgroundTransition();",
+    "",
+    "\tm_home_menu_process = new wxProcess(this, MAINFRAME_ID_HOME_MENU_PROCESS);",
+    "\tm_home_menu_pid = wxExecute(command, wxEXEC_ASYNC, m_home_menu_process);",
+    "\tif (m_home_menu_pid == 0)",
+    "\t{",
+    "\t\tdelete m_home_menu_process;",
+    "\t\tm_home_menu_process = nullptr;",
+    "\t\tBottomScreen::SetSuspended(false);",
+    "\t\tcoreinit::StartForegroundTransition();",
+    "\t\twxMessageBox(_(\"Cemu could not start the Wii U HOME Button Menu title.\"),",
+    "\t\t\t_(\"HOME Menu\"), wxOK | wxCENTRE | wxICON_ERROR, this);",
+    "\t\treturn;",
+    "\t}",
+    "",
+    "\tm_home_menu_pad_was_shown = m_padView && m_padView->IsShown();",
+    "\tif (m_padView)",
+    "\t\tm_padView->Hide();",
+    "\tHide();",
+    "}",
+    "",
+    "void MainWindow::OnHomeMenuProcessEnded(wxProcessEvent& event)",
+    "{",
+    "\tif (!m_home_menu_process || event.GetPid() != m_home_menu_pid)",
+    "\t\treturn;",
+    "",
+    "\tdelete m_home_menu_process;",
+    "\tm_home_menu_process = nullptr;",
+    "\tm_home_menu_pid = 0;",
+    "",
+    "\tBottomScreen::SetSuspended(false);",
+    "\tcoreinit::StartForegroundTransition();",
+    "",
+    "\tShow();",
+    "\tif (m_home_menu_pad_was_shown && m_padView)",
+    "\t\tm_padView->Show();",
+    "\tm_home_menu_pad_was_shown = false;",
+    "\tRaise();",
+    "}",
+    "",
+    "bool MainWindow::FullscreenEnabled() const",
+    "{",
+    "\treturn LaunchSettings::FullscreenEnabled().value_or(GetWxGUIConfig().fullscreen);"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.h",
+   "in": "",
+   "find": [
+    "#include <wx/wx.h>",
+    "#include <wx/dataview.h>",
+    "#include <wx/infobar.h>",
+    "",
+    "#include \"wxgui/PadViewFrame.h\"",
+    "#include \"wxgui/MemorySearcherTool.h\""
+   ],
+   "replace": [
+    "#include <wx/wx.h>",
+    "#include <wx/dataview.h>",
+    "#include <wx/infobar.h>",
+    "#include <wx/process.h>",
+    "",
+    "#include \"wxgui/PadViewFrame.h\"",
+    "#include \"wxgui/MemorySearcherTool.h\""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.h",
+   "in": "public:",
+   "find": [
+    "\tvoid OnGesturePan(wxPanGestureEvent& event);",
+    "",
+    "\tvoid OnGameLoaded();",
+    "",
+    "\tvoid AsyncSetTitle(std::string_view windowTitle);",
+    ""
+   ],
+   "replace": [
+    "\tvoid OnGesturePan(wxPanGestureEvent& event);",
+    "",
+    "\tvoid OnGameLoaded();",
+    "\tvoid RequestHomeMenu();",
+    "",
+    "\tvoid AsyncSetTitle(std::string_view windowTitle);",
+    ""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.h",
+   "in": "private:",
+   "find": [
+    "",
+    "\tvoid OnRequestRecreateCanvas(wxCommandEvent& event);",
+    "\tvoid OnRequestGameExit(wxCommandEvent& event);",
+    "",
+    "\twxRect GetDesktopRect();",
+    ""
+   ],
+   "replace": [
+    "",
+    "\tvoid OnRequestRecreateCanvas(wxCommandEvent& event);",
+    "\tvoid OnRequestGameExit(wxCommandEvent& event);",
+    "\tvoid OnRequestHomeMenu(wxCommandEvent& event);",
+    "\tvoid OnHomeMenuProcessEnded(wxProcessEvent& event);",
+    "",
+    "\twxRect GetDesktopRect();",
+    ""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/MainWindow.h",
+   "in": "private:",
+   "find": [
+    "",
+    "\tbool m_menu_visible = false;",
+    "\tbool m_game_launched = false;",
+    "",
+    "\t#ifdef ENABLE_DISCORD_RPC",
+    "\tstd::unique_ptr<DiscordPresence> m_discord;"
+   ],
+   "replace": [
+    "",
+    "\tbool m_menu_visible = false;",
+    "\tbool m_game_launched = false;",
+    "\twxProcess* m_home_menu_process = nullptr;",
+    "\tlong m_home_menu_pid = 0;",
+    "\tbool m_home_menu_pad_was_shown = false;",
+    "",
+    "\t#ifdef ENABLE_DISCORD_RPC",
+    "\tstd::unique_ptr<DiscordPresence> m_discord;"
    ]
   },
   {
@@ -1790,6 +2789,33 @@
     "",
     "\t//////////////////////////////////////////////////////////////////",
     ""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/wxWindowSystem.cpp",
+   "in": "void WindowSystem::NotifyGameExited()",
+   "find": [
+    "\t\tg_mainFrame->RestoreSettingsAfterGameExited();",
+    "}",
+    "",
+    "void WindowSystem::RefreshGameList()",
+    "{",
+    "\tstd::shared_lock lock(g_mutex);"
+   ],
+   "replace": [
+    "\t\tg_mainFrame->RestoreSettingsAfterGameExited();",
+    "}",
+    "",
+    "void WindowSystem::RequestHomeMenu()",
+    "{",
+    "\tstd::shared_lock lock(g_mutex);",
+    "\tif (g_mainFrame)",
+    "\t\tg_mainFrame->RequestHomeMenu();",
+    "}",
+    "",
+    "void WindowSystem::RefreshGameList()",
+    "{",
+    "\tstd::shared_lock lock(g_mutex);"
    ]
   },
   {
