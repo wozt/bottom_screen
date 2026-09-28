@@ -1420,7 +1420,7 @@ index 6cb1599a..9c8dfbcf 100644
  		if (tempDRCAudioBlockCounter == AX_FRAMES_PER_GROUP)
  		{
 diff --git a/src/Cafe/OS/libs/sysapp/sysapp.cpp b/src/Cafe/OS/libs/sysapp/sysapp.cpp
-index cfeeb5b4..7759da57 100644
+index cfeeb5b4..f50b2760 100644
 --- a/src/Cafe/OS/libs/sysapp/sysapp.cpp
 +++ b/src/Cafe/OS/libs/sysapp/sysapp.cpp
 @@ -3,6 +3,8 @@
@@ -1432,7 +1432,7 @@ index cfeeb5b4..7759da57 100644
  
  typedef struct  
  {
-@@ -455,9 +457,30 @@ void sysappExport__SYSReturnToCallerWithStandardResult(PPCInterpreter_t* hCPU)
+@@ -455,9 +457,45 @@ void sysappExport__SYSReturnToCallerWithStandardResult(PPCInterpreter_t* hCPU)
  {
  	ppcDefineParamU32BEPtr(resultPtr, 0);
  	cemuLog_log(LogType::Force, "_SYSReturnToCallerWithStandardResult(0x{:08x}) result: 0x{:08x}", hCPU->gpr[3], (uint32)*resultPtr);
@@ -1460,10 +1460,25 @@ index cfeeb5b4..7759da57 100644
 +	osLib_returnFromFunction(hCPU, 0);
 +}
 +
++void sysappExport__SYSLaunchMenuFromHBM(PPCInterpreter_t* hCPU)
++{
++	if (LaunchSettings::IsSystemOverlayChild())
++	{
++		std::thread shutdown_thread([]() {
++			CafeSystem::ShutdownTitle();
++			CafeSystem::NotifyPPCProcessExit(LaunchSettings::SYSTEM_OVERLAY_EXIT_LAUNCH_WII_U_MENU);
++		});
++		shutdown_thread.detach();
++		coreinit::OSSuspendThread(coreinit::OSGetCurrentThread());
++		return;
++	}
++	osLib_returnFromFunction(hCPU, 0);
++}
++
  void sysappExport__SYSGetEShopArgs(PPCInterpreter_t* hCPU)
  {
  	ppcDefineParamStructPtr(args, eshopArguments_t, 0);
-@@ -566,6 +589,30 @@ struct SysLauncherArgs28
+@@ -566,6 +604,30 @@ struct SysLauncherArgs28
  
  static_assert(sizeof(SysLauncherArgs28) == 0x28);
  
@@ -1494,7 +1509,7 @@ index cfeeb5b4..7759da57 100644
  uint32 _SYSGetLauncherArgs(void* argsOut)
  {
  	uint32 sdkVersion = coreinit::__OSGetProcessSDKVersion();
-@@ -580,6 +627,11 @@ uint32 _SYSGetLauncherArgs(void* argsOut)
+@@ -580,6 +642,11 @@ uint32 _SYSGetLauncherArgs(void* argsOut)
  		// new format
  		SysLauncherArgs28* launcherArgs28 = (SysLauncherArgs28*)argsOut;
  		memset(launcherArgs28, 0, sizeof(SysLauncherArgs28));
@@ -1506,16 +1521,19 @@ index cfeeb5b4..7759da57 100644
  	}
  	return 0; // return argument is todo
  }
-@@ -697,6 +749,8 @@ namespace sysapp
+@@ -697,6 +764,11 @@ namespace sysapp
  			osLib_addFunction("sysapp", "SYSGetStandardResult", sysappExport_SYSGetStandardResult);
  
  			cafeExportRegisterFunc(_SYSGetLauncherArgs, "sysapp", "_SYSGetLauncherArgs", LogType::Placeholder);
 +			cafeExportRegisterFunc(_SYSGetHBMArgs, "sysapp", "_SYSGetHBMArgs", LogType::Placeholder);
 +			osLib_addFunction("sysapp", "_SYSSwitchToOverlayFromHBM", sysappExport__SYSSwitchToOverlayFromHBM);
++			osLib_addFunction("sysapp", "_SYSLaunchMenuFromHBM", sysappExport__SYSLaunchMenuFromHBM);
++			osLib_addFunction("sysapp", "_SYSLaunchMenuWithCheckingAccountFromHBM", sysappExport__SYSLaunchMenuFromHBM);
++			osLib_addFunction("sysapp", "_SYSLaunchMenuWithPackFromHBM", sysappExport__SYSLaunchMenuFromHBM);
  			cafeExportRegisterFunc(_SYSGetAccountArgs, "sysapp", "_SYSGetAccountArgs", LogType::Placeholder);
  
  			sysapp::load();
-@@ -708,4 +762,4 @@ namespace sysapp
+@@ -708,4 +780,4 @@ namespace sysapp
  	{
  		return &s_COSsysappModule;
  	}
@@ -1618,19 +1636,24 @@ index 48c396f2..195b6127 100644
  	std::mutex game_cache_entries_mutex;
  	std::vector<GameEntry> game_cache_entries;
 diff --git a/src/config/LaunchSettings.cpp b/src/config/LaunchSettings.cpp
-index e12fdc62..6322371f 100644
+index e12fdc62..bd81ccc5 100644
 --- a/src/config/LaunchSettings.cpp
 +++ b/src/config/LaunchSettings.cpp
-@@ -84,6 +84,8 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
+@@ -84,6 +84,13 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
  	hidden.add_options()
  		("nsight", po::value<bool>()->implicit_value(true), "NSight debugging options")
  		("legacy", po::value<bool>()->implicit_value(true), "Intel legacy graphic mode")
 +		("system-overlay-child", po::value<bool>()->implicit_value(true), "Run a Wii U system overlay for another Cemu instance")
 +		("system-overlay-caller-title-id", po::value<std::string>(), "Title ID of the application below a system overlay")
++		("system-overlay-parent-window", po::value<std::string>(), "Native window used to embed a system overlay")
++		("system-overlay-x", po::value<int>(), "System overlay fallback X coordinate")
++		("system-overlay-y", po::value<int>(), "System overlay fallback Y coordinate")
++		("system-overlay-width", po::value<int>(), "System overlay width")
++		("system-overlay-height", po::value<int>(), "System overlay height")
  		("ppcrec-lower-addr", po::value<std::string>(), "For debugging: Lower address allowed for PPC recompilation")
  		("ppcrec-upper-addr", po::value<std::string>(), "For debugging: Upper address allowed for PPC recompilation");
  
-@@ -197,6 +199,22 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
+@@ -197,6 +204,43 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
  		if (vm.count("open-debugger"))
  			s_open_debugger = vm["open-debugger"].as<bool>();
  
@@ -1649,29 +1672,63 @@ index e12fdc62..6322371f 100644
 +				return 1;
 +			}
 +		}
++		if (vm.count("system-overlay-parent-window"))
++		{
++			const auto window = vm["system-overlay-parent-window"].as<std::string>();
++			try
++			{
++				s_system_overlay_parent_window = static_cast<uintptr_t>(std::stoull(window, nullptr, 16));
++			}
++			catch (const std::exception&)
++			{
++				std::cerr << "Expected system overlay parent window as an unsigned hexadecimal value\n";
++				return 1;
++			}
++		}
++		if (vm.count("system-overlay-x"))
++			s_system_overlay_x = vm["system-overlay-x"].as<int>();
++		if (vm.count("system-overlay-y"))
++			s_system_overlay_y = vm["system-overlay-y"].as<int>();
++		if (vm.count("system-overlay-width"))
++			s_system_overlay_width = vm["system-overlay-width"].as<int>();
++		if (vm.count("system-overlay-height"))
++			s_system_overlay_height = vm["system-overlay-height"].as<int>();
 +
  		if (vm.count("forward-console-logging"))
  		{
  			requireConsole();
 diff --git a/src/config/LaunchSettings.h b/src/config/LaunchSettings.h
-index d23c8454..deeabf8f 100644
+index d23c8454..9b24b7f1 100644
 --- a/src/config/LaunchSettings.h
 +++ b/src/config/LaunchSettings.h
-@@ -38,6 +38,8 @@ public:
+@@ -38,6 +38,16 @@ public:
  	static bool ForceMultiCoreInterpreter() { return s_force_multicore_interpreter; }
  
  	static std::optional<uint32> GetPersistentId() { return s_persistent_id; }
 +	static bool IsSystemOverlayChild() { return s_system_overlay_child; }
 +	static std::optional<uint64> GetSystemOverlayCallerTitleId() { return s_system_overlay_caller_title_id; }
++	static std::optional<uintptr_t> GetSystemOverlayParentWindow() { return s_system_overlay_parent_window; }
++	static std::optional<int> GetSystemOverlayX() { return s_system_overlay_x; }
++	static std::optional<int> GetSystemOverlayY() { return s_system_overlay_y; }
++	static std::optional<int> GetSystemOverlayWidth() { return s_system_overlay_width; }
++	static std::optional<int> GetSystemOverlayHeight() { return s_system_overlay_height; }
++
++	// Kept in the process exit-code range so it survives wxExecute on POSIX.
++	static constexpr int SYSTEM_OVERLAY_EXIT_LAUNCH_WII_U_MENU = 0x55;
  
  	static uint32 GetPPCRecLowerAddr() { return ppcRec_limitLowerAddr; };
  	static uint32 GetPPCRecUpperAddr() { return ppcRec_limitUpperAddr; };
-@@ -64,6 +66,8 @@ private:
+@@ -64,6 +74,13 @@ private:
  	inline static bool s_force_multicore_interpreter = false;
  	
  	inline static std::optional<uint32> s_persistent_id{};
 +	inline static bool s_system_overlay_child = false;
 +	inline static std::optional<uint64> s_system_overlay_caller_title_id{};
++	inline static std::optional<uintptr_t> s_system_overlay_parent_window{};
++	inline static std::optional<int> s_system_overlay_x{};
++	inline static std::optional<int> s_system_overlay_y{};
++	inline static std::optional<int> s_system_overlay_width{};
++	inline static std::optional<int> s_system_overlay_height{};
  
  	// for recompiler debugging
  	inline static uint32 ppcRec_limitLowerAddr{};
@@ -1687,6 +1744,18 @@ index b2346c17..95d37ecf 100644
  
  	void RefreshGameList();
  
+diff --git a/src/gui/wxgui/CMakeLists.txt b/src/gui/wxgui/CMakeLists.txt
+index 079a78cd..27bcf54f 100644
+--- a/src/gui/wxgui/CMakeLists.txt
++++ b/src/gui/wxgui/CMakeLists.txt
+@@ -166,6 +166,7 @@ target_link_libraries(CemuWxGui PRIVATE
+ if(ENABLE_WXWIDGETS AND UNIX AND NOT APPLE)
+ 	# PUBLIC because gdk/gdkkeysyms.h is included in guiWrapper.h
+ 	target_link_libraries(CemuWxGui PUBLIC GTK3::gtk)
++	target_link_libraries(CemuWxGui PRIVATE X11::X11 X11::Xext)
+   if (ENABLE_WAYLAND)
+     target_link_libraries(CemuWxGui PRIVATE Wayland::Client CemuWaylandProtocols)
+   endif()
 diff --git a/src/gui/wxgui/GeneralSettings2.cpp b/src/gui/wxgui/GeneralSettings2.cpp
 index f1435fba..9292188c 100644
 --- a/src/gui/wxgui/GeneralSettings2.cpp
@@ -1742,13 +1811,43 @@ index 2f7e3b68..fbff8116 100644
  	wxChoice* m_msw_theme;
  #endif
 diff --git a/src/gui/wxgui/MainWindow.cpp b/src/gui/wxgui/MainWindow.cpp
-index 9eec7dd3..c7e9b275 100644
+index 9eec7dd3..33ef4488 100644
 --- a/src/gui/wxgui/MainWindow.cpp
 +++ b/src/gui/wxgui/MainWindow.cpp
-@@ -60,12 +60,19 @@
+@@ -41,6 +41,28 @@
+ #if BOOST_OS_LINUX && defined(ENABLE_FERAL_GAMEMODE)
+ #include <gamemode_client.h>
+ #endif
++#if BOOST_OS_LINUX || BOOST_OS_BSD
++#include <X11/Xlib.h>
++// wxWidgets removes these legacy Xlib macros from its public namespace,
++// while the XShape header still uses them in its declarations.
++#ifndef Bool
++#define CEMU_RESTORE_X11_BOOL
++#define Bool int
++#endif
++#ifndef Status
++#define CEMU_RESTORE_X11_STATUS
++#define Status int
++#endif
++#include <X11/extensions/shape.h>
++#ifdef CEMU_RESTORE_X11_BOOL
++#undef Bool
++#undef CEMU_RESTORE_X11_BOOL
++#endif
++#ifdef CEMU_RESTORE_X11_STATUS
++#undef Status
++#undef CEMU_RESTORE_X11_STATUS
++#endif
++#endif
+ #if ( BOOST_OS_LINUX || BOOST_OS_BSD ) && HAS_WAYLAND
+ #include "helpers/wxWayland.h"
+ #endif
+@@ -60,12 +82,20 @@
  //Cafe libs
  #include "Cafe/OS/libs/nfc/nfc.h"
  #include "Cafe/OS/libs/swkbd/swkbd.h"
++#include "Cafe/OS/libs/sysapp/sysapp.h"
 +#include "Cafe/HW/Latte/Core/BottomScreenBridge.h"
  
  #include "Cafe/HW/Latte/Renderer/Renderer.h" // For renderer API checks
@@ -1765,7 +1864,7 @@ index 9eec7dd3..c7e9b275 100644
  enum
  {
  	// ui elements
-@@ -156,6 +163,7 @@ enum
+@@ -156,6 +186,7 @@ enum
  	MAINFRAME_MENU_ID_HELP_UPDATE,
  	// custom
  	MAINFRAME_ID_TIMER1 = 21800,
@@ -1773,7 +1872,7 @@ index 9eec7dd3..c7e9b275 100644
  };
  
  wxDEFINE_EVENT(wxEVT_SET_WINDOW_TITLE, wxCommandEvent);
-@@ -163,6 +171,7 @@ wxDEFINE_EVENT(wxEVT_REQUEST_GAMELIST_REFRESH, wxCommandEvent);
+@@ -163,6 +194,7 @@ wxDEFINE_EVENT(wxEVT_REQUEST_GAMELIST_REFRESH, wxCommandEvent);
  wxDEFINE_EVENT(wxEVT_LAUNCH_GAME, wxLaunchGameEvent);
  wxDEFINE_EVENT(wxEVT_REQUEST_RECREATE_CANVAS, wxCommandEvent);
  wxDEFINE_EVENT(wxEVT_REQUEST_GAME_EXIT, wxCommandEvent);
@@ -1781,7 +1880,7 @@ index 9eec7dd3..c7e9b275 100644
  
  wxBEGIN_EVENT_TABLE(MainWindow, wxFrame)
  EVT_TIMER(MAINFRAME_ID_TIMER1, MainWindow::OnTimer)
-@@ -245,6 +254,8 @@ EVT_COMMAND(wxID_ANY, wxEVT_SET_WINDOW_TITLE, MainWindow::OnSetWindowTitle)
+@@ -245,6 +277,8 @@ EVT_COMMAND(wxID_ANY, wxEVT_SET_WINDOW_TITLE, MainWindow::OnSetWindowTitle)
  
  EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_RECREATE_CANVAS, MainWindow::OnRequestRecreateCanvas)
  EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_GAME_EXIT, MainWindow::OnRequestGameExit)
@@ -1790,7 +1889,24 @@ index 9eec7dd3..c7e9b275 100644
  
  wxEND_EVENT_TABLE()
  
-@@ -437,6 +448,15 @@ wxString MainWindow::GetInitialWindowTitle()
+@@ -294,8 +328,15 @@ private:
+ 	MainWindow* m_window;
+ };
+ 
++static long GetMainWindowStyle()
++{
++	if (LaunchSettings::IsSystemOverlayChild())
++		return wxBORDER_NONE | wxCLIP_CHILDREN | wxFRAME_NO_TASKBAR;
++	return wxMINIMIZE_BOX | wxMAXIMIZE_BOX | wxSYSTEM_MENU | wxCAPTION | wxCLOSE_BOX | wxCLIP_CHILDREN | wxRESIZE_BORDER;
++}
++
+ MainWindow::MainWindow()
+-	: wxFrame(nullptr, wxID_ANY, GetInitialWindowTitle(), wxDefaultPosition, wxSize(1280, 720), wxMINIMIZE_BOX | wxMAXIMIZE_BOX | wxSYSTEM_MENU | wxCAPTION | wxCLOSE_BOX | wxCLIP_CHILDREN | wxRESIZE_BORDER)
++	: wxFrame(nullptr, wxID_ANY, GetInitialWindowTitle(), wxDefaultPosition, wxSize(1280, 720), GetMainWindowStyle())
+ {
+ #ifdef __WXMAC__
+ 	// Not necessary to set wxApp::s_macExitMenuItemId as automatically handled
+@@ -437,6 +478,15 @@ wxString MainWindow::GetInitialWindowTitle()
  
  void MainWindow::OnClose(wxCloseEvent& event)
  {
@@ -1806,7 +1922,41 @@ index 9eec7dd3..c7e9b275 100644
  	if (m_debugger_window)
  	{
  		m_debugger_window->CleanupForDestroy();
-@@ -2506,6 +2526,101 @@ void MainWindow::OnRequestGameExit(wxCommandEvent& event)
+@@ -618,6 +668,8 @@ bool MainWindow::FileLoad(const fs::path launchPath, wxLaunchGameEvent::INITIATE
+ 	CreateCanvas();
+ 	CafeSystem::LaunchForegroundTitle();
+ 	RecreateMenu();
++	if (LaunchSettings::IsSystemOverlayChild())
++		ConfigureSystemOverlayWindow();
+ 	UpdateChildWindowTitleRunningState();
+ 
+ 	return true;
+@@ -1339,6 +1391,9 @@ void MainWindow::LoadSettings()
+ 
+ void MainWindow::SaveSettings()
+ {
++	if (LaunchSettings::IsSystemOverlayChild())
++		return;
++
+ 	auto lock = GetConfigHandle().Lock();
+ 	auto& config = GetWxGUIConfig();
+ 
+@@ -2417,8 +2472,12 @@ void MainWindow::RecreateMenu()
+ 		UpdateNFCMenu();
+ 	}
+ 
+-	// hide new menu in fullscreen
+-	if (IsFullScreen())
++	// A system overlay contributes only its render surface to the caller's
++	// window. Account refreshes can rebuild this menu after launch, so keep
++	// it detached every time rather than only during initial presentation.
++	if (LaunchSettings::IsSystemOverlayChild())
++		SetMenuVisible(false);
++	else if (IsFullScreen())
+ 		SetMenuVisible(false);
+ }
+ 
+@@ -2506,6 +2565,242 @@ void MainWindow::OnRequestGameExit(wxCommandEvent& event)
  	}
  }
  
@@ -1861,6 +2011,17 @@ index 9eec7dd3..c7e9b275 100644
 +	command += " --mlc " + quote(wxHelper::FromPath(ActiveSettings::GetMlcPath()));
 +	command += wxString::FromUTF8(fmt::format(" --account {:08x}", ActiveSettings::GetPersistentId()));
 +	command += wxString::FromUTF8(fmt::format(" --system-overlay-child=true --system-overlay-caller-title-id {:016x}", caller_title_id));
++	const wxRect overlay_rect = m_render_canvas->GetScreenRect();
++	command += wxString::FromUTF8(fmt::format(" --system-overlay-x {} --system-overlay-y {} --system-overlay-width {} --system-overlay-height {}",
++		overlay_rect.x, overlay_rect.y, overlay_rect.width, overlay_rect.height));
++	const auto render_window = initHandleContextFromWxWidgetsWindow(m_render_canvas);
++	if ((render_window.backend == WindowSystem::WindowHandleInfo::Backend::X11 ||
++		render_window.backend == WindowSystem::WindowHandleInfo::Backend::Windows) &&
++		render_window.surface)
++	{
++		command += wxString::FromUTF8(fmt::format(" --system-overlay-parent-window {:x}",
++			reinterpret_cast<uintptr_t>(render_window.surface)));
++	}
 +	if (FullscreenEnabled())
 +		command += " --fullscreen=true";
 +
@@ -1883,7 +2044,6 @@ index 9eec7dd3..c7e9b275 100644
 +	m_home_menu_pad_was_shown = m_padView && m_padView->IsShown();
 +	if (m_padView)
 +		m_padView->Hide();
-+	Hide();
 +}
 +
 +void MainWindow::OnHomeMenuProcessEnded(wxProcessEvent& event)
@@ -1896,20 +2056,151 @@ index 9eec7dd3..c7e9b275 100644
 +	m_home_menu_pid = 0;
 +
 +	BottomScreen::SetSuspended(false);
-+	coreinit::StartForegroundTransition();
++	if (event.GetExitCode() == LaunchSettings::SYSTEM_OVERLAY_EXIT_LAUNCH_WII_U_MENU)
++	{
++		m_home_menu_pad_was_shown = false;
++		if (!LaunchWiiUMenu())
++			coreinit::StartForegroundTransition();
++		return;
++	}
 +
-+	Show();
++	coreinit::StartForegroundTransition();
 +	if (m_home_menu_pad_was_shown && m_padView)
 +		m_padView->Show();
 +	m_home_menu_pad_was_shown = false;
 +	Raise();
 +}
 +
++void MainWindow::ConfigureSystemOverlayWindow()
++{
++	const int width = LaunchSettings::GetSystemOverlayWidth().value_or(1280);
++	const int height = LaunchSettings::GetSystemOverlayHeight().value_or(720);
++	const int x = LaunchSettings::GetSystemOverlayX().value_or(0);
++	const int y = LaunchSettings::GetSystemOverlayY().value_or(0);
++	SetMenuVisible(false);
++	SetPosition({ x, y });
++	SetClientSize(width, height);
++	Layout();
++	if (m_padView)
++	{
++		m_padView->Restore();
++		m_padView->SetPosition({ x, y });
++		m_padView->SetSize(width, height);
++	}
++
++	if (const auto parent_window = LaunchSettings::GetSystemOverlayParentWindow())
++	{
++#if BOOST_OS_WINDOWS
++		HWND child = reinterpret_cast<HWND>(m_render_canvas->GetHWND());
++		HWND parent = reinterpret_cast<HWND>(*parent_window);
++		LONG_PTR style = GetWindowLongPtr(child, GWL_STYLE);
++		style &= ~WS_POPUP;
++		style |= WS_CHILD;
++		SetWindowLongPtr(child, GWL_STYLE, style);
++		SetParent(child, parent);
++		SetWindowPos(child, HWND_TOP, 0, 0, width, height, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
++		SetFocus(child);
++		auto conceal_top_level = [x, y](HWND window)
++		{
++			RECT rect{};
++			GetWindowRect(window, &rect);
++			const int hidden_x = x - std::max(rect.right - rect.left, 1L) - 4096;
++			SetWindowPos(window, HWND_BOTTOM, hidden_x, y, 0, 0,
++				SWP_NOSIZE | SWP_NOACTIVATE);
++		};
++		conceal_top_level(reinterpret_cast<HWND>(GetHWND()));
++		if (m_padView)
++			conceal_top_level(reinterpret_cast<HWND>(m_padView->GetHWND()));
++		return;
++#elif BOOST_OS_LINUX || BOOST_OS_BSD
++		if (g_window_info.window_main.backend == WindowSystem::WindowHandleInfo::Backend::X11)
++		{
++			Display* display = static_cast<Display*>(g_window_info.window_main.display);
++			const auto render_window = initHandleContextFromWxWidgetsWindow(m_render_canvas);
++			const ::Window child = static_cast<::Window>(reinterpret_cast<uintptr_t>(render_window.surface));
++			const ::Window parent = static_cast<::Window>(*parent_window);
++			XReparentWindow(display, child, parent, 0, 0);
++			XMoveResizeWindow(display, child, 0, 0, width, height);
++			XMapRaised(display, child);
++			XSetInputFocus(display, child, RevertToParent, CurrentTime);
++			// Window managers may wrap GTK top-levels in their own native frame.
++			// Lower that frame, not merely the client inside it. The reparented
++			// TV render surface is no longer part of this tree. The pad top-level
++			// remains mapped so OpenGL keeps producing the DRC image, but it too
++			// stays behind the caller.
++			auto conceal_top_level = [display, x, y](void* surface)
++			{
++				if (!surface)
++					return;
++				::Window top_level = static_cast<::Window>(reinterpret_cast<uintptr_t>(surface));
++				while (true)
++				{
++				::Window root = 0;
++				::Window native_parent = 0;
++				::Window* children = nullptr;
++				unsigned int child_count = 0;
++				if (!XQueryTree(display, top_level, &root, &native_parent, &children, &child_count))
++					break;
++				if (children)
++					XFree(children);
++				if (!native_parent || native_parent == root)
++					break;
++				top_level = native_parent;
++				}
++				// Keep the DRC top-level mapped, and do not resize it: OpenGL
++				// needs that native canvas intact to produce the second-screen
++				// image. Move the WM frame away as a fallback, then give it an
++				// empty bounding shape so WMs which keep an off-screen grab strip
++				// visible cannot leak any part around the embedded TV.
++				XWindowAttributes attributes{};
++				const int hidden_x = XGetWindowAttributes(display, top_level, &attributes)
++					? x - std::max(attributes.width, 1) - 4096
++					: x - 8192;
++				XMoveWindow(display, top_level, hidden_x, y);
++				int shape_event = 0;
++				int shape_error = 0;
++				if (XShapeQueryExtension(display, &shape_event, &shape_error))
++					XShapeCombineRectangles(display, top_level, ShapeBounding,
++						0, 0, nullptr, 0, ShapeSet, Unsorted);
++				XLowerWindow(display, top_level);
++			};
++			conceal_top_level(g_window_info.window_main.surface);
++			if (m_padView)
++				conceal_top_level(g_window_info.window_pad.surface);
++			XFlush(display);
++			return;
++		}
++#endif
++	}
++
++	// Wayland and Cocoa don't allow cross-process native reparenting. A
++	// decoration-free surface in the exact render rectangle is the closest
++	// equivalent and leaves the suspended frame directly underneath.
++	SetPosition({ x, y });
++	SetClientSize(width, height);
++	Raise();
++}
++
++bool MainWindow::LaunchWiiUMenu()
++{
++	TitleInfo menu_info;
++	const uint64 menu_title_id = _SYSGetSystemApplicationTitleId(0);
++	if (!CafeTitleList::GetFirstByTitleId(menu_title_id, menu_info))
++	{
++		wxMessageBox(_("The Wii U Menu title is not installed in the configured MLC."),
++			_("Wii U Menu"), wxOK | wxCENTRE | wxICON_ERROR, this);
++		return false;
++	}
++
++	EndEmulation();
++	return FileLoad(menu_info.GetPath(), wxLaunchGameEvent::INITIATED_BY::MENU);
++}
++
  bool MainWindow::FullscreenEnabled() const
  {
  	return LaunchSettings::FullscreenEnabled().value_or(GetWxGUIConfig().fullscreen);
 diff --git a/src/gui/wxgui/MainWindow.h b/src/gui/wxgui/MainWindow.h
-index deb656ce..7a0b9553 100644
+index deb656ce..a100177f 100644
 --- a/src/gui/wxgui/MainWindow.h
 +++ b/src/gui/wxgui/MainWindow.h
 @@ -3,6 +3,7 @@
@@ -1928,16 +2219,18 @@ index deb656ce..7a0b9553 100644
  
  	void AsyncSetTitle(std::string_view windowTitle);
  
-@@ -162,6 +164,8 @@ private:
+@@ -162,6 +164,10 @@ private:
  
  	void OnRequestRecreateCanvas(wxCommandEvent& event);
  	void OnRequestGameExit(wxCommandEvent& event);
 +	void OnRequestHomeMenu(wxCommandEvent& event);
 +	void OnHomeMenuProcessEnded(wxProcessEvent& event);
++	void ConfigureSystemOverlayWindow();
++	bool LaunchWiiUMenu();
  
  	wxRect GetDesktopRect();
  
-@@ -179,6 +183,9 @@ private:
+@@ -179,6 +185,9 @@ private:
  
  	bool m_menu_visible = false;
  	bool m_game_launched = false;
@@ -1947,6 +2240,30 @@ index deb656ce..7a0b9553 100644
  
  	#ifdef ENABLE_DISCORD_RPC
  	std::unique_ptr<DiscordPresence> m_discord;
+diff --git a/src/gui/wxgui/PadViewFrame.cpp b/src/gui/wxgui/PadViewFrame.cpp
+index ca213849..5399ba59 100644
+--- a/src/gui/wxgui/PadViewFrame.cpp
++++ b/src/gui/wxgui/PadViewFrame.cpp
+@@ -16,6 +16,7 @@
+ #include "wxgui/canvas/MetalCanvas.h"
+ #endif
+ #include "config/CemuConfig.h"
++#include "config/LaunchSettings.h"
+ #include "wxgui/MainWindow.h"
+ #include "wxgui/helpers/wxHelpers.h"
+ #include "input/InputManager.h"
+@@ -31,7 +32,10 @@ extern WindowSystem::WindowInfo g_window_info;
+ #define PAD_MIN_HEIGHT 180
+ 
+ PadViewFrame::PadViewFrame(wxFrame* parent)
+-	: wxFrame(nullptr, wxID_ANY, _("GamePad View"), wxDefaultPosition, wxDefaultSize, wxMINIMIZE_BOX | wxMAXIMIZE_BOX | wxSYSTEM_MENU | wxCAPTION | wxCLIP_CHILDREN | wxRESIZE_BORDER | wxCLOSE_BOX | wxWANTS_CHARS)
++	: wxFrame(nullptr, wxID_ANY, _("GamePad View"), wxDefaultPosition, wxDefaultSize,
++		LaunchSettings::IsSystemOverlayChild()
++			? (wxBORDER_NONE | wxCLIP_CHILDREN | wxFRAME_NO_TASKBAR | wxWANTS_CHARS)
++			: (wxMINIMIZE_BOX | wxMAXIMIZE_BOX | wxSYSTEM_MENU | wxCAPTION | wxCLIP_CHILDREN | wxRESIZE_BORDER | wxCLOSE_BOX | wxWANTS_CHARS))
+ {
+ 	g_window_info.window_pad = initHandleContextFromWxWidgetsWindow(this);
+ 
 diff --git a/src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp b/src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp
 index b1b5205c..299364d8 100644
 --- a/src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp
