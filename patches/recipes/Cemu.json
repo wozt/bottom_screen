@@ -103,6 +103,7 @@
     "        case BS_BTN_ZR:     return VPADController::kButtonId_ZR;",
     "        case BS_BTN_START:  return VPADController::kButtonId_Plus;",
     "        case BS_BTN_SELECT: return VPADController::kButtonId_Minus;",
+    "        case BS_BTN_HOME:   return VPADController::kButtonId_Home;",
     "        case BS_BTN_UP:     return VPADController::kButtonId_Up;",
     "        case BS_BTN_DOWN:   return VPADController::kButtonId_Down;",
     "        case BS_BTN_LEFT:   return VPADController::kButtonId_Left;",
@@ -1528,6 +1529,270 @@
    ]
   },
   {
+   "file": "src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp",
+   "in": "",
+   "find": [
+    "#include \"wxgui/helpers/wxHelpers.h\"",
+    "#include \"wxgui/components/wxInputDraw.h\"",
+    "",
+    "constexpr ClassicController::ButtonId g_kFirstColumnItems[] = { ClassicController::kButtonId_A, ClassicController::kButtonId_B, ClassicController::kButtonId_X, ClassicController::kButtonId_Y, ClassicController::kButtonId_L, ClassicController::kButtonId_R, ClassicController::kButtonId_ZL, ClassicController::kButtonId_ZR, ClassicController::kButtonId_Plus, ClassicController::kButtonId_Minus };",
+    "constexpr ClassicController::ButtonId g_kSecondColumnItems[] = { ClassicController::kButtonId_StickL_Up, ClassicController::kButtonId_StickL_Down, ClassicController::kButtonId_StickL_Left, ClassicController::kButtonId_StickL_Right };",
+    "constexpr ClassicController::ButtonId g_kThirdColumnItems[] = { ClassicController::kButtonId_StickR_Up, ClassicController::kButtonId_StickR_Down, ClassicController::kButtonId_StickR_Left, ClassicController::kButtonId_StickR_Right };",
+    "constexpr ClassicController::ButtonId g_kFourthRowItems[] = { ClassicController::kButtonId_Up, ClassicController::kButtonId_Down, ClassicController::kButtonId_Left, ClassicController::kButtonId_Right };"
+   ],
+   "replace": [
+    "#include \"wxgui/helpers/wxHelpers.h\"",
+    "#include \"wxgui/components/wxInputDraw.h\"",
+    "",
+    "constexpr ClassicController::ButtonId g_kFirstColumnItems[] = { ClassicController::kButtonId_A, ClassicController::kButtonId_B, ClassicController::kButtonId_X, ClassicController::kButtonId_Y, ClassicController::kButtonId_L, ClassicController::kButtonId_R, ClassicController::kButtonId_ZL, ClassicController::kButtonId_ZR, ClassicController::kButtonId_Plus, ClassicController::kButtonId_Minus, ClassicController::kButtonId_Home };",
+    "constexpr ClassicController::ButtonId g_kSecondColumnItems[] = { ClassicController::kButtonId_StickL_Up, ClassicController::kButtonId_StickL_Down, ClassicController::kButtonId_StickL_Left, ClassicController::kButtonId_StickL_Right };",
+    "constexpr ClassicController::ButtonId g_kThirdColumnItems[] = { ClassicController::kButtonId_StickR_Up, ClassicController::kButtonId_StickR_Down, ClassicController::kButtonId_StickR_Left, ClassicController::kButtonId_StickR_Right };",
+    "constexpr ClassicController::ButtonId g_kFourthRowItems[] = { ClassicController::kButtonId_Up, ClassicController::kButtonId_Down, ClassicController::kButtonId_Left, ClassicController::kButtonId_Right };"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp",
+   "in": "ClassicControllerInputPanel::ClassicControllerInputPanel(wxWindow* parent)",
+   "find": [
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 2), wxGBSpan(11, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\trow = 0;",
+    "\tcolumn += 3;"
+   ],
+   "replace": [
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 2), wxGBSpan(12, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\trow = 0;",
+    "\tcolumn += 3;"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp",
+   "in": "ClassicControllerInputPanel::ClassicControllerInputPanel(wxWindow* parent)",
+   "find": [
+    "\tm_left_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_left_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(11, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ],
+   "replace": [
+    "\tm_left_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_left_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(12, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp",
+   "in": "ClassicControllerInputPanel::ClassicControllerInputPanel(wxWindow* parent)",
+   "find": [
+    "\tm_right_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_right_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(11, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ],
+   "replace": [
+    "\tm_right_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_right_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(12, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/ProControllerInputPanel.cpp",
+   "in": "",
+   "find": [
+    "#include \"wxgui/helpers/wxHelpers.h\"",
+    "#include \"wxgui/components/wxInputDraw.h\"",
+    "",
+    "const ProController::ButtonId g_kFirstColumnItems[] = { ProController::kButtonId_A, ProController::kButtonId_B, ProController::kButtonId_X, ProController::kButtonId_Y, ProController::kButtonId_L, ProController::kButtonId_R, ProController::kButtonId_ZL, ProController::kButtonId_ZR, ProController::kButtonId_Plus, ProController::kButtonId_Minus };",
+    "const ProController::ButtonId g_kSecondColumnItems[] = { ProController::kButtonId_StickL, ProController::kButtonId_StickL_Up, ProController::kButtonId_StickL_Down, ProController::kButtonId_StickL_Left, ProController::kButtonId_StickL_Right };",
+    "const ProController::ButtonId g_kThirdColumnItems[] = { ProController::kButtonId_StickR, ProController::kButtonId_StickR_Up, ProController::kButtonId_StickR_Down, ProController::kButtonId_StickR_Left, ProController::kButtonId_StickR_Right };",
+    "const ProController::ButtonId g_kFourthRowItems[] = { ProController::kButtonId_Up, ProController::kButtonId_Down, ProController::kButtonId_Left, ProController::kButtonId_Right };"
+   ],
+   "replace": [
+    "#include \"wxgui/helpers/wxHelpers.h\"",
+    "#include \"wxgui/components/wxInputDraw.h\"",
+    "",
+    "const ProController::ButtonId g_kFirstColumnItems[] = { ProController::kButtonId_A, ProController::kButtonId_B, ProController::kButtonId_X, ProController::kButtonId_Y, ProController::kButtonId_L, ProController::kButtonId_R, ProController::kButtonId_ZL, ProController::kButtonId_ZR, ProController::kButtonId_Plus, ProController::kButtonId_Minus, ProController::kButtonId_Home };",
+    "const ProController::ButtonId g_kSecondColumnItems[] = { ProController::kButtonId_StickL, ProController::kButtonId_StickL_Up, ProController::kButtonId_StickL_Down, ProController::kButtonId_StickL_Left, ProController::kButtonId_StickL_Right };",
+    "const ProController::ButtonId g_kThirdColumnItems[] = { ProController::kButtonId_StickR, ProController::kButtonId_StickR_Up, ProController::kButtonId_StickR_Down, ProController::kButtonId_StickR_Left, ProController::kButtonId_StickR_Right };",
+    "const ProController::ButtonId g_kFourthRowItems[] = { ProController::kButtonId_Up, ProController::kButtonId_Down, ProController::kButtonId_Left, ProController::kButtonId_Right };"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/ProControllerInputPanel.cpp",
+   "in": "ProControllerInputPanel::ProControllerInputPanel(wxWindow* parent)",
+   "find": [
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 2), wxGBSpan(11, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\trow = 0;",
+    "\tcolumn += 3;"
+   ],
+   "replace": [
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 2), wxGBSpan(12, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\trow = 0;",
+    "\tcolumn += 3;"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/ProControllerInputPanel.cpp",
+   "in": "ProControllerInputPanel::ProControllerInputPanel(wxWindow* parent)",
+   "find": [
+    "\tm_left_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_left_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(11, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ],
+   "replace": [
+    "\tm_left_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_left_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(12, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/ProControllerInputPanel.cpp",
+   "in": "ProControllerInputPanel::ProControllerInputPanel(wxWindow* parent)",
+   "find": [
+    "\tm_right_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_right_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(11, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ],
+   "replace": [
+    "\tm_right_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_right_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(12, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/VPADInputPanel.cpp",
+   "in": "constexpr VPADController::ButtonId g_kFirstColumnItems[] =",
+   "find": [
+    "{",
+    "\tVPADController::kButtonId_A, VPADController::kButtonId_B, VPADController::kButtonId_X, VPADController::kButtonId_Y,",
+    "\tVPADController::kButtonId_L, VPADController::kButtonId_R, VPADController::kButtonId_ZL, VPADController::kButtonId_ZR,",
+    "\tVPADController::kButtonId_Plus, VPADController::kButtonId_Minus",
+    "};",
+    "",
+    "constexpr VPADController::ButtonId g_kSecondColumnItems[] ="
+   ],
+   "replace": [
+    "{",
+    "\tVPADController::kButtonId_A, VPADController::kButtonId_B, VPADController::kButtonId_X, VPADController::kButtonId_Y,",
+    "\tVPADController::kButtonId_L, VPADController::kButtonId_R, VPADController::kButtonId_ZL, VPADController::kButtonId_ZR,",
+    "\tVPADController::kButtonId_Plus, VPADController::kButtonId_Minus, VPADController::kButtonId_Home",
+    "};",
+    "",
+    "constexpr VPADController::ButtonId g_kSecondColumnItems[] ="
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/VPADInputPanel.cpp",
+   "in": "VPADInputPanel::VPADInputPanel(wxWindow* parent)",
+   "find": [
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 2), wxGBSpan(11, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\trow = 0;",
+    "\tcolumn += 3;"
+   ],
+   "replace": [
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 2), wxGBSpan(12, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\trow = 0;",
+    "\tcolumn += 3;"
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/VPADInputPanel.cpp",
+   "in": "VPADInputPanel::VPADInputPanel(wxWindow* parent)",
+   "find": [
+    "\tm_left_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_left_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(11, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ],
+   "replace": [
+    "\tm_left_draw = new wxInputDraw(this, wxID_ANY, wxDefaultPosition, { 60, 60 });",
+    "\tmain_sizer->Add(m_left_draw, wxGBPosition(row, column + 1), wxGBSpan(2, 1), wxTOP | wxBOTTOM | wxEXPAND | wxALIGN_CENTER, 5);",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(12, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ]
+  },
+  {
+   "file": "src/gui/wxgui/input/panels/VPADInputPanel.cpp",
+   "in": "VPADInputPanel::VPADInputPanel(wxWindow* parent)",
+   "find": [
+    "\tmain_sizer->Add(volume_text, wxGBPosition(row, column + 2), wxDefaultSpan, wxALL, 5);",
+    "\tm_volume->Bind(wxEVT_SLIDER, &VPADInputPanel::OnVolumeChange, this, wxID_ANY, wxID_ANY, new wxControlObject(volume_text));",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(11, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ],
+   "replace": [
+    "\tmain_sizer->Add(volume_text, wxGBPosition(row, column + 2), wxDefaultSpan, wxALL, 5);",
+    "\tm_volume->Bind(wxEVT_SLIDER, &VPADInputPanel::OnVolumeChange, this, wxID_ANY, wxID_ANY, new wxControlObject(volume_text));",
+    "",
+    "\tmain_sizer->Add(new wxStaticLine(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxVERTICAL), wxGBPosition(0, column + 3), wxGBSpan(12, 1), wxALL | wxEXPAND, 5);",
+    "",
+    "\t//////////////////////////////////////////////////////////////////",
+    ""
+   ]
+  },
+  {
    "file": "src/input/CMakeLists.txt",
    "in": "target_link_libraries(CemuInput PRIVATE",
    "find": [
@@ -1605,6 +1870,7 @@
    "file": "src/input/emulated/VPADController.cpp",
    "in": "void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)",
    "find": [
+    "\t}",
     "",
     "\tm_homebutton_down |= is_home_down();",
     "",
@@ -1614,8 +1880,12 @@
     ""
    ],
    "replace": [
+    "\t}",
     "",
     "\tm_homebutton_down |= is_home_down();",
+    "#ifdef BOTTOM_SCREEN_ENABLED",
+    "\tm_homebutton_down |= BottomScreen::IsButtonHeld(kButtonId_Home);",
+    "#endif",
     "",
     "\tauto axis = get_axis();",
     "#ifdef BOTTOM_SCREEN_ENABLED",
