@@ -15,7 +15,6 @@ $(error "Please set DEVKITPRO in your environment. export DEVKITPRO=<path to>/de
 endif
 
 TOPDIR ?= $(CURDIR)
-include $(DEVKITPRO)/wut/share/wut_rules
 
 TARGET		:=	bottomscreen_wiiu
 BUILD		:=	build
@@ -32,7 +31,13 @@ INCLUDES	:=	src ..
 APP_NAME	:=	Bottom Screen
 APP_SHORTNAME	:=	Bottom Screen
 APP_AUTHOR	:=	wozt
-APP_ICON	:=	$(TOPDIR)/../assets/icon-512.png
+APP_ICON	:=	$(TOPDIR)/../assets/icon-128.png
+
+# wut_rules reads APP_NAME/APP_SHORTNAME/APP_AUTHOR/APP_ICON while it is
+# included.  Keep this include after the metadata definitions; including it
+# above them silently built a WUHB with the target filename as its name and no
+# icon, which let launchers keep showing the old Capture2Cloud artwork.
+include $(DEVKITPRO)/wut/share/wut_rules
 
 #---------------------------------------------------------------------------------
 # options for code generation

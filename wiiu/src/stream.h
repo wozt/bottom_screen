@@ -98,6 +98,9 @@ int  stream_watching(int screen);
  * or returns 0 when nothing is being asked.
  */
 uint16_t stream_take_prompt(BsPrompt *out, char *body, size_t bodylen);
+/* Unlike the legacy helper above, returns whether an event existed, so
+ * an id-zero withdrawal is visible to the UI. */
+int stream_take_prompt_event(BsPrompt *out, char *body, size_t bodylen);
 void stream_send_prompt_reply(uint16_t id, int cancelled, int choice,
                               const char *text);
 

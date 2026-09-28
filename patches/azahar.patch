@@ -460,6 +460,33 @@ index dfcb20a27..0bab6cd52 100644
 +    target_compile_definitions(citra_core PRIVATE BOTTOM_SCREEN_ENABLED)
 +    target_include_directories(citra_core PRIVATE "${BOTTOM_SCREEN_DIR}")
 +endif()
+diff --git a/src/core/hle/service/apt/applet_manager.cpp b/src/core/hle/service/apt/applet_manager.cpp
+index eadf42aa2..7448a2e73 100644
+--- a/src/core/hle/service/apt/applet_manager.cpp
++++ b/src/core/hle/service/apt/applet_manager.cpp
+@@ -18,6 +18,9 @@
+ #include "core/hle/service/apt/ns.h"
+ #include "core/hle/service/cfg/cfg.h"
+ #include "core/hle/service/gsp/gsp_gpu.h"
++#ifdef BOTTOM_SCREEN_ENABLED
++#include "video_core/bottom_screen_bridge.h"
++#endif
+ #include "video_core/utils.h"
+ 
+ SERVICE_CONSTRUCT_IMPL(Service::APT::AppletManager)
+@@ -1746,7 +1749,11 @@ void AppletManager::ButtonUpdateEvent(std::uintptr_t user_data, s64 cycles_late)
+     // where the home menu was already loaded by the user (last condition).
+ 
+     if (GetAppletSlot(AppletSlot::HomeMenu)->registered) {
+-        const bool home_state = home_button->GetStatus();
++        bool home_state = home_button->GetStatus();
++#ifdef BOTTOM_SCREEN_ENABLED
++        home_state = home_state ||
++                     BottomScreen::IsButtonHeld(Settings::NativeButton::Home);
++#endif
+         if (home_state && !last_home_button_state) {
+             SendNotification(Notification::HomeButtonSingle);
+         }
 diff --git a/src/core/hle/service/hid/hid.cpp b/src/core/hle/service/hid/hid.cpp
 index 22fbec8cb..d67dffdba 100644
 --- a/src/core/hle/service/hid/hid.cpp
@@ -639,10 +666,10 @@ index 528072c9a..50c4bf7b8 100644
 +endif()
 diff --git a/src/video_core/bottom_screen_bridge.cpp b/src/video_core/bottom_screen_bridge.cpp
 new file mode 100644
-index 000000000..521715893
+index 000000000..d5115f544
 --- /dev/null
 +++ b/src/video_core/bottom_screen_bridge.cpp
-@@ -0,0 +1,461 @@
+@@ -0,0 +1,462 @@
 +#include "video_core/bottom_screen_bridge.h"
 +#include "video_core/renderer_opengl/gl_resource_manager.h"
 +
@@ -696,9 +723,9 @@ index 000000000..521715893
 +
 +    /*
 +     * BsButton -> the 3DS pad bit. The console has no ZL/ZR on an Old
-+     * 3DS and no HOME the emulator exposes here, so those map to
-+     * nothing and are dropped rather than treated as an error -- a
-+     * shared protocol means clients will send them.
++     * 3DS, but those buttons remain valid on a New 3DS. HOME is not a
++     * HID pad bit; Azahar polls its NativeButton separately in the APT
++     * applet manager, where IsButtonHeld() is merged as well.
 +     */
 +    int PadBit(int bsButton) {
 +        using namespace Settings;
@@ -713,6 +740,7 @@ index 000000000..521715893
 +        case BS_BTN_ZR:     return static_cast<int>(NativeButton::ZR);
 +        case BS_BTN_START:  return static_cast<int>(NativeButton::Start);
 +        case BS_BTN_SELECT: return static_cast<int>(NativeButton::Select);
++        case BS_BTN_HOME:   return static_cast<int>(NativeButton::Home);
 +        case BS_BTN_UP:     return static_cast<int>(NativeButton::Up);
 +        case BS_BTN_DOWN:   return static_cast<int>(NativeButton::Down);
 +        case BS_BTN_LEFT:   return static_cast<int>(NativeButton::Left);

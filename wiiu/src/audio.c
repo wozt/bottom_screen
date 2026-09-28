@@ -44,6 +44,8 @@ static uint32_t g_count;
 static int g_started;
 static int g_rate = 48000;
 static int g_ax_owned;
+static int g_volume = 100;
+static int g_muted;
 
 static unsigned long g_packets;
 static unsigned long g_failed;
@@ -329,7 +331,9 @@ static int setup_voice(int channel)
         sizeof(volume));
 
     volume.volume =
-        0x8000;
+        g_muted
+            ? 0
+            : (uint16_t)(0x8000u * (unsigned)g_volume / 100u);
 
     offsets.dataType =
         AX_VOICE_FORMAT_LPCM16;
@@ -387,6 +391,33 @@ static int setup_voice(int channel)
         AX_VOICE_STATE_STOPPED);
 
     return 0;
+}
+
+
+void audio_set_volume(int volume,
+                      int muted)
+{
+    if (volume < 0)
+        volume = 0;
+    if (volume > 100)
+        volume = 100;
+
+    g_volume = volume;
+    g_muted = muted ? 1 : 0;
+
+    AXVoiceVeData ve;
+    memset(&ve, 0, sizeof(ve));
+    ve.volume = g_muted
+        ? 0
+        : (uint16_t)(0x8000u * (unsigned)g_volume / 100u);
+
+    for (int ch = 0; ch < 2; ++ch) {
+        if (!g_voice[ch])
+            continue;
+        AXVoiceBegin(g_voice[ch]);
+        AXSetVoiceVe(g_voice[ch], &ve);
+        AXVoiceEnd(g_voice[ch]);
+    }
 }
 
 

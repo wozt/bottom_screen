@@ -1,5 +1,8 @@
 #include "stream.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -26,6 +29,7 @@
 #include <coreinit/time.h>
 
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <sys/socket.h>
@@ -104,7 +108,6 @@ static uint32_t bs_now_us(void)
 
 #else /* host */
 
-#include <errno.h>
 #include <netdb.h>
 #include <pthread.h>
 #include <time.h>
@@ -187,7 +190,8 @@ typedef struct {
 } VideoSlot;
 
 static int        g_sock = -1;
-static int        g_stop;
+static volatile int g_stop;
+static uint32_t   g_io_deadline_us;
 static volatile int g_connected;
 static int        g_thread_started;
 
@@ -196,6 +200,7 @@ static int        g_thread_started;
  * saying nothing. */
 static volatile int g_screens = 1 << BS_SCREEN_BOTTOM;
 static volatile int g_watching[BS_SCREEN_COUNT];
+static volatile int g_have_screens;
 
 static bs_mtx g_info_lock;
 static StreamInfo g_info;
@@ -211,6 +216,20 @@ static uint32_t g_frames;
  * next AU taken after consuming it is the new geometry. */
 static int g_resize_pending;
 static int g_resize_w, g_resize_h;
+
+/*
+ * A screen switch is a decoder boundary, even when both screens happen to
+ * have the same dimensions.  The server's encoder thread can enqueue the new
+ * screen's keyframe before its receiving thread enqueues STREAM_INFO.  Feeding
+ * that keyframe to H264DEC while it still owns the previous stream's SPS state
+ * crashes real hardware, so video is discarded until STREAM_INFO establishes
+ * the boundary.
+ *
+ * Guarded by g_video_lock.
+ */
+static int g_screen_switch_pending;
+static int g_requested_screen = BS_SCREEN_BOTTOM;
+static int g_current_screen = BS_SCREEN_BOTTOM;
 
 /* Sound, as a ring that drops its oldest when it overruns: if the link
  * cannot keep up, the sound worth hearing is the sound from now. */
@@ -236,15 +255,63 @@ static void note_error(const char *what)
 
 /* ------------------------------------------------------------ sockets */
 
+static int poll_socket_once(short events)
+{
+    if (g_stop)
+        return -1;
+    if (g_io_deadline_us &&
+        (int32_t)(bs_now_us() - g_io_deadline_us) >= 0)
+        return -1;
+
+    struct pollfd pfd = {
+        .fd = g_sock,
+        .events = events,
+        .revents = 0
+    };
+
+    const int ready = poll(&pfd, 1, 5);
+
+    if (g_stop)
+        return -1;
+
+    if (ready > 0) {
+        if (pfd.revents & events)
+            return 1;
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+            return -1;
+    } else if (ready < 0 && errno != EINTR) {
+        return -1;
+    }
+
+    return 0;
+}
+
 static int write_all(const void *buf, size_t len)
 {
     const uint8_t *p = buf;
     while (len > 0) {
+        if (g_stop)
+            return -1;
+
         ssize_t n = send(g_sock, p, len, 0);
+
+        if (n > 0) {
+            p += n;
+            len -= (size_t)n;
+            continue;
+        }
+
+        if (n < 0 && errno == EINTR)
+            continue;
+
+        if (n < 0 &&
+            (errno == EAGAIN || errno == EWOULDBLOCK) &&
+            poll_socket_once(POLLOUT) >= 0) {
+            continue;
+        }
+
         if (n <= 0)
             return -1;
-        p += n;
-        len -= (size_t)n;
     }
     return 0;
 }
@@ -253,11 +320,28 @@ static int read_exact(void *buf, size_t len)
 {
     uint8_t *p = buf;
     while (len > 0) {
+        if (g_stop)
+            return -1;
+
         ssize_t n = recv(g_sock, p, len, 0);
+
+        if (n > 0) {
+            p += n;
+            len -= (size_t)n;
+            continue;
+        }
+
+        if (n < 0 && errno == EINTR)
+            continue;
+
+        if (n < 0 &&
+            (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (poll_socket_once(POLLIN) >= 0)
+                continue;
+        }
+
         if (n <= 0)
             return -1;
-        p += n;
-        len -= (size_t)n;
     }
     return 0;
 }
@@ -315,12 +399,6 @@ static int connect_to(const char *host, uint16_t port, char *err, size_t errlen)
     addr.sin_port = htons(port);
 
     if (inet_pton(AF_INET, host, &addr.sin_addr) != 1) {
-#ifdef __WIIU__
-        /* wut's resolver is not something to lean on from here; the
-         * console's settings screen takes a dotted address anyway. */
-        snprintf(err, errlen, "'%s' is not an IPv4 address", host);
-        return -1;
-#else
         struct addrinfo hints, *res = NULL;
         memset(&hints, 0, sizeof(hints));
         hints.ai_family = AF_INET;
@@ -331,7 +409,6 @@ static int connect_to(const char *host, uint16_t port, char *err, size_t errlen)
         }
         addr.sin_addr = ((struct sockaddr_in *)res->ai_addr)->sin_addr;
         freeaddrinfo(res);
-#endif
     }
 
     int fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -342,11 +419,37 @@ static int connect_to(const char *host, uint16_t port, char *err, size_t errlen)
     int one = 1;
     setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
-    if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+    const int flags = fcntl(fd, F_GETFL, 0);
+    if (flags < 0 || fcntl(fd, F_SETFL, flags | O_NONBLOCK) != 0) {
+        snprintf(err, errlen, "cannot configure the socket");
+        close(fd);
+        return -1;
+    }
+
+    int connected = connect(fd, (struct sockaddr *)&addr, sizeof(addr)) == 0;
+    if (!connected && errno == EINPROGRESS) {
+        struct pollfd pfd;
+        memset(&pfd, 0, sizeof(pfd));
+        pfd.fd = fd;
+        pfd.events = POLLOUT;
+        if (poll(&pfd, 1, 1500) > 0) {
+            int socket_error = 0;
+            socklen_t error_size = sizeof(socket_error);
+            if (getsockopt(fd, SOL_SOCKET, SO_ERROR,
+                           &socket_error, &error_size) == 0 &&
+                socket_error == 0)
+                connected = 1;
+        }
+    }
+
+    if (!connected) {
         snprintf(err, errlen, "cannot reach %s:%u", host, port);
         close(fd);
         return -1;
     }
+
+    /* Keep it non-blocking. The handshake helpers poll it, with a
+     * deadline, and the reader later uses the same mode for safe HOME. */
     return fd;
 }
 
@@ -361,6 +464,12 @@ static int connect_to(const char *host, uint16_t port, char *err, size_t errlen)
 static void push_video(const uint8_t *data, uint32_t size, int keyframe)
 {
     BS_MTX_LOCK(g_video_lock);
+
+    if (g_screen_switch_pending) {
+        BS_MTX_UNLOCK(g_video_lock);
+        return;
+    }
+
     if (g_video_count == VIDEO_SLOTS) {
         bs_cnd_wait_ms(&g_video_space, &g_video_lock, VIDEO_WAIT_MS);
         if (g_video_count == VIDEO_SLOTS) {
@@ -525,16 +634,28 @@ static void reader_run(void)
             if (si.fps > 0) g_info.fps = si.fps;
             BS_MTX_UNLOCK(g_info_lock);
 
-            if (changed) {
-                BS_MTX_LOCK(g_video_lock);
+            BS_MTX_LOCK(g_video_lock);
+
+            const int screen_changed =
+                g_screen_switch_pending;
+
+            if (changed || screen_changed) {
                 g_video_read = 0;
                 g_video_count = 0;
                 g_resize_pending = 1;
                 g_resize_w = si.width;
                 g_resize_h = si.height;
                 BS_CND_SIGNAL(g_video_space);
-                BS_MTX_UNLOCK(g_video_lock);
             }
+
+            /* From this point, subsequent TCP messages belong to the newly
+             * announced stream and may safely enter the decoder queue. */
+            if (screen_changed) {
+                g_current_screen = g_requested_screen;
+            }
+            g_screen_switch_pending = 0;
+
+            BS_MTX_UNLOCK(g_video_lock);
         } else if (type == BS_MSG_SCREENS && n >= sizeof(BsScreens)) {
             /* Which screens this server has, and how many are watching
              * each. A server built before the top screen existed sends
@@ -542,8 +663,18 @@ static void reader_run(void)
             BsScreens sc;
             bs_screens_from_le(&sc, buf);
             g_screens = sc.available;
+            g_have_screens = 1;
             g_watching[BS_SCREEN_BOTTOM] = sc.watching_bottom;
             g_watching[BS_SCREEN_TOP] = sc.watching_top;
+
+            /* A server is allowed to refuse a screen it does not offer.  Do
+             * not leave the receive path permanently paused in that case. */
+            BS_MTX_LOCK(g_video_lock);
+            if (g_screen_switch_pending &&
+                !(sc.available & (1u << g_requested_screen))) {
+                g_screen_switch_pending = 0;
+            }
+            BS_MTX_UNLOCK(g_video_lock);
         } else if (type == BS_MSG_PROMPT && n >= sizeof(BsPrompt)) {
             BS_MTX_LOCK(g_prompt_lock);
             bs_prompt_from_le(&g_prompt, buf);
@@ -551,9 +682,9 @@ static void reader_run(void)
             if (g_prompt_body_len > sizeof(g_prompt_body))
                 g_prompt_body_len = sizeof(g_prompt_body);
             memcpy(g_prompt_body, buf + sizeof(BsPrompt), g_prompt_body_len);
-            /* id 0 withdraws it: the game stopped waiting, so whatever
-             * is on screen for it should go. */
-            g_prompt_pending = (g_prompt.id != 0);
+            /* Keep id-zero withdrawals too: the UI must be able to take
+             * down a question another client has already answered. */
+            g_prompt_pending = 1;
             BS_MTX_UNLOCK(g_prompt_lock);
         } else if (type == BS_MSG_PING) {
             send_msg(BS_MSG_PONG, NULL, 0);
@@ -608,6 +739,8 @@ int stream_connect(const char *host, uint16_t port, char *err, size_t errlen)
     if (g_sock < 0)
         return -1;
 
+    g_io_deadline_us = bs_now_us() + 2000000u;
+
     /* The hello, and every byte after it, serialised field by field:
      * this CPU's natural byte order is the wire's reverse. */
     BsHello hello;
@@ -649,6 +782,8 @@ int stream_connect(const char *host, uint16_t port, char *err, size_t errlen)
         goto fail;
     }
 
+    g_io_deadline_us = 0;
+
     BS_MTX_LOCK(g_info_lock);
     g_info.width = ack.width;
     g_info.height = ack.height;
@@ -671,6 +806,30 @@ int stream_connect(const char *host, uint16_t port, char *err, size_t errlen)
     }
 
     g_frames = 0;
+    g_screens = 1 << BS_SCREEN_BOTTOM;
+    g_have_screens = 0;
+    g_watching[BS_SCREEN_BOTTOM] = 0;
+    g_watching[BS_SCREEN_TOP] = 0;
+
+    BS_MTX_LOCK(g_video_lock);
+    g_screen_switch_pending = 0;
+    g_requested_screen = BS_SCREEN_BOTTOM;
+    g_current_screen = BS_SCREEN_BOTTOM;
+    BS_MTX_UNLOCK(g_video_lock);
+
+    /*
+     * Match Capture2Cloud's Wii U receiver: once the synchronous handshake
+     * is complete, the reader must never sleep indefinitely inside recv().
+     * It polls in short intervals instead, so HOME can stop and join it before
+     * any socket operation is performed from another core.
+     */
+    const int socket_flags = fcntl(g_sock, F_GETFL, 0);
+    if (socket_flags < 0 ||
+        fcntl(g_sock, F_SETFL, socket_flags | O_NONBLOCK) != 0) {
+        snprintf(err, errlen, "could not make the reader non-blocking");
+        goto fail;
+    }
+
     g_connected = 1;
 
     if (ack.extradata_size)
@@ -689,6 +848,7 @@ int stream_connect(const char *host, uint16_t port, char *err, size_t errlen)
     return 0;
 
 fail:
+    g_io_deadline_us = 0;
     if (g_sock >= 0) {
         close(g_sock);
         g_sock = -1;
@@ -698,16 +858,30 @@ fail:
 
 void stream_disconnect(void)
 {
+    /*
+     * HOME may be pressed from the settings screen before stream_connect()
+     * has ever run.  The shutdown path still calls stream_disconnect(), so
+     * its locks must exist independently of whether a socket was opened.
+     *
+     * On desktop pthreads a zero-filled mutex can appear to work by accident;
+     * on Wii U, OSLockMutex on an uninitialised OSMutex can crash the title
+     * while it is returning foreground ownership to the system menu.
+     */
+    locks_init_once();
+
     g_stop = 1;
-    /* Breaks the reader out of its blocking read; closing the socket
-     * from under it would be a use-after-free race instead. */
-    if (g_sock >= 0)
-        shutdown(g_sock, SHUT_RDWR);
+
+    /*
+     * The reader uses poll() with a 5 ms bound, like Capture2Cloud.  Join it
+     * first, then touch the descriptor.  Calling shutdown() from this core
+     * while the reader was blocked in recv() was the last HOME-only race.
+     */
     if (g_thread_started) {
         bs_thread_join();
         g_thread_started = 0;
     }
     if (g_sock >= 0) {
+        shutdown(g_sock, SHUT_RDWR);
         close(g_sock);
         g_sock = -1;
     }
@@ -721,7 +895,15 @@ void stream_disconnect(void)
     g_video_read = 0;
     g_video_count = 0;
     g_resize_pending = 0;
+    g_screen_switch_pending = 0;
+    g_requested_screen = BS_SCREEN_BOTTOM;
+    g_current_screen = BS_SCREEN_BOTTOM;
     BS_MTX_UNLOCK(g_video_lock);
+
+    g_screens = 1 << BS_SCREEN_BOTTOM;
+    g_have_screens = 0;
+    g_watching[BS_SCREEN_BOTTOM] = 0;
+    g_watching[BS_SCREEN_TOP] = 0;
 }
 
 int stream_connected(void) { return g_connected; }
@@ -781,8 +963,40 @@ void stream_send_axis(int code, int value)
  */
 void stream_send_screen(int screen)
 {
-    if (!g_connected)
+    if (!g_connected ||
+        screen < 0 ||
+        screen >= BS_SCREEN_COUNT)
         return;
+
+    if (g_have_screens &&
+        !(g_screens & (1u << screen))) {
+        return;
+    }
+
+    BS_MTX_LOCK(g_video_lock);
+
+    if ((!g_screen_switch_pending &&
+         screen == g_current_screen) ||
+        (g_screen_switch_pending &&
+         screen == g_requested_screen)) {
+
+        BS_MTX_UNLOCK(g_video_lock);
+        return;
+    }
+
+    /*
+     * Establish the receive-side barrier before the request reaches the
+     * server.  Anything already queued belongs to the old screen; anything
+     * received while the barrier is set cannot be decoded safely yet.
+     */
+    g_video_read = 0;
+    g_video_count = 0;
+    g_resize_pending = 0;
+    g_screen_switch_pending = 1;
+    g_requested_screen = screen;
+    BS_CND_SIGNAL(g_video_space);
+    BS_MTX_UNLOCK(g_video_lock);
+
     BsScreenChoice ch;
     memset(&ch, 0, sizeof(ch));
     ch.screen = (uint8_t)screen;
@@ -840,11 +1054,11 @@ void stream_send_audio_source(int source)
     send_msg(BS_MSG_SET_AUDIO_SOURCE, wire, sizeof(wire));
 }
 
-uint16_t stream_take_prompt(BsPrompt *out, char *body, size_t bodylen)
+int stream_take_prompt_event(BsPrompt *out, char *body, size_t bodylen)
 {
     if (!g_prompt_pending)
         return 0;
-    uint16_t id = 0;
+    int found = 0;
     BS_MTX_LOCK(g_prompt_lock);
     if (g_prompt_pending) {
         g_prompt_pending = 0;
@@ -853,10 +1067,17 @@ uint16_t stream_take_prompt(BsPrompt *out, char *body, size_t bodylen)
         if (n >= bodylen) n = bodylen - 1;
         memcpy(body, g_prompt_body, n);
         body[n] = '\0';
-        id = g_prompt.id;
+        found = 1;
     }
     BS_MTX_UNLOCK(g_prompt_lock);
-    return id;
+    return found;
+}
+
+uint16_t stream_take_prompt(BsPrompt *out, char *body, size_t bodylen)
+{
+    return stream_take_prompt_event(out, body, bodylen)
+        ? out->id
+        : 0;
 }
 
 void stream_send_prompt_reply(uint16_t id, int cancelled, int choice,

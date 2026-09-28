@@ -32,6 +32,10 @@ static const ButtonMap BUTTONS[] = {
     { 15, BS_BTN_DOWN },
 };
 
+/* Raw Wii U SDL joystick button order, validated by Capture2Cloud. */
+#define WIIU_BTN_L3 4
+#define WIIU_BTN_R3 5
+
 static const int AXIS_CODE[4] = {
     BS_AXIS_LEFT_X,
     BS_AXIS_LEFT_Y,
@@ -47,6 +51,8 @@ static uint8_t g_last_button[
 
 static int16_t g_last_axis[4];
 static int g_primed;
+static int g_screen_chord_held;
+static int g_screen_toggle_pending;
 
 static int axis_value(int axis)
 {
@@ -102,6 +108,8 @@ int input_init(char *why, size_t why_size)
     memset(g_last_button, 0, sizeof(g_last_button));
     memset(g_last_axis, 0, sizeof(g_last_axis));
     g_primed = 0;
+    g_screen_chord_held = 0;
+    g_screen_toggle_pending = 0;
 
     WHBLogPrintf(
         "input: raw joystick '%s', buttons=%d axes=%d",
@@ -120,6 +128,8 @@ void input_exit(void)
     }
 
     g_primed = 0;
+    g_screen_chord_held = 0;
+    g_screen_toggle_pending = 0;
 }
 
 void input_update(int forward)
@@ -128,6 +138,26 @@ void input_update(int forward)
         return;
 
     SDL_JoystickUpdate();
+
+    /*
+     * HOME belongs to the local console, so use the two stick clicks for the
+     * screen switch.  Latch the chord: holding it for several frames must only
+     * toggle once.  Sampling while forwarding is disabled prevents a chord
+     * already held in the menu from firing when the menu closes.
+     */
+    const int screen_chord =
+        SDL_JoystickGetButton(g_pad, WIIU_BTN_L3) &&
+        SDL_JoystickGetButton(g_pad, WIIU_BTN_R3);
+
+    if (forward &&
+        screen_chord &&
+        !g_screen_chord_held) {
+
+        g_screen_toggle_pending = 1;
+        WHBLogPrintf("input: L3+R3 -> toggle screen");
+    }
+
+    g_screen_chord_held = screen_chord;
 
     for (unsigned i = 0;
          i < sizeof(BUTTONS) / sizeof(BUTTONS[0]);
@@ -163,4 +193,11 @@ void input_update(int forward)
     }
 
     g_primed = 1;
+}
+
+int input_take_screen_toggle(void)
+{
+    const int pending = g_screen_toggle_pending;
+    g_screen_toggle_pending = 0;
+    return pending;
 }

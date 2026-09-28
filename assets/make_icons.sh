@@ -30,6 +30,10 @@ for entry in mdpi:48 hdpi:72 xhdpi:96 xxhdpi:144 xxxhdpi:192; do
     rm -f "/dev/shm/bs_icon_$px.png"
 done
 
+# Wii U WUHB metadata requires exactly 128x128.  Keep a native-size output so
+# wuhbtool embeds the intended artwork directly instead of silently resizing it.
+rsvg-convert -w 128 -h 128 "$SVG" -o "$DIR/assets/icon-128.png"
+
 # A big one for anything that wants artwork rather than a launcher icon.
 rsvg-convert -w 512 -h 512 "$SVG" -o "$DIR/assets/icon-512.png"
 

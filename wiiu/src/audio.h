@@ -13,6 +13,10 @@ int audio_init(int rate, int channels,
 
 void audio_exit(void);
 
+/* Local playback gain. Kept across audio_init(), so it may be applied
+ * before a connection has announced whether it carries sound. */
+void audio_set_volume(int volume, int muted);
+
 /*
  * One decoded PCM s16le block (interleaved stereo) ready for playback.
  */
