@@ -963,15 +963,16 @@ index 743ab679..9f3f7d1c 100644
      // clean up vertex/uniform cache
 diff --git a/src/Cafe/HW/Latte/Core/SystemAppletBridge.cpp b/src/Cafe/HW/Latte/Core/SystemAppletBridge.cpp
 new file mode 100644
-index 00000000..19a38ab9
+index 00000000..aa641e6b
 --- /dev/null
 +++ b/src/Cafe/HW/Latte/Core/SystemAppletBridge.cpp
-@@ -0,0 +1,392 @@
+@@ -0,0 +1,484 @@
 +#include "Cafe/HW/Latte/Core/SystemAppletBridge.h"
 +
 +#include "Cafe/HW/Latte/Renderer/Renderer.h"
 +#include "Cafe/HW/Latte/Core/LatteTexture.h"
 +#include "config/CemuConfig.h"
++#include "WindowSystem.h"
 +
 +#include <imgui.h>
 +
@@ -998,7 +999,7 @@ index 00000000..19a38ab9
 +{
 +namespace
 +{
-+	constexpr uint32 kMagic = 0x324D4248; // "HBM2"
++	constexpr uint32 kMagic = 0x334D4248; // "HBM3"
 +	constexpr uint32 kMaxWidth = 2560;
 +	constexpr uint32 kMaxHeight = 1440;
 +	constexpr size_t kMaxFrameBytes = (size_t)kMaxWidth * kMaxHeight * 4;
@@ -1015,6 +1016,16 @@ index 00000000..19a38ab9
 +		uint32 reserved[11]{};
 +	};
 +
++	struct alignas(64) SharedInput
++	{
++		std::atomic<uint32> sequence{ 0 };
++		uint32 x = 0;
++		uint32 y = 0;
++		uint32 pressed = 0;
++		uint32 press_generation = 0;
++		uint32 reserved[11]{};
++	};
++
 +	struct alignas(64) SharedFrames
 +	{
 +		uint32 magic = kMagic;
@@ -1022,6 +1033,7 @@ index 00000000..19a38ab9
 +		uint32 surface_count = (uint32)kSurfaceCount;
 +		uint32 reserved[13]{};
 +		SharedSurface surfaces[kSurfaceCount];
++		SharedInput input;
 +	};
 +	constexpr size_t kRegionSize = sizeof(SharedFrames) + kMaxFrameBytes * kSurfaceCount;
 +
@@ -1053,6 +1065,8 @@ index 00000000..19a38ab9
 +	Channel g_publisher;
 +	std::array<ConsumerSurface, kSurfaceCount> g_consumer_surfaces;
 +	std::vector<uint8> g_publish_pixels;
++	bool g_consumer_touch_pressed = false;
++	uint32 g_publisher_press_generation = 0;
 +
 +	std::string NativeName(std::string_view name)
 +	{
@@ -1194,6 +1208,7 @@ index 00000000..19a38ab9
 +	{
 +		OpenChannel(g_consumer, name, true);
 +		g_consumer.header = new (g_consumer.region) SharedFrames();
++		g_consumer_touch_pressed = false;
 +		for (ConsumerSurface& surface : g_consumer_surfaces)
 +			surface.last_sequence = 0;
 +		return true;
@@ -1210,12 +1225,58 @@ index 00000000..19a38ab9
 +{
 +	std::lock_guard lock(g_consumer_mutex);
 +	CloseChannel(g_consumer, true);
++	g_consumer_touch_pressed = false;
 +	for (ConsumerSurface& surface : g_consumer_surfaces)
 +	{
 +		surface.last_sequence = 0;
 +		surface.rgba.clear();
 +		surface.rgb.clear();
 +	}
++}
++
++bool SubmitPadTouch(sint32 x, sint32 y, bool pressed)
++{
++	std::lock_guard lock(g_consumer_mutex);
++	if (!g_consumer.header)
++		return false;
++
++	const Vector2i source_size = g_consumer_surfaces[1].texture_size;
++	int window_width = 0;
++	int window_height = 0;
++	WindowSystem::GetPadWindowPhysSize(window_width, window_height);
++	if (source_size.x <= 0 || source_size.y <= 0 || window_width <= 0 || window_height <= 0)
++		return true;
++
++	float image_x = 0.0f;
++	float image_y = 0.0f;
++	float image_width = (float)window_width;
++	float image_height = (float)window_height;
++	if (GetConfig().fullscreen_scaling == kKeepAspectRatio)
++	{
++		const float scale = std::min(image_width / (float)source_size.x,
++			image_height / (float)source_size.y);
++		image_width = source_size.x * scale;
++		image_height = source_size.y * scale;
++		image_x = (window_width - image_width) * 0.5f;
++		image_y = (window_height - image_height) * 0.5f;
++	}
++
++	const float normalized_x = std::clamp((x - image_x) / image_width, 0.0f, 1.0f);
++	const float normalized_y = std::clamp((y - image_y) / image_height, 0.0f, 1.0f);
++	SharedInput& input = g_consumer.header->input;
++	uint32 sequence = input.sequence.load(std::memory_order_relaxed);
++	if (sequence & 1)
++		++sequence;
++	input.sequence.store(sequence + 1, std::memory_order_release);
++	input.x = (uint32)(normalized_x * 65535.0f + 0.5f);
++	input.y = (uint32)(normalized_y * 65535.0f + 0.5f);
++	input.pressed = pressed ? 1 : 0;
++	if (pressed && !g_consumer_touch_pressed)
++		++input.press_generation;
++	g_consumer_touch_pressed = pressed;
++	std::atomic_thread_fence(std::memory_order_release);
++	input.sequence.store(sequence + 2, std::memory_order_release);
++	return true;
 +}
 +
 +bool StartPublisher(std::string_view name)
@@ -1229,6 +1290,7 @@ index 00000000..19a38ab9
 +			g_publisher.header->capacity != kMaxFrameBytes ||
 +			g_publisher.header->surface_count != kSurfaceCount)
 +			throw std::runtime_error("incompatible shared frame header");
++		g_publisher_press_generation = g_publisher.header->input.press_generation;
 +		return true;
 +	}
 +	catch (const std::exception& ex)
@@ -1237,6 +1299,36 @@ index 00000000..19a38ab9
 +		CloseChannel(g_publisher, false);
 +		return false;
 +	}
++}
++
++bool GetPadTouch(float& x, float& y)
++{
++	std::lock_guard lock(g_publisher_mutex);
++	if (!g_publisher.header)
++		return false;
++
++	SharedInput& input = g_publisher.header->input;
++	for (int attempt = 0; attempt < 3; ++attempt)
++	{
++		const uint32 before = input.sequence.load(std::memory_order_acquire);
++		if (before & 1)
++			continue;
++		const uint32 shared_x = input.x;
++		const uint32 shared_y = input.y;
++		const bool pressed = input.pressed != 0;
++		const uint32 press_generation = input.press_generation;
++		std::atomic_thread_fence(std::memory_order_acquire);
++		const uint32 after = input.sequence.load(std::memory_order_acquire);
++		if (before != after || (after & 1))
++			continue;
++
++		x = shared_x / 65535.0f;
++		y = shared_y / 65535.0f;
++		const bool missed_press = press_generation != g_publisher_press_generation;
++		g_publisher_press_generation = press_generation;
++		return pressed || missed_press;
++	}
++	return false;
 +}
 +
 +void StopPublisher()
@@ -1361,10 +1453,10 @@ index 00000000..19a38ab9
 +}
 diff --git a/src/Cafe/HW/Latte/Core/SystemAppletBridge.h b/src/Cafe/HW/Latte/Core/SystemAppletBridge.h
 new file mode 100644
-index 00000000..7f6522ba
+index 00000000..d35810ad
 --- /dev/null
 +++ b/src/Cafe/HW/Latte/Core/SystemAppletBridge.h
-@@ -0,0 +1,23 @@
+@@ -0,0 +1,28 @@
 +#pragma once
 +
 +#include <string>
@@ -1377,12 +1469,17 @@ index 00000000..7f6522ba
 +	// The foreground Cemu owns the channel and composites the frames.
 +	bool StartConsumer(std::string_view name);
 +	void StopConsumer();
++	// Routes a physical GamePad-window touch to the isolated system applet.
++	// Returns false when no applet is active, so the caller can handle it normally.
++	bool SubmitPadTouch(sint32 x, sint32 y, bool pressed);
 +
-+	// The isolated system-title Cemu publishes its TV surface here.
++	// The isolated system-title Cemu publishes its TV and GamePad surfaces here.
 +	bool StartPublisher(std::string_view name);
 +	void StopPublisher();
 +	bool IsPublisher();
 +	void PublishFrame(LatteTextureView* texture_view, bool pad_view);
++	// Reads the applet touch in normalized GamePad coordinates.
++	bool GetPadTouch(float& x, float& y);
 +
 +	// Called only on the Latte thread of the foreground Cemu.
 +	void RenderConsumerFrames();
@@ -2732,10 +2829,18 @@ index deb656ce..e15653cd 100644
  	#ifdef ENABLE_DISCORD_RPC
  	std::unique_ptr<DiscordPresence> m_discord;
 diff --git a/src/gui/wxgui/PadViewFrame.cpp b/src/gui/wxgui/PadViewFrame.cpp
-index ca213849..5399ba59 100644
+index ca213849..f137e9aa 100644
 --- a/src/gui/wxgui/PadViewFrame.cpp
 +++ b/src/gui/wxgui/PadViewFrame.cpp
-@@ -16,6 +16,7 @@
+@@ -6,6 +6,7 @@
+ 
+ #include "config/ActiveSettings.h"
+ #include "Cafe/OS/libs/swkbd/swkbd.h"
++#include "Cafe/HW/Latte/Core/SystemAppletBridge.h"
+ #ifdef ENABLE_OPENGL
+ #include "wxgui/canvas/OpenGLCanvas.h"
+ #endif
+@@ -16,6 +17,7 @@
  #include "wxgui/canvas/MetalCanvas.h"
  #endif
  #include "config/CemuConfig.h"
@@ -2743,7 +2848,7 @@ index ca213849..5399ba59 100644
  #include "wxgui/MainWindow.h"
  #include "wxgui/helpers/wxHelpers.h"
  #include "input/InputManager.h"
-@@ -31,7 +32,10 @@ extern WindowSystem::WindowInfo g_window_info;
+@@ -31,7 +33,10 @@ extern WindowSystem::WindowInfo g_window_info;
  #define PAD_MIN_HEIGHT 180
  
  PadViewFrame::PadViewFrame(wxFrame* parent)
@@ -2755,6 +2860,59 @@ index ca213849..5399ba59 100644
  {
  	g_window_info.window_pad = initHandleContextFromWxWidgetsWindow(this);
  
+@@ -175,13 +180,17 @@ void PadViewFrame::OnKeyUp(wxKeyEvent& event)
+ 
+ void PadViewFrame::OnGesturePan(wxPanGestureEvent& event)
+ {
++	auto physPos = ToPhys(event.GetPosition());
++	const bool pressed = event.IsGestureStart() || !event.IsGestureEnd();
++	if (SystemAppletBridge::SubmitPadTouch(physPos.x, physPos.y, pressed))
++		return;
++
+ 	auto& instance = InputManager::instance();
+ 
+ 	std::scoped_lock lock(instance.m_pad_touch.m_mutex);
+-	auto physPos = ToPhys(event.GetPosition());
+ 	instance.m_pad_touch.position = { physPos.x, physPos.y };
+-	instance.m_pad_touch.left_down = event.IsGestureStart() || !event.IsGestureEnd();
+-	if (event.IsGestureStart() || !event.IsGestureEnd())
++	instance.m_pad_touch.left_down = pressed;
++	if (pressed)
+ 		instance.m_pad_touch.left_down_toggle = true;
+ }
+ 
+@@ -195,10 +204,13 @@ void PadViewFrame::OnChar(wxKeyEvent& event)
+ 
+ void PadViewFrame::OnMouseMove(wxMouseEvent& event)
+ {
++	auto physPos = ToPhys(event.GetPosition());
++	if (SystemAppletBridge::SubmitPadTouch(physPos.x, physPos.y, event.LeftIsDown()))
++		return;
++
+ 	auto& instance = InputManager::instance();
+ 
+ 	std::scoped_lock lock(instance.m_pad_touch.m_mutex);
+-	auto physPos = ToPhys(event.GetPosition());
+ 	instance.m_pad_mouse.position = { physPos.x, physPos.y };
+ 
+ 	event.Skip();
+@@ -206,11 +218,15 @@ void PadViewFrame::OnMouseMove(wxMouseEvent& event)
+ 
+ void PadViewFrame::OnMouseLeft(wxMouseEvent& event)
+ {
++	auto physPos = ToPhys(event.GetPosition());
++	if (SystemAppletBridge::SubmitPadTouch(physPos.x, physPos.y,
++		event.ButtonDown(wxMOUSE_BTN_LEFT)))
++		return;
++
+ 	auto& instance = InputManager::instance();
+ 
+ 	std::scoped_lock lock(instance.m_pad_mouse.m_mutex);
+ 	instance.m_pad_mouse.left_down = event.ButtonDown(wxMOUSE_BTN_LEFT);
+-	auto physPos = ToPhys(event.GetPosition());
+ 	instance.m_pad_mouse.position = { physPos.x, physPos.y };
+ 	if (event.ButtonDown(wxMOUSE_BTN_LEFT))
+ 		instance.m_pad_mouse.left_down_toggle = true;
 diff --git a/src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp b/src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp
 index b1b5205c..299364d8 100644
 --- a/src/gui/wxgui/input/panels/ClassicControllerInputPanel.cpp
@@ -3012,7 +3170,7 @@ index 4978ef0a..03bb0474 100644
 +    target_include_directories(CemuInput PRIVATE "${BOTTOM_SCREEN_DIR}")
 +endif()
 diff --git a/src/input/emulated/VPADController.cpp b/src/input/emulated/VPADController.cpp
-index f7e9447a..e4d0f8a3 100644
+index f7e9447a..f5bab470 100644
 --- a/src/input/emulated/VPADController.cpp
 +++ b/src/input/emulated/VPADController.cpp
 @@ -1,4 +1,8 @@
@@ -3024,7 +3182,15 @@ index f7e9447a..e4d0f8a3 100644
  #include "input/api/Controller.h"
  #ifdef HAS_SDL
  #include "input/api/SDL/SDLController.h"
-@@ -57,7 +61,13 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
+@@ -6,6 +10,7 @@
+ #include "WindowSystem.h"
+ #include "input/InputManager.h"
+ #include "Cafe/HW/Latte/Core/Latte.h"
++#include "Cafe/HW/Latte/Core/SystemAppletBridge.h"
+ #include "Cafe/CafeSystem.h"
+ 
+ enum ControllerVPADMapping2 : uint32
+@@ -57,7 +62,13 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
  		if (is_axis_mapping(i))
  			continue;
  
@@ -3038,7 +3204,7 @@ index f7e9447a..e4d0f8a3 100644
  		{
  			const uint32 value = get_emulated_button_flag(i);
  			if (value == 0)
-@@ -76,8 +86,17 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
+@@ -76,8 +87,17 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
  	}
  
  	m_homebutton_down |= is_home_down();
@@ -3057,7 +3223,7 @@ index f7e9447a..e4d0f8a3 100644
  	status.leftStick.x = axis.x;
  	status.leftStick.y = axis.y;
  
-@@ -95,7 +114,13 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
+@@ -95,7 +115,13 @@ void VPADController::VPADRead(VPADStatus_t& status, const BtnRepeat& repeat)
  	else if (axis.y >= kAxisThreshold || (HAS_FLAG(last_hold, VPAD_STICK_L_UP) && axis.y >= kHoldAxisThreshold))
  		status.hold |= VPAD_STICK_L_UP;
  
@@ -3071,4 +3237,23 @@ index f7e9447a..e4d0f8a3 100644
 +#endif
  	status.rightStick.x = rotation.x;
  	status.rightStick.y = rotation.y;
+ 
+@@ -194,7 +220,17 @@ void VPADController::update_touch(VPADStatus_t& status)
+ 
+ 	auto& instance = InputManager::instance();
+ 	bool pad_view;
+-	if (has_position())
++	float applet_touch_x = 0.0f;
++	float applet_touch_y = 0.0f;
++	if (SystemAppletBridge::GetPadTouch(applet_touch_x, applet_touch_y))
++	{
++		status.tpData.touch = kTpTouchOn;
++		status.tpData.validity = kTpValid;
++		status.tpData.x = (uint16)(applet_touch_x * 3883.0f + 92.0f);
++		status.tpData.y = (uint16)(4095.0f - applet_touch_y * 3694.0f - 254.0f);
++		m_last_touch_position = glm::ivec2{ status.tpData.x, status.tpData.y };
++	}
++	else if (has_position())
+ 	{
+ 		const auto mouse = get_position();
  
