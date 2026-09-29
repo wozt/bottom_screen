@@ -13,19 +13,21 @@
 # beside it; see the README.
 #
 diff --git a/src/Cafe/CMakeLists.txt b/src/Cafe/CMakeLists.txt
-index b509e722..c916790e 100644
+index b509e722..27e5525c 100644
 --- a/src/Cafe/CMakeLists.txt
 +++ b/src/Cafe/CMakeLists.txt
-@@ -119,6 +119,8 @@ add_library(CemuCafe
+@@ -119,6 +119,10 @@ add_library(CemuCafe
    HW/Latte/Core/LatteQuery.cpp
    HW/Latte/Core/LatteQueryObject.h
    HW/Latte/Core/LatteRenderTarget.cpp
 +  HW/Latte/Core/BottomScreenBridge.cpp
 +  HW/Latte/Core/BottomScreenBridge.h
++  HW/Latte/Core/SystemAppletBridge.cpp
++  HW/Latte/Core/SystemAppletBridge.h
    HW/Latte/Core/LatteRingBuffer.cpp
    HW/Latte/Core/LatteRingBuffer.h
    HW/Latte/Core/LatteShaderAssembly.h
-@@ -682,3 +684,39 @@ endif()
+@@ -682,3 +686,39 @@ endif()
  if(WIN32)
  	target_link_libraries(CemuCafe PRIVATE iphlpapi)
  endif()
@@ -866,11 +868,39 @@ index 00000000..0e3fe081
 +                 bool padOutput);
 +
 +}
+diff --git a/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp b/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
+index 82cf041c..5076085d 100644
+--- a/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
++++ b/src/Cafe/HW/Latte/Core/LatteCommandProcessor.cpp
+@@ -5,6 +5,7 @@
+ #include "Cafe/HW/Latte/Core/Latte.h"
+ #include "Cafe/HW/Latte/Core/LatteShader.h"
+ #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
++#include "Cafe/HW/Latte/Core/SystemAppletBridge.h"
+ #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
+ #include "Cafe/HW/Latte/Core/LatteIndices.h"
+ #include "Cafe/HW/Latte/Core/LatteBufferCache.h"
+@@ -190,6 +191,7 @@ uint32 LatteCP_readU32Deprc()
+ 
+ 		// still no command data available, do some other tasks
+ 		LatteTiming_HandleTimedVsync();
++		SystemAppletBridge::RenderConsumerFrame();
+ 		LatteAsyncCommands_checkAndExecute();
+ 		std::this_thread::yield();
+ 		performanceMonitor.gpuTime_idleTime.endMeasuring();
 diff --git a/src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp b/src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp
-index 79b2d694..771a243d 100644
+index 79b2d694..b22a29e4 100644
 --- a/src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp
 +++ b/src/Cafe/HW/Latte/Core/LatteRenderTarget.cpp
-@@ -17,6 +17,10 @@
+@@ -4,6 +4,7 @@
+ #include "Cafe/HW/Latte/Core/LatteDraw.h"
+ #include "Cafe/HW/Latte/Core/LatteShader.h"
+ #include "Cafe/HW/Latte/Core/LatteOverlay.h"
++#include "Cafe/HW/Latte/Core/SystemAppletBridge.h"
+ #include "Cafe/HW/Latte/Core/LatteBufferCache.h"
+ #include "Cafe/HW/Latte/Core/LatteTexture.h"
+ #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
+@@ -17,6 +18,10 @@
  #include "input/InputManager.h"
  #include "Cafe/OS/libs/swkbd/swkbd.h"
  
@@ -881,10 +911,12 @@ index 79b2d694..771a243d 100644
  uint32 prevScissorX = 0;
  uint32 prevScissorY = 0;
  uint32 prevScissorWidth = 0;
-@@ -963,6 +967,27 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
+@@ -963,6 +968,29 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
  	cemu_assert(shader);
  	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);
  	g_renderer->HandleScreenshotRequest(textureView, isPadView);
++	if (!isPadView)
++		SystemAppletBridge::PublishTvFrame(textureView);
 +
 +#ifdef BOTTOM_SCREEN_ENABLED
 +	// The GamePad image has just been drawn and Cemu has finished with the
@@ -909,11 +941,479 @@ index 79b2d694..771a243d 100644
  	if (!g_renderer->ImguiBegin(!isPadView))
  		return;
  	swkbd_render(!isPadView);
+diff --git a/src/Cafe/HW/Latte/Core/LatteThread.cpp b/src/Cafe/HW/Latte/Core/LatteThread.cpp
+index 743ab679..9f3f7d1c 100644
+--- a/src/Cafe/HW/Latte/Core/LatteThread.cpp
++++ b/src/Cafe/HW/Latte/Core/LatteThread.cpp
+@@ -4,6 +4,7 @@
+ #include "Cafe/HW/Latte/Core/LatteDraw.h"
+ #include "Cafe/HW/Latte/Core/LatteShader.h"
+ #include "Cafe/HW/Latte/Core/LatteAsyncCommands.h"
++#include "Cafe/HW/Latte/Core/SystemAppletBridge.h"
+ #include "Cafe/GameProfile/GameProfile.h"
+ #include "Cafe/GraphicPack/GraphicPack2.h"
+ #include "WindowSystem.h"
+@@ -248,6 +249,8 @@ bool Latte_GetStopSignal()
+ 
+ void LatteThread_Exit()
+ {
++	SystemAppletBridge::RendererShutdown();
++	SystemAppletBridge::StopPublisher();
+ 	if (g_renderer)
+ 		g_renderer->Shutdown();
+     // clean up vertex/uniform cache
+diff --git a/src/Cafe/HW/Latte/Core/SystemAppletBridge.cpp b/src/Cafe/HW/Latte/Core/SystemAppletBridge.cpp
+new file mode 100644
+index 00000000..71b04b46
+--- /dev/null
++++ b/src/Cafe/HW/Latte/Core/SystemAppletBridge.cpp
+@@ -0,0 +1,355 @@
++#include "Cafe/HW/Latte/Core/SystemAppletBridge.h"
++
++#include "Cafe/HW/Latte/Renderer/Renderer.h"
++#include "Cafe/HW/Latte/Core/LatteTexture.h"
++#include "config/CemuConfig.h"
++
++#include <imgui.h>
++
++#include <algorithm>
++#include <atomic>
++#include <cerrno>
++#include <cstring>
++#include <mutex>
++#include <new>
++#include <stdexcept>
++#include <vector>
++
++#if BOOST_OS_WINDOWS
++#include <Windows.h>
++#else
++#include <fcntl.h>
++#include <sys/mman.h>
++#include <sys/stat.h>
++#include <unistd.h>
++#endif
++
++namespace SystemAppletBridge
++{
++namespace
++{
++	constexpr uint32 kMagic = 0x314D4248; // "HBM1"
++	constexpr uint32 kMaxWidth = 2560;
++	constexpr uint32 kMaxHeight = 1440;
++	constexpr size_t kMaxFrameBytes = (size_t)kMaxWidth * kMaxHeight * 4;
++	static_assert(std::atomic<uint32>::is_always_lock_free,
++		"The system applet channel requires a lock-free 32-bit sequence counter");
++
++	struct alignas(64) SharedFrame
++	{
++		uint32 magic = kMagic;
++		uint32 capacity = (uint32)kMaxFrameBytes;
++		std::atomic<uint32> sequence{ 0 };
++		uint32 width = 0;
++		uint32 height = 0;
++		uint32 stride = 0;
++		uint32 reserved = 0;
++	};
++
++	struct Channel
++	{
++		std::string name;
++		void* region = nullptr;
++#if BOOST_OS_WINDOWS
++		HANDLE mapping = nullptr;
++#else
++		int descriptor = -1;
++#endif
++		SharedFrame* header = nullptr;
++		uint8* pixels = nullptr;
++	};
++
++	std::mutex g_consumer_mutex;
++	std::mutex g_publisher_mutex;
++	Channel g_consumer;
++	Channel g_publisher;
++	uint32 g_last_sequence = 0;
++	std::vector<uint8> g_rgba;
++	std::vector<uint8> g_rgb;
++	std::vector<uint8> g_publish_pixels;
++	ImTextureID g_texture = nullptr;
++	Vector2i g_texture_size{};
++
++	std::string NativeName(std::string_view name)
++	{
++#if BOOST_OS_WINDOWS
++		return std::string(name);
++#else
++		return "/" + std::string(name);
++#endif
++	}
++
++	void CloseChannel(Channel& channel, bool remove)
++	{
++		const std::string name = channel.name;
++		channel.header = nullptr;
++		channel.pixels = nullptr;
++		if (channel.region)
++		{
++#if BOOST_OS_WINDOWS
++			UnmapViewOfFile(channel.region);
++#else
++			munmap(channel.region, sizeof(SharedFrame) + kMaxFrameBytes);
++#endif
++			channel.region = nullptr;
++		}
++#if BOOST_OS_WINDOWS
++		if (channel.mapping)
++			CloseHandle(channel.mapping);
++		channel.mapping = nullptr;
++#else
++		if (channel.descriptor >= 0)
++			close(channel.descriptor);
++		channel.descriptor = -1;
++#endif
++		channel.name.clear();
++		if (remove && !name.empty())
++		{
++#if !BOOST_OS_WINDOWS
++			const std::string native_name = NativeName(name);
++			shm_unlink(native_name.c_str());
++#endif
++		}
++	}
++
++	void OpenChannel(Channel& channel, std::string_view name, bool create)
++	{
++		const size_t region_size = sizeof(SharedFrame) + kMaxFrameBytes;
++		channel.name.assign(name);
++#if BOOST_OS_WINDOWS
++		if (create)
++		{
++			SetLastError(ERROR_SUCCESS);
++			channel.mapping = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
++				(DWORD)(region_size >> 32), (DWORD)region_size, channel.name.c_str());
++			if (!channel.mapping || GetLastError() == ERROR_ALREADY_EXISTS)
++				throw std::runtime_error("CreateFileMapping failed");
++		}
++		else
++		{
++			channel.mapping = OpenFileMappingA(FILE_MAP_ALL_ACCESS, FALSE, channel.name.c_str());
++			if (!channel.mapping)
++				throw std::runtime_error("OpenFileMapping failed");
++		}
++		channel.region = MapViewOfFile(channel.mapping, FILE_MAP_ALL_ACCESS, 0, 0, region_size);
++		if (!channel.region)
++			throw std::runtime_error("MapViewOfFile failed");
++#else
++		const std::string native_name = NativeName(name);
++		if (create)
++			shm_unlink(native_name.c_str());
++		channel.descriptor = shm_open(native_name.c_str(),
++			create ? O_CREAT | O_EXCL | O_RDWR : O_RDWR, 0600);
++		if (channel.descriptor < 0)
++			throw std::runtime_error(std::string("shm_open failed: ") + std::strerror(errno));
++		if (create && ftruncate(channel.descriptor, (off_t)region_size) != 0)
++			throw std::runtime_error(std::string("ftruncate failed: ") + std::strerror(errno));
++		channel.region = mmap(nullptr, region_size, PROT_READ | PROT_WRITE, MAP_SHARED,
++			channel.descriptor, 0);
++		if (channel.region == MAP_FAILED)
++		{
++			channel.region = nullptr;
++			throw std::runtime_error(std::string("mmap failed: ") + std::strerror(errno));
++		}
++#endif
++		channel.header = static_cast<SharedFrame*>(channel.region);
++		channel.pixels = reinterpret_cast<uint8*>(channel.header + 1);
++	}
++
++	bool ReadLatestFrame(uint32& width, uint32& height)
++	{
++		if (!g_consumer.header)
++			return false;
++
++		for (int attempt = 0; attempt < 3; ++attempt)
++		{
++			const uint32 before = g_consumer.header->sequence.load(std::memory_order_acquire);
++			if ((before & 1) || before == g_last_sequence)
++				return false;
++
++			width = g_consumer.header->width;
++			height = g_consumer.header->height;
++			const uint32 stride = g_consumer.header->stride;
++			if (width == 0 || height == 0 || width > kMaxWidth || height > kMaxHeight ||
++				stride < width * 4 || (size_t)stride * height > kMaxFrameBytes)
++				return false;
++
++			g_rgba.resize((size_t)width * height * 4);
++			for (uint32 row = 0; row < height; ++row)
++				std::memcpy(g_rgba.data() + (size_t)row * width * 4,
++					g_consumer.pixels + (size_t)row * stride, (size_t)width * 4);
++
++			std::atomic_thread_fence(std::memory_order_acquire);
++			const uint32 after = g_consumer.header->sequence.load(std::memory_order_acquire);
++			if (before == after && !(after & 1))
++			{
++				g_last_sequence = after;
++				return true;
++			}
++		}
++		return false;
++	}
++
++	void DeleteTexture()
++	{
++		if (g_texture && g_renderer)
++			g_renderer->DeleteTexture(g_texture);
++		g_texture = nullptr;
++		g_texture_size = {};
++	}
++}
++
++bool StartConsumer(std::string_view name)
++{
++	std::lock_guard lock(g_consumer_mutex);
++	CloseChannel(g_consumer, true);
++	try
++	{
++		OpenChannel(g_consumer, name, true);
++		g_consumer.header = new (g_consumer.region) SharedFrame();
++		g_last_sequence = 0;
++		return true;
++	}
++	catch (const std::exception& ex)
++	{
++		cemuLog_log(LogType::Force, "Unable to create the system applet compositor: {}", ex.what());
++		CloseChannel(g_consumer, true);
++		return false;
++	}
++}
++
++void StopConsumer()
++{
++	std::lock_guard lock(g_consumer_mutex);
++	CloseChannel(g_consumer, true);
++	g_last_sequence = 0;
++	g_rgba.clear();
++	g_rgb.clear();
++}
++
++bool StartPublisher(std::string_view name)
++{
++	std::lock_guard lock(g_publisher_mutex);
++	CloseChannel(g_publisher, false);
++	try
++	{
++		OpenChannel(g_publisher, name, false);
++		if (g_publisher.header->magic != kMagic || g_publisher.header->capacity != kMaxFrameBytes)
++			throw std::runtime_error("incompatible shared frame header");
++		g_publisher.pixels = reinterpret_cast<uint8*>(g_publisher.header + 1);
++		return true;
++	}
++	catch (const std::exception& ex)
++	{
++		cemuLog_log(LogType::Force, "Unable to connect the system applet compositor: {}", ex.what());
++		CloseChannel(g_publisher, false);
++		return false;
++	}
++}
++
++void StopPublisher()
++{
++	std::lock_guard lock(g_publisher_mutex);
++	CloseChannel(g_publisher, false);
++	g_publish_pixels.clear();
++}
++
++bool IsPublisher()
++{
++	std::lock_guard lock(g_publisher_mutex);
++	return g_publisher.header != nullptr;
++}
++
++void PublishTvFrame(LatteTextureView* texture_view)
++{
++	std::lock_guard lock(g_publisher_mutex);
++	if (!g_publisher.header || !g_renderer || !texture_view)
++		return;
++
++	sint32 width = 0;
++	sint32 height = 0;
++	if (!g_renderer->ReadbackViewRGBA(texture_view, g_publish_pixels, width, height) ||
++		width <= 0 || height <= 0 || width > (sint32)kMaxWidth || height > (sint32)kMaxHeight)
++		return;
++
++	const size_t bytes = (size_t)width * height * 4;
++	if (g_publish_pixels.size() < bytes)
++		return;
++
++	uint32 sequence = g_publisher.header->sequence.load(std::memory_order_relaxed);
++	if (sequence & 1)
++		++sequence;
++	g_publisher.header->sequence.store(sequence + 1, std::memory_order_release);
++	g_publisher.header->width = (uint32)width;
++	g_publisher.header->height = (uint32)height;
++	g_publisher.header->stride = (uint32)width * 4;
++	std::memcpy(g_publisher.pixels, g_publish_pixels.data(), bytes);
++	std::atomic_thread_fence(std::memory_order_release);
++	g_publisher.header->sequence.store(sequence + 2, std::memory_order_release);
++}
++
++void RenderConsumerFrame()
++{
++	std::lock_guard lock(g_consumer_mutex);
++	if (!g_consumer.header)
++	{
++		DeleteTexture();
++		return;
++	}
++
++	uint32 width = 0;
++	uint32 height = 0;
++	if (!ReadLatestFrame(width, height) || !g_renderer)
++		return;
++
++	g_rgb.resize((size_t)width * height * 3);
++	for (size_t source = 0, destination = 0; source < g_rgba.size(); source += 4, destination += 3)
++	{
++		g_rgb[destination + 0] = g_rgba[source + 0];
++		g_rgb[destination + 1] = g_rgba[source + 1];
++		g_rgb[destination + 2] = g_rgba[source + 2];
++	}
++
++	const Vector2i size{ (sint32)width, (sint32)height };
++	if (g_texture && g_texture_size != size)
++		DeleteTexture();
++
++	if (!g_renderer->BeginFrame(true))
++		return;
++	if (!g_texture)
++	{
++		g_texture = g_renderer->GenerateTexture(g_rgb, size);
++		g_texture_size = size;
++	}
++	else
++	{
++		g_renderer->UpdateTexture(g_texture, g_rgb, size);
++	}
++
++	if (!g_renderer->ImguiBegin(true))
++		return;
++
++	if (g_texture)
++	{
++		const ImVec2 display = ImGui::GetIO().DisplaySize;
++		ImVec2 image_min{ 0.0f, 0.0f };
++		ImVec2 image_max = display;
++		if (GetConfig().fullscreen_scaling == kKeepAspectRatio && width && height)
++		{
++			const float scale = std::min(display.x / (float)width, display.y / (float)height);
++			const ImVec2 image_size{ width * scale, height * scale };
++			image_min = { (display.x - image_size.x) * 0.5f, (display.y - image_size.y) * 0.5f };
++			image_max = { image_min.x + image_size.x, image_min.y + image_size.y };
++		}
++		ImGui::GetBackgroundDrawList()->AddImage(g_texture, image_min, image_max);
++	}
++	g_renderer->ImguiEnd();
++	g_renderer->SwapBuffers(true, false);
++}
++
++void RendererShutdown()
++{
++	std::lock_guard lock(g_consumer_mutex);
++	DeleteTexture();
++}
++}
+diff --git a/src/Cafe/HW/Latte/Core/SystemAppletBridge.h b/src/Cafe/HW/Latte/Core/SystemAppletBridge.h
+new file mode 100644
+index 00000000..4bdabe04
+--- /dev/null
++++ b/src/Cafe/HW/Latte/Core/SystemAppletBridge.h
+@@ -0,0 +1,23 @@
++#pragma once
++
++#include <string>
++#include <string_view>
++
++class LatteTextureView;
++
++namespace SystemAppletBridge
++{
++	// The foreground Cemu owns the channel and composites the frames.
++	bool StartConsumer(std::string_view name);
++	void StopConsumer();
++
++	// The isolated system-title Cemu publishes its TV surface here.
++	bool StartPublisher(std::string_view name);
++	void StopPublisher();
++	bool IsPublisher();
++	void PublishTvFrame(LatteTextureView* texture_view);
++
++	// Called only on the Latte thread of the foreground Cemu.
++	void RenderConsumerFrame();
++	void RendererShutdown();
++}
+diff --git a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
+index 4cfdde33..32f09a1e 100644
+--- a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
++++ b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.cpp
+@@ -630,6 +630,23 @@ ImTextureID MetalRenderer::GenerateTexture(const std::vector<uint8>& data, const
+ 	}
+ }
+ 
++bool MetalRenderer::UpdateTexture(ImTextureID id, const std::vector<uint8>& data, const Vector2i& size)
++{
++	if (!id || size.x <= 0 || size.y <= 0 || data.size() < (size_t)size.x * size.y * 3)
++		return false;
++	std::vector<uint8> rgba((size_t)size.x * size.y * 4);
++	for (size_t pixel = 0; pixel < (size_t)size.x * size.y; ++pixel)
++	{
++		rgba[pixel * 4 + 0] = data[pixel * 3 + 0];
++		rgba[pixel * 4 + 1] = data[pixel * 3 + 1];
++		rgba[pixel * 4 + 2] = data[pixel * 3 + 2];
++		rgba[pixel * 4 + 3] = 0xFF;
++	}
++	((MTL::Texture*)id)->replaceRegion(MTL::Region(0, 0, size.x, size.y), 0, 0,
++		rgba.data(), size.x * 4, 0);
++	return true;
++}
++
+ void MetalRenderer::DeleteTexture(ImTextureID id)
+ {
+     EnsureImGuiBackend();
+diff --git a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h
+index c75f12bf..cf0096a2 100644
+--- a/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h
++++ b/src/Cafe/HW/Latte/Renderer/Metal/MetalRenderer.h
+@@ -191,6 +191,7 @@ public:
+ 	bool ImguiBegin(bool mainWindow) override;
+ 	void ImguiEnd() override;
+ 	ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) override;
++	bool UpdateTexture(ImTextureID id, const std::vector<uint8>& data, const Vector2i& size) override;
+ 	void DeleteTexture(ImTextureID id) override;
+ 	void DeleteFontTextures() override;
+ 
 diff --git a/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.cpp b/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.cpp
-index 9d30da31..30faa97b 100644
+index 9d30da31..b2053f85 100644
 --- a/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.cpp
 +++ b/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.cpp
-@@ -514,6 +514,31 @@ void OpenGLRenderer::ClearColorbuffer(bool padView)
+@@ -211,6 +211,16 @@ ImTextureID OpenGLRenderer::GenerateTexture(const std::vector<uint8>& data, cons
+ 	return (ImTextureID)(uintptr_t)textureId;
+ }
+ 
++bool OpenGLRenderer::UpdateTexture(ImTextureID id, const std::vector<uint8>& data, const Vector2i& size)
++{
++	if (!id || size.x <= 0 || size.y <= 0 || data.size() < (size_t)size.x * size.y * 3)
++		return false;
++	glBindTexture(GL_TEXTURE_2D, (GLuint)(uintptr_t)id);
++	glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
++	glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, size.x, size.y, GL_RGB, GL_UNSIGNED_BYTE, data.data());
++	return true;
++}
++
+ void OpenGLRenderer::DeleteTexture(ImTextureID id)
+ {
+ 	if (id)
+@@ -514,6 +524,31 @@ void OpenGLRenderer::ClearColorbuffer(bool padView)
  }
  
  
@@ -946,10 +1446,18 @@ index 9d30da31..30faa97b 100644
  {
  	if(!m_screenshot_requested && m_screenshot_state == ScreenshotState::None)
 diff --git a/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.h b/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.h
-index 435ea427..25b6afe6 100644
+index 435ea427..df2f2368 100644
 --- a/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.h
 +++ b/src/Cafe/HW/Latte/Renderer/OpenGL/OpenGLRenderer.h
-@@ -57,6 +57,8 @@ public:
+@@ -41,6 +41,7 @@ public:
+ 	bool ImguiBegin(bool mainWindow) override;
+ 	void ImguiEnd() override;
+ 	ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) override;
++	bool UpdateTexture(ImTextureID id, const std::vector<uint8>& data, const Vector2i& size) override;
+ 	void DeleteTexture(ImTextureID id) override;
+ 	void DeleteFontTextures() override;
+ 
+@@ -57,6 +58,8 @@ public:
  	void DrawEmptyFrame(bool mainWindow) override;
  	void ClearColorbuffer(bool padView) override;
  	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;
@@ -959,7 +1467,7 @@ index 435ea427..25b6afe6 100644
  	void DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter, sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight, bool padView, bool clearBackground) override;
  
 diff --git a/src/Cafe/HW/Latte/Renderer/Renderer.h b/src/Cafe/HW/Latte/Renderer/Renderer.h
-index 6482f37a..de722fcc 100644
+index 6482f37a..c5481896 100644
 --- a/src/Cafe/HW/Latte/Renderer/Renderer.h
 +++ b/src/Cafe/HW/Latte/Renderer/Renderer.h
 @@ -73,6 +73,18 @@ public:
@@ -981,8 +1489,16 @@ index 6482f37a..de722fcc 100644
  	virtual void DrawBackbufferQuad(LatteTextureView* texView, RendererOutputShader* shader, bool useLinearTexFilter,
  												sint32 imageX, sint32 imageY, sint32 imageWidth, sint32 imageHeight,
  												bool padView, bool clearBackground) = 0;
+@@ -86,6 +98,7 @@ public:
+ 	virtual bool ImguiBegin(bool mainWindow);
+ 	virtual void ImguiEnd() = 0;
+ 	virtual ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) = 0;
++	virtual bool UpdateTexture(ImTextureID id, const std::vector<uint8>& data, const Vector2i& size) = 0;
+ 	virtual void DeleteTexture(ImTextureID id) = 0;
+ 	virtual void DeleteFontTextures() = 0;
+ 
 diff --git a/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp b/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp
-index 95bc0fc6..aae71c59 100644
+index 95bc0fc6..b286adaa 100644
 --- a/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp
 +++ b/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp
 @@ -1000,6 +1000,223 @@ bool VulkanRenderer::IsPadWindowActive()
@@ -1209,8 +1725,31 @@ index 95bc0fc6..aae71c59 100644
  void VulkanRenderer::HandleScreenshotRequest(LatteTextureView* texView, bool padView)
  {
  	if (!m_screenshot_requested && m_screenshot_state == ScreenshotState::None)
+@@ -2086,6 +2303,22 @@ ImTextureID VulkanRenderer::GenerateTexture(const std::vector<uint8>& data, cons
+ 	}
+ }
+ 
++bool VulkanRenderer::UpdateTexture(ImTextureID id, const std::vector<uint8>& data, const Vector2i& size)
++{
++	if (!id || size.x <= 0 || size.y <= 0 || data.size() < (size_t)size.x * size.y * 3)
++		return false;
++	std::vector<uint8> rgba((size_t)size.x * size.y * 4);
++	for (size_t pixel = 0; pixel < (size_t)size.x * size.y; ++pixel)
++	{
++		rgba[pixel * 4 + 0] = data[pixel * 3 + 0];
++		rgba[pixel * 4 + 1] = data[pixel * 3 + 1];
++		rgba[pixel * 4 + 2] = data[pixel * 3 + 2];
++		rgba[pixel * 4 + 3] = 0xFF;
++	}
++	WaitDeviceIdle();
++	return ImGui_ImplVulkan_UpdateTexture(m_state.currentCommandBuffer, id, rgba, size);
++}
++
+ void VulkanRenderer::DeleteTexture(ImTextureID id)
+ {
+ 	WaitDeviceIdle();
 diff --git a/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h b/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h
-index 2909440f..929a75d1 100644
+index 2909440f..469ee79a 100644
 --- a/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h
 +++ b/src/Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h
 @@ -203,6 +203,8 @@ public:
@@ -1222,6 +1761,14 @@ index 2909440f..929a75d1 100644
  	void HandleScreenshotRequest(LatteTextureView* texView, bool padView) override;
  
  	void QueryMemoryInfo();
+@@ -522,6 +524,7 @@ private:
+ 	bool ImguiBegin(bool mainWindow) override;
+ 	void ImguiEnd() override;
+ 	ImTextureID GenerateTexture(const std::vector<uint8>& data, const Vector2i& size) override;
++	bool UpdateTexture(ImTextureID id, const std::vector<uint8>& data, const Vector2i& size) override;
+ 	void DeleteTexture(ImTextureID id) override;
+ 	void DeleteFontTextures() override;
+ 	bool BeginFrame(bool mainWindow) override;
 diff --git a/src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp b/src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp
 index bae0dca8..49cf3337 100644
 --- a/src/Cafe/OS/libs/coreinit/coreinit_Misc.cpp
@@ -1636,24 +2183,20 @@ index 48c396f2..195b6127 100644
  	std::mutex game_cache_entries_mutex;
  	std::vector<GameEntry> game_cache_entries;
 diff --git a/src/config/LaunchSettings.cpp b/src/config/LaunchSettings.cpp
-index e12fdc62..bd81ccc5 100644
+index e12fdc62..9db2d91f 100644
 --- a/src/config/LaunchSettings.cpp
 +++ b/src/config/LaunchSettings.cpp
-@@ -84,6 +84,13 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
+@@ -84,6 +84,9 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
  	hidden.add_options()
  		("nsight", po::value<bool>()->implicit_value(true), "NSight debugging options")
  		("legacy", po::value<bool>()->implicit_value(true), "Intel legacy graphic mode")
 +		("system-overlay-child", po::value<bool>()->implicit_value(true), "Run a Wii U system overlay for another Cemu instance")
 +		("system-overlay-caller-title-id", po::value<std::string>(), "Title ID of the application below a system overlay")
-+		("system-overlay-parent-window", po::value<std::string>(), "Native window used to embed a system overlay")
-+		("system-overlay-x", po::value<int>(), "System overlay fallback X coordinate")
-+		("system-overlay-y", po::value<int>(), "System overlay fallback Y coordinate")
-+		("system-overlay-width", po::value<int>(), "System overlay width")
-+		("system-overlay-height", po::value<int>(), "System overlay height")
++		("system-applet-channel", po::value<std::string>(), "Shared compositor channel for a Wii U system applet")
  		("ppcrec-lower-addr", po::value<std::string>(), "For debugging: Lower address allowed for PPC recompilation")
  		("ppcrec-upper-addr", po::value<std::string>(), "For debugging: Upper address allowed for PPC recompilation");
  
-@@ -197,6 +204,43 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
+@@ -197,6 +200,24 @@ std::optional<int> LaunchSettings::HandleCommandline(const std::vector<std::wstr
  		if (vm.count("open-debugger"))
  			s_open_debugger = vm["open-debugger"].as<bool>();
  
@@ -1672,63 +2215,36 @@ index e12fdc62..bd81ccc5 100644
 +				return 1;
 +			}
 +		}
-+		if (vm.count("system-overlay-parent-window"))
-+		{
-+			const auto window = vm["system-overlay-parent-window"].as<std::string>();
-+			try
-+			{
-+				s_system_overlay_parent_window = static_cast<uintptr_t>(std::stoull(window, nullptr, 16));
-+			}
-+			catch (const std::exception&)
-+			{
-+				std::cerr << "Expected system overlay parent window as an unsigned hexadecimal value\n";
-+				return 1;
-+			}
-+		}
-+		if (vm.count("system-overlay-x"))
-+			s_system_overlay_x = vm["system-overlay-x"].as<int>();
-+		if (vm.count("system-overlay-y"))
-+			s_system_overlay_y = vm["system-overlay-y"].as<int>();
-+		if (vm.count("system-overlay-width"))
-+			s_system_overlay_width = vm["system-overlay-width"].as<int>();
-+		if (vm.count("system-overlay-height"))
-+			s_system_overlay_height = vm["system-overlay-height"].as<int>();
++		if (vm.count("system-applet-channel"))
++			s_system_applet_channel = vm["system-applet-channel"].as<std::string>();
 +
  		if (vm.count("forward-console-logging"))
  		{
  			requireConsole();
 diff --git a/src/config/LaunchSettings.h b/src/config/LaunchSettings.h
-index d23c8454..9b24b7f1 100644
+index d23c8454..4066da90 100644
 --- a/src/config/LaunchSettings.h
 +++ b/src/config/LaunchSettings.h
-@@ -38,6 +38,16 @@ public:
+@@ -38,6 +38,12 @@ public:
  	static bool ForceMultiCoreInterpreter() { return s_force_multicore_interpreter; }
  
  	static std::optional<uint32> GetPersistentId() { return s_persistent_id; }
 +	static bool IsSystemOverlayChild() { return s_system_overlay_child; }
 +	static std::optional<uint64> GetSystemOverlayCallerTitleId() { return s_system_overlay_caller_title_id; }
-+	static std::optional<uintptr_t> GetSystemOverlayParentWindow() { return s_system_overlay_parent_window; }
-+	static std::optional<int> GetSystemOverlayX() { return s_system_overlay_x; }
-+	static std::optional<int> GetSystemOverlayY() { return s_system_overlay_y; }
-+	static std::optional<int> GetSystemOverlayWidth() { return s_system_overlay_width; }
-+	static std::optional<int> GetSystemOverlayHeight() { return s_system_overlay_height; }
++	static const std::optional<std::string>& GetSystemAppletChannel() { return s_system_applet_channel; }
 +
 +	// Kept in the process exit-code range so it survives wxExecute on POSIX.
 +	static constexpr int SYSTEM_OVERLAY_EXIT_LAUNCH_WII_U_MENU = 0x55;
  
  	static uint32 GetPPCRecLowerAddr() { return ppcRec_limitLowerAddr; };
  	static uint32 GetPPCRecUpperAddr() { return ppcRec_limitUpperAddr; };
-@@ -64,6 +74,13 @@ private:
+@@ -64,6 +70,9 @@ private:
  	inline static bool s_force_multicore_interpreter = false;
  	
  	inline static std::optional<uint32> s_persistent_id{};
 +	inline static bool s_system_overlay_child = false;
 +	inline static std::optional<uint64> s_system_overlay_caller_title_id{};
-+	inline static std::optional<uintptr_t> s_system_overlay_parent_window{};
-+	inline static std::optional<int> s_system_overlay_x{};
-+	inline static std::optional<int> s_system_overlay_y{};
-+	inline static std::optional<int> s_system_overlay_width{};
-+	inline static std::optional<int> s_system_overlay_height{};
++	inline static std::optional<std::string> s_system_applet_channel{};
  
  	// for recompiler debugging
  	inline static uint32 ppcRec_limitLowerAddr{};
@@ -1744,18 +2260,6 @@ index b2346c17..95d37ecf 100644
  
  	void RefreshGameList();
  
-diff --git a/src/gui/wxgui/CMakeLists.txt b/src/gui/wxgui/CMakeLists.txt
-index 079a78cd..27bcf54f 100644
---- a/src/gui/wxgui/CMakeLists.txt
-+++ b/src/gui/wxgui/CMakeLists.txt
-@@ -166,6 +166,7 @@ target_link_libraries(CemuWxGui PRIVATE
- if(ENABLE_WXWIDGETS AND UNIX AND NOT APPLE)
- 	# PUBLIC because gdk/gdkkeysyms.h is included in guiWrapper.h
- 	target_link_libraries(CemuWxGui PUBLIC GTK3::gtk)
-+	target_link_libraries(CemuWxGui PRIVATE X11::X11 X11::Xext)
-   if (ENABLE_WAYLAND)
-     target_link_libraries(CemuWxGui PRIVATE Wayland::Client CemuWaylandProtocols)
-   endif()
 diff --git a/src/gui/wxgui/GeneralSettings2.cpp b/src/gui/wxgui/GeneralSettings2.cpp
 index f1435fba..9292188c 100644
 --- a/src/gui/wxgui/GeneralSettings2.cpp
@@ -1811,44 +2315,16 @@ index 2f7e3b68..fbff8116 100644
  	wxChoice* m_msw_theme;
  #endif
 diff --git a/src/gui/wxgui/MainWindow.cpp b/src/gui/wxgui/MainWindow.cpp
-index 9eec7dd3..33ef4488 100644
+index 9eec7dd3..1effeba5 100644
 --- a/src/gui/wxgui/MainWindow.cpp
 +++ b/src/gui/wxgui/MainWindow.cpp
-@@ -41,6 +41,28 @@
- #if BOOST_OS_LINUX && defined(ENABLE_FERAL_GAMEMODE)
- #include <gamemode_client.h>
- #endif
-+#if BOOST_OS_LINUX || BOOST_OS_BSD
-+#include <X11/Xlib.h>
-+// wxWidgets removes these legacy Xlib macros from its public namespace,
-+// while the XShape header still uses them in its declarations.
-+#ifndef Bool
-+#define CEMU_RESTORE_X11_BOOL
-+#define Bool int
-+#endif
-+#ifndef Status
-+#define CEMU_RESTORE_X11_STATUS
-+#define Status int
-+#endif
-+#include <X11/extensions/shape.h>
-+#ifdef CEMU_RESTORE_X11_BOOL
-+#undef Bool
-+#undef CEMU_RESTORE_X11_BOOL
-+#endif
-+#ifdef CEMU_RESTORE_X11_STATUS
-+#undef Status
-+#undef CEMU_RESTORE_X11_STATUS
-+#endif
-+#endif
- #if ( BOOST_OS_LINUX || BOOST_OS_BSD ) && HAS_WAYLAND
- #include "helpers/wxWayland.h"
- #endif
-@@ -60,12 +82,20 @@
+@@ -60,12 +60,21 @@
  //Cafe libs
  #include "Cafe/OS/libs/nfc/nfc.h"
  #include "Cafe/OS/libs/swkbd/swkbd.h"
 +#include "Cafe/OS/libs/sysapp/sysapp.h"
 +#include "Cafe/HW/Latte/Core/BottomScreenBridge.h"
++#include "Cafe/HW/Latte/Core/SystemAppletBridge.h"
  
  #include "Cafe/HW/Latte/Renderer/Renderer.h" // For renderer API checks
  
@@ -1864,7 +2340,7 @@ index 9eec7dd3..33ef4488 100644
  enum
  {
  	// ui elements
-@@ -156,6 +186,7 @@ enum
+@@ -156,6 +165,7 @@ enum
  	MAINFRAME_MENU_ID_HELP_UPDATE,
  	// custom
  	MAINFRAME_ID_TIMER1 = 21800,
@@ -1872,7 +2348,7 @@ index 9eec7dd3..33ef4488 100644
  };
  
  wxDEFINE_EVENT(wxEVT_SET_WINDOW_TITLE, wxCommandEvent);
-@@ -163,6 +194,7 @@ wxDEFINE_EVENT(wxEVT_REQUEST_GAMELIST_REFRESH, wxCommandEvent);
+@@ -163,6 +173,7 @@ wxDEFINE_EVENT(wxEVT_REQUEST_GAMELIST_REFRESH, wxCommandEvent);
  wxDEFINE_EVENT(wxEVT_LAUNCH_GAME, wxLaunchGameEvent);
  wxDEFINE_EVENT(wxEVT_REQUEST_RECREATE_CANVAS, wxCommandEvent);
  wxDEFINE_EVENT(wxEVT_REQUEST_GAME_EXIT, wxCommandEvent);
@@ -1880,7 +2356,7 @@ index 9eec7dd3..33ef4488 100644
  
  wxBEGIN_EVENT_TABLE(MainWindow, wxFrame)
  EVT_TIMER(MAINFRAME_ID_TIMER1, MainWindow::OnTimer)
-@@ -245,6 +277,8 @@ EVT_COMMAND(wxID_ANY, wxEVT_SET_WINDOW_TITLE, MainWindow::OnSetWindowTitle)
+@@ -245,6 +256,8 @@ EVT_COMMAND(wxID_ANY, wxEVT_SET_WINDOW_TITLE, MainWindow::OnSetWindowTitle)
  
  EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_RECREATE_CANVAS, MainWindow::OnRequestRecreateCanvas)
  EVT_COMMAND(wxID_ANY, wxEVT_REQUEST_GAME_EXIT, MainWindow::OnRequestGameExit)
@@ -1889,7 +2365,7 @@ index 9eec7dd3..33ef4488 100644
  
  wxEND_EVENT_TABLE()
  
-@@ -294,8 +328,15 @@ private:
+@@ -294,8 +307,15 @@ private:
  	MainWindow* m_window;
  };
  
@@ -1906,7 +2382,7 @@ index 9eec7dd3..33ef4488 100644
  {
  #ifdef __WXMAC__
  	// Not necessary to set wxApp::s_macExitMenuItemId as automatically handled
-@@ -437,6 +478,15 @@ wxString MainWindow::GetInitialWindowTitle()
+@@ -437,6 +457,15 @@ wxString MainWindow::GetInitialWindowTitle()
  
  void MainWindow::OnClose(wxCloseEvent& event)
  {
@@ -1922,16 +2398,16 @@ index 9eec7dd3..33ef4488 100644
  	if (m_debugger_window)
  	{
  		m_debugger_window->CleanupForDestroy();
-@@ -618,6 +668,8 @@ bool MainWindow::FileLoad(const fs::path launchPath, wxLaunchGameEvent::INITIATE
+@@ -618,6 +647,8 @@ bool MainWindow::FileLoad(const fs::path launchPath, wxLaunchGameEvent::INITIATE
  	CreateCanvas();
  	CafeSystem::LaunchForegroundTitle();
  	RecreateMenu();
 +	if (LaunchSettings::IsSystemOverlayChild())
-+		ConfigureSystemOverlayWindow();
++		ConfigureSystemAppletWindow();
  	UpdateChildWindowTitleRunningState();
  
  	return true;
-@@ -1339,6 +1391,9 @@ void MainWindow::LoadSettings()
+@@ -1339,6 +1370,9 @@ void MainWindow::LoadSettings()
  
  void MainWindow::SaveSettings()
  {
@@ -1941,7 +2417,7 @@ index 9eec7dd3..33ef4488 100644
  	auto lock = GetConfigHandle().Lock();
  	auto& config = GetWxGUIConfig();
  
-@@ -2417,8 +2472,12 @@ void MainWindow::RecreateMenu()
+@@ -2417,8 +2451,12 @@ void MainWindow::RecreateMenu()
  		UpdateNFCMenu();
  	}
  
@@ -1956,7 +2432,7 @@ index 9eec7dd3..33ef4488 100644
  		SetMenuVisible(false);
  }
  
-@@ -2506,6 +2565,242 @@ void MainWindow::OnRequestGameExit(wxCommandEvent& event)
+@@ -2506,6 +2544,156 @@ void MainWindow::OnRequestGameExit(wxCommandEvent& event)
  	}
  }
  
@@ -2005,25 +2481,21 @@ index 9eec7dd3..33ef4488 100644
 +		value.Replace("\"", "\\\"");
 +		return "\"" + value + "\"";
 +	};
++	const std::string applet_channel = fmt::format("cemu_hbm_{}_{}", wxGetProcessId(),
++		std::chrono::steady_clock::now().time_since_epoch().count());
++	if (!SystemAppletBridge::StartConsumer(applet_channel))
++	{
++		wxMessageBox(_("Cemu could not create the Wii U system applet compositor."),
++			_("HOME Menu"), wxOK | wxCENTRE | wxICON_ERROR, this);
++		return;
++	}
 +
 +	wxString command = quote(wxHelper::FromPath(ActiveSettings::GetExecutablePath()));
 +	command += wxString::FromUTF8(fmt::format(" --title-id {:016x}", home_menu_title_id));
 +	command += " --mlc " + quote(wxHelper::FromPath(ActiveSettings::GetMlcPath()));
 +	command += wxString::FromUTF8(fmt::format(" --account {:08x}", ActiveSettings::GetPersistentId()));
 +	command += wxString::FromUTF8(fmt::format(" --system-overlay-child=true --system-overlay-caller-title-id {:016x}", caller_title_id));
-+	const wxRect overlay_rect = m_render_canvas->GetScreenRect();
-+	command += wxString::FromUTF8(fmt::format(" --system-overlay-x {} --system-overlay-y {} --system-overlay-width {} --system-overlay-height {}",
-+		overlay_rect.x, overlay_rect.y, overlay_rect.width, overlay_rect.height));
-+	const auto render_window = initHandleContextFromWxWidgetsWindow(m_render_canvas);
-+	if ((render_window.backend == WindowSystem::WindowHandleInfo::Backend::X11 ||
-+		render_window.backend == WindowSystem::WindowHandleInfo::Backend::Windows) &&
-+		render_window.surface)
-+	{
-+		command += wxString::FromUTF8(fmt::format(" --system-overlay-parent-window {:x}",
-+			reinterpret_cast<uintptr_t>(render_window.surface)));
-+	}
-+	if (FullscreenEnabled())
-+		command += " --fullscreen=true";
++	command += " --system-applet-channel " + quote(wxString::FromUTF8(applet_channel));
 +
 +	BottomScreen::SetSuspended(true);
 +	coreinit::StartBackgroundTransition();
@@ -2034,6 +2506,7 @@ index 9eec7dd3..33ef4488 100644
 +	{
 +		delete m_home_menu_process;
 +		m_home_menu_process = nullptr;
++		SystemAppletBridge::StopConsumer();
 +		BottomScreen::SetSuspended(false);
 +		coreinit::StartForegroundTransition();
 +		wxMessageBox(_("Cemu could not start the Wii U HOME Button Menu title."),
@@ -2055,6 +2528,7 @@ index 9eec7dd3..33ef4488 100644
 +	m_home_menu_process = nullptr;
 +	m_home_menu_pid = 0;
 +
++	SystemAppletBridge::StopConsumer();
 +	BottomScreen::SetSuspended(false);
 +	if (event.GetExitCode() == LaunchSettings::SYSTEM_OVERLAY_EXIT_LAUNCH_WII_U_MENU)
 +	{
@@ -2071,114 +2545,30 @@ index 9eec7dd3..33ef4488 100644
 +	Raise();
 +}
 +
-+void MainWindow::ConfigureSystemOverlayWindow()
++void MainWindow::ConfigureSystemAppletWindow()
 +{
-+	const int width = LaunchSettings::GetSystemOverlayWidth().value_or(1280);
-+	const int height = LaunchSettings::GetSystemOverlayHeight().value_or(720);
-+	const int x = LaunchSettings::GetSystemOverlayX().value_or(0);
-+	const int y = LaunchSettings::GetSystemOverlayY().value_or(0);
 +	SetMenuVisible(false);
-+	SetPosition({ x, y });
-+	SetClientSize(width, height);
++	SetClientSize(1, 1);
++	SetPosition({ -32000, -32000 });
 +	Layout();
 +	if (m_padView)
 +	{
++		// Keep a drawable alive for the emulated GamePad output and remote
++		// input path, but do not expose the helper process as a second window.
++		// PadViewFrame normally enforces 320x180; remove that minimum before
++		// shrinking it so a window manager cannot leave a visible sliver.
 +		m_padView->Restore();
-+		m_padView->SetPosition({ x, y });
-+		m_padView->SetSize(width, height);
++		m_padView->SetMinClientSize({ 1, 1 });
++		m_padView->SetClientSize(1, 1);
++		m_padView->SetPosition({ -32000, -32000 });
 +	}
-+
-+	if (const auto parent_window = LaunchSettings::GetSystemOverlayParentWindow())
++	if (!LaunchSettings::GetSystemAppletChannel() ||
++		!SystemAppletBridge::StartPublisher(*LaunchSettings::GetSystemAppletChannel()))
 +	{
-+#if BOOST_OS_WINDOWS
-+		HWND child = reinterpret_cast<HWND>(m_render_canvas->GetHWND());
-+		HWND parent = reinterpret_cast<HWND>(*parent_window);
-+		LONG_PTR style = GetWindowLongPtr(child, GWL_STYLE);
-+		style &= ~WS_POPUP;
-+		style |= WS_CHILD;
-+		SetWindowLongPtr(child, GWL_STYLE, style);
-+		SetParent(child, parent);
-+		SetWindowPos(child, HWND_TOP, 0, 0, width, height, SWP_FRAMECHANGED | SWP_SHOWWINDOW);
-+		SetFocus(child);
-+		auto conceal_top_level = [x, y](HWND window)
-+		{
-+			RECT rect{};
-+			GetWindowRect(window, &rect);
-+			const int hidden_x = x - std::max(rect.right - rect.left, 1L) - 4096;
-+			SetWindowPos(window, HWND_BOTTOM, hidden_x, y, 0, 0,
-+				SWP_NOSIZE | SWP_NOACTIVATE);
-+		};
-+		conceal_top_level(reinterpret_cast<HWND>(GetHWND()));
-+		if (m_padView)
-+			conceal_top_level(reinterpret_cast<HWND>(m_padView->GetHWND()));
-+		return;
-+#elif BOOST_OS_LINUX || BOOST_OS_BSD
-+		if (g_window_info.window_main.backend == WindowSystem::WindowHandleInfo::Backend::X11)
-+		{
-+			Display* display = static_cast<Display*>(g_window_info.window_main.display);
-+			const auto render_window = initHandleContextFromWxWidgetsWindow(m_render_canvas);
-+			const ::Window child = static_cast<::Window>(reinterpret_cast<uintptr_t>(render_window.surface));
-+			const ::Window parent = static_cast<::Window>(*parent_window);
-+			XReparentWindow(display, child, parent, 0, 0);
-+			XMoveResizeWindow(display, child, 0, 0, width, height);
-+			XMapRaised(display, child);
-+			XSetInputFocus(display, child, RevertToParent, CurrentTime);
-+			// Window managers may wrap GTK top-levels in their own native frame.
-+			// Lower that frame, not merely the client inside it. The reparented
-+			// TV render surface is no longer part of this tree. The pad top-level
-+			// remains mapped so OpenGL keeps producing the DRC image, but it too
-+			// stays behind the caller.
-+			auto conceal_top_level = [display, x, y](void* surface)
-+			{
-+				if (!surface)
-+					return;
-+				::Window top_level = static_cast<::Window>(reinterpret_cast<uintptr_t>(surface));
-+				while (true)
-+				{
-+				::Window root = 0;
-+				::Window native_parent = 0;
-+				::Window* children = nullptr;
-+				unsigned int child_count = 0;
-+				if (!XQueryTree(display, top_level, &root, &native_parent, &children, &child_count))
-+					break;
-+				if (children)
-+					XFree(children);
-+				if (!native_parent || native_parent == root)
-+					break;
-+				top_level = native_parent;
-+				}
-+				// Keep the DRC top-level mapped, and do not resize it: OpenGL
-+				// needs that native canvas intact to produce the second-screen
-+				// image. Move the WM frame away as a fallback, then give it an
-+				// empty bounding shape so WMs which keep an off-screen grab strip
-+				// visible cannot leak any part around the embedded TV.
-+				XWindowAttributes attributes{};
-+				const int hidden_x = XGetWindowAttributes(display, top_level, &attributes)
-+					? x - std::max(attributes.width, 1) - 4096
-+					: x - 8192;
-+				XMoveWindow(display, top_level, hidden_x, y);
-+				int shape_event = 0;
-+				int shape_error = 0;
-+				if (XShapeQueryExtension(display, &shape_event, &shape_error))
-+					XShapeCombineRectangles(display, top_level, ShapeBounding,
-+						0, 0, nullptr, 0, ShapeSet, Unsorted);
-+				XLowerWindow(display, top_level);
-+			};
-+			conceal_top_level(g_window_info.window_main.surface);
-+			if (m_padView)
-+				conceal_top_level(g_window_info.window_pad.surface);
-+			XFlush(display);
-+			return;
-+		}
-+#endif
++		wxMessageBox(_("Cemu could not connect to the Wii U system applet compositor."),
++			_("HOME Menu"), wxOK | wxCENTRE | wxICON_ERROR, this);
++		Close();
 +	}
-+
-+	// Wayland and Cocoa don't allow cross-process native reparenting. A
-+	// decoration-free surface in the exact render rectangle is the closest
-+	// equivalent and leaves the suspended frame directly underneath.
-+	SetPosition({ x, y });
-+	SetClientSize(width, height);
-+	Raise();
 +}
 +
 +bool MainWindow::LaunchWiiUMenu()
@@ -2200,7 +2590,7 @@ index 9eec7dd3..33ef4488 100644
  {
  	return LaunchSettings::FullscreenEnabled().value_or(GetWxGUIConfig().fullscreen);
 diff --git a/src/gui/wxgui/MainWindow.h b/src/gui/wxgui/MainWindow.h
-index deb656ce..a100177f 100644
+index deb656ce..e15653cd 100644
 --- a/src/gui/wxgui/MainWindow.h
 +++ b/src/gui/wxgui/MainWindow.h
 @@ -3,6 +3,7 @@
@@ -2225,7 +2615,7 @@ index deb656ce..a100177f 100644
  	void OnRequestGameExit(wxCommandEvent& event);
 +	void OnRequestHomeMenu(wxCommandEvent& event);
 +	void OnHomeMenuProcessEnded(wxProcessEvent& event);
-+	void ConfigureSystemOverlayWindow();
++	void ConfigureSystemAppletWindow();
 +	bool LaunchWiiUMenu();
  
  	wxRect GetDesktopRect();
@@ -2402,6 +2792,104 @@ index bb730db8..6a760b40 100644
  void WindowSystem::RefreshGameList()
  {
  	std::shared_lock lock(g_mutex);
+diff --git a/src/imgui/imgui_impl_vulkan.cpp b/src/imgui/imgui_impl_vulkan.cpp
+index f9a23166..40cde136 100644
+--- a/src/imgui/imgui_impl_vulkan.cpp
++++ b/src/imgui/imgui_impl_vulkan.cpp
+@@ -109,6 +109,7 @@ struct ImGuiTexture
+     VkDescriptorSet descriptor_set;
+     VkBuffer uploadBuffer;
+     VkDeviceMemory uploadBufferMemory;
++    Vector2i size;
+ };
+ 
+ 
+@@ -1460,6 +1461,7 @@ ImTextureID ImGui_ImplVulkan_GenerateTexture(VkCommandBuffer commandBuffer, cons
+             vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, NULL, 0, NULL, 1, use_barrier);
+         }
+ 
++        texture->size = size;
+         return (ImTextureID)texture;
+     }
+     catch (const std::exception & ex)
+@@ -1469,6 +1471,60 @@ ImTextureID ImGui_ImplVulkan_GenerateTexture(VkCommandBuffer commandBuffer, cons
+     }
+ }
+ 
++bool ImGui_ImplVulkan_UpdateTexture(VkCommandBuffer commandBuffer, ImTextureID id, const std::vector<uint8>& data, const Vector2i& size)
++{
++    auto* texture = (ImGuiTexture*)id;
++    if (!texture || texture->size != size || data.size() < (size_t)size.x * size.y * 4)
++        return false;
++
++    char* map = nullptr;
++    VkResult err = vkMapMemory(g_VulkanInitInfo.Device, texture->uploadBufferMemory, 0, data.size(), 0, (void**)&map);
++    check_vk_result(err);
++    if (err != VK_SUCCESS)
++        return false;
++    memcpy(map, data.data(), data.size());
++    VkMappedMemoryRange range{};
++    range.sType = VK_STRUCTURE_TYPE_MAPPED_MEMORY_RANGE;
++    range.memory = texture->uploadBufferMemory;
++    range.size = data.size();
++    err = vkFlushMappedMemoryRanges(g_VulkanInitInfo.Device, 1, &range);
++    check_vk_result(err);
++    vkUnmapMemory(g_VulkanInitInfo.Device, texture->uploadBufferMemory);
++    if (err != VK_SUCCESS)
++        return false;
++
++    VkImageMemoryBarrier to_copy{};
++    to_copy.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
++    to_copy.srcAccessMask = VK_ACCESS_SHADER_READ_BIT;
++    to_copy.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++    to_copy.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++    to_copy.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
++    to_copy.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++    to_copy.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
++    to_copy.image = texture->image;
++    to_copy.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++    to_copy.subresourceRange.levelCount = 1;
++    to_copy.subresourceRange.layerCount = 1;
++    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
++        VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_copy);
++
++    VkBufferImageCopy copy{};
++    copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++    copy.imageSubresource.layerCount = 1;
++    copy.imageExtent = { (uint32)size.x, (uint32)size.y, 1 };
++    vkCmdCopyBufferToImage(commandBuffer, texture->uploadBuffer, texture->image,
++        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
++
++    VkImageMemoryBarrier to_sample = to_copy;
++    to_sample.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
++    to_sample.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
++    to_sample.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
++    to_sample.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++    vkCmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
++        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &to_sample);
++    return true;
++}
++
+ void ImGui_ImplVulkan_DeleteTexture(ImTextureID id)
+ {
+     auto textureInfo = (ImGuiTexture*)id;
+diff --git a/src/imgui/imgui_impl_vulkan.h b/src/imgui/imgui_impl_vulkan.h
+index 44bcdd50..d2511d0b 100644
+--- a/src/imgui/imgui_impl_vulkan.h
++++ b/src/imgui/imgui_impl_vulkan.h
+@@ -61,6 +61,7 @@ IMGUI_IMPL_API void     ImGui_ImplVulkan_SetMinImageCount(uint32_t min_image_cou
+ //IMGUI_IMPL_API void           ImGui_ImplVulkan_InvalidateFontUploadObjects();
+ IMGUI_IMPL_API ImTextureID    ImGui_ImplVulkan_AddTexture(VkSampler sampler, VkImageView image_view, VkImageLayout image_layout);
+ IMGUI_IMPL_API ImTextureID ImGui_ImplVulkan_GenerateTexture(VkCommandBuffer commandBuffer, const std::vector<uint8>& data, const Vector2i& size);
++IMGUI_IMPL_API bool ImGui_ImplVulkan_UpdateTexture(VkCommandBuffer commandBuffer, ImTextureID id, const std::vector<uint8>& data, const Vector2i& size);
+ IMGUI_IMPL_API void ImGui_ImplVulkan_DeleteTexture(ImTextureID id);
+ 
+ 
+@@ -135,4 +136,3 @@ struct ImGui_ImplVulkanH_Window
+         ClearEnable = true;
+     }
+ };
+-
 diff --git a/src/input/CMakeLists.txt b/src/input/CMakeLists.txt
 index 4978ef0a..03bb0474 100644
 --- a/src/input/CMakeLists.txt
