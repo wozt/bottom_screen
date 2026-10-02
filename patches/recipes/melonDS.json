@@ -797,6 +797,232 @@
     "            MelonCap::Update();",
     "#endif // MELONCAP"
    ]
+  },
+  {
+   "file": "src/frontend/qt_sdl/VideoSettingsDialog.cpp",
+   "in": "VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(",
+   "find": [
+    "    oldGLScale = cfg.GetInt(\"3D.GL.ScaleFactor\");",
+    "    oldGLBetterPolygons = cfg.GetBool(\"3D.GL.BetterPolygons\");",
+    "    oldHiresCoordinates = cfg.GetBool(\"3D.GL.HiresCoordinates\");",
+    "",
+    "    grp3DRenderer = new QButtonGroup(this);",
+    "    grp3DRenderer->addButton(ui->rb3DSoftware, renderer3D_Software);"
+   ],
+   "replace": [
+    "    oldGLScale = cfg.GetInt(\"3D.GL.ScaleFactor\");",
+    "    oldGLBetterPolygons = cfg.GetBool(\"3D.GL.BetterPolygons\");",
+    "    oldHiresCoordinates = cfg.GetBool(\"3D.GL.HiresCoordinates\");",
+    "    oldBottomScreenEnabled = cfg.GetBool(\"BottomScreen.Enabled\");",
+    "    oldBottomScreenPort = cfg.GetInt(\"BottomScreen.Port\");",
+    "",
+    "    grp3DRenderer = new QButtonGroup(this);",
+    "    grp3DRenderer->addButton(ui->rb3DSoftware, renderer3D_Software);"
+   ]
+  },
+  {
+   "file": "src/frontend/qt_sdl/VideoSettingsDialog.cpp",
+   "in": "VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(",
+   "find": [
+    "",
+    "    ui->cbBetterPolygons->setChecked(oldGLBetterPolygons != 0);",
+    "    ui->cbxComputeHiResCoords->setChecked(oldHiresCoordinates != 0);",
+    "",
+    "    if (!oldVSync)",
+    "        ui->sbVSyncInterval->setEnabled(false);"
+   ],
+   "replace": [
+    "",
+    "    ui->cbBetterPolygons->setChecked(oldGLBetterPolygons != 0);",
+    "    ui->cbxComputeHiResCoords->setChecked(oldHiresCoordinates != 0);",
+    "    ui->cbBottomScreenEnabled->setChecked(oldBottomScreenEnabled);",
+    "    ui->sbBottomScreenPort->setValue(oldBottomScreenPort);",
+    "",
+    "    if (!oldVSync)",
+    "        ui->sbVSyncInterval->setEnabled(false);"
+   ]
+  },
+  {
+   "file": "src/frontend/qt_sdl/VideoSettingsDialog.cpp",
+   "in": "void VideoSettingsDialog::on_VideoSettingsDialog_rejected()",
+   "find": [
+    "    cfg.SetInt(\"3D.GL.ScaleFactor\", oldGLScale);",
+    "    cfg.SetBool(\"3D.GL.BetterPolygons\", oldGLBetterPolygons);",
+    "    cfg.SetBool(\"3D.GL.HiresCoordinates\", oldHiresCoordinates);",
+    "",
+    "    emit updateVideoSettings(old_gl != UsesGL());",
+    ""
+   ],
+   "replace": [
+    "    cfg.SetInt(\"3D.GL.ScaleFactor\", oldGLScale);",
+    "    cfg.SetBool(\"3D.GL.BetterPolygons\", oldGLBetterPolygons);",
+    "    cfg.SetBool(\"3D.GL.HiresCoordinates\", oldHiresCoordinates);",
+    "    cfg.SetBool(\"BottomScreen.Enabled\", oldBottomScreenEnabled);",
+    "    cfg.SetInt(\"BottomScreen.Port\", oldBottomScreenPort);",
+    "",
+    "    emit updateVideoSettings(old_gl != UsesGL());",
+    ""
+   ]
+  },
+  {
+   "file": "src/frontend/qt_sdl/VideoSettingsDialog.cpp",
+   "in": "void VideoSettingsDialog::on_cbxComputeHiResCoords_stateChanged(int state)",
+   "find": [
+    "    auto& cfg = emuInstance->getGlobalConfig();",
+    "    cfg.SetBool(\"3D.GL.HiresCoordinates\", (state != 0));",
+    "",
+    "    emit updateVideoSettings(false);",
+    "}"
+   ],
+   "replace": [
+    "    auto& cfg = emuInstance->getGlobalConfig();",
+    "    cfg.SetBool(\"3D.GL.HiresCoordinates\", (state != 0));",
+    "",
+    "    // The physical GamePad controls below live with the other video settings.",
+    "    emit updateVideoSettings(false);",
+    "}",
+    "",
+    "void VideoSettingsDialog::on_cbBottomScreenEnabled_stateChanged(int state)",
+    "{",
+    "    auto& cfg = emuInstance->getGlobalConfig();",
+    "    cfg.SetBool(\"BottomScreen.Enabled\", state != 0);",
+    "}",
+    "",
+    "void VideoSettingsDialog::on_sbBottomScreenPort_valueChanged(int value)",
+    "{",
+    "    auto& cfg = emuInstance->getGlobalConfig();",
+    "    cfg.SetInt(\"BottomScreen.Port\", value);",
+    "}"
+   ]
+  },
+  {
+   "file": "src/frontend/qt_sdl/VideoSettingsDialog.h",
+   "in": "private slots:",
+   "find": [
+    "    void on_cbxComputeHiResCoords_stateChanged(int state);",
+    "",
+    "    void on_cbSoftwareThreaded_stateChanged(int state);",
+    "private:",
+    "    void setVsyncControlEnable(bool hasOGL);",
+    "    void setEnabled();"
+   ],
+   "replace": [
+    "    void on_cbxComputeHiResCoords_stateChanged(int state);",
+    "",
+    "    void on_cbSoftwareThreaded_stateChanged(int state);",
+    "    void on_cbBottomScreenEnabled_stateChanged(int state);",
+    "    void on_sbBottomScreenPort_valueChanged(int value);",
+    "private:",
+    "    void setVsyncControlEnable(bool hasOGL);",
+    "    void setEnabled();"
+   ]
+  },
+  {
+   "file": "src/frontend/qt_sdl/VideoSettingsDialog.h",
+   "in": "private:",
+   "find": [
+    "    int oldGLScale;",
+    "    int oldGLBetterPolygons;",
+    "    int oldHiresCoordinates;",
+    "};",
+    "",
+    "#endif // VIDEOSETTINGSDIALOG_H",
+    ""
+   ],
+   "replace": [
+    "    int oldGLScale;",
+    "    int oldGLBetterPolygons;",
+    "    int oldHiresCoordinates;",
+    "    bool oldBottomScreenEnabled;",
+    "    int oldBottomScreenPort;",
+    "};",
+    "",
+    "#endif // VIDEOSETTINGSDIALOG_H"
+   ]
+  },
+  {
+   "file": "src/frontend/qt_sdl/VideoSettingsDialog.ui",
+   "in": "",
+   "find": [
+    "     </layout>",
+    "    </widget>",
+    "   </item>",
+    "   <item row=\"0\" column=\"1\">",
+    "    <widget class=\"QGroupBox\" name=\"groupBox_2\">",
+    "     <property name=\"title\">"
+   ],
+   "replace": [
+    "     </layout>",
+    "    </widget>",
+    "   </item>",
+    "   <item row=\"2\" column=\"1\">",
+    "    <widget class=\"QGroupBox\" name=\"groupBoxBottomScreen\">",
+    "     <property name=\"title\">",
+    "      <string>Wii U GamePad</string>",
+    "     </property>",
+    "     <layout class=\"QGridLayout\" name=\"gridLayoutBottomScreen\">",
+    "      <item row=\"0\" column=\"0\" colspan=\"2\">",
+    "       <widget class=\"QCheckBox\" name=\"cbBottomScreenEnabled\">",
+    "        <property name=\"whatsThis\">",
+    "         <string>Expose the DS screens and controls to the Bottom Screen launcher. Use Sync GamePad there to connect and reauthorize a physical Wii U GamePad.</string>",
+    "        </property>",
+    "        <property name=\"text\">",
+    "         <string>Stream to physical Wii U GamePad</string>",
+    "        </property>",
+    "       </widget>",
+    "      </item>",
+    "      <item row=\"1\" column=\"0\">",
+    "       <widget class=\"QLabel\" name=\"labelBottomScreenPort\">",
+    "        <property name=\"text\">",
+    "         <string>Port:</string>",
+    "        </property>",
+    "       </widget>",
+    "      </item>",
+    "      <item row=\"1\" column=\"1\">",
+    "       <widget class=\"QSpinBox\" name=\"sbBottomScreenPort\">",
+    "        <property name=\"whatsThis\">",
+    "         <string>First port to try. If it is already occupied, the server uses the next available port.</string>",
+    "        </property>",
+    "        <property name=\"minimum\">",
+    "         <number>1024</number>",
+    "        </property>",
+    "        <property name=\"maximum\">",
+    "         <number>65535</number>",
+    "        </property>",
+    "        <property name=\"value\">",
+    "         <number>5090</number>",
+    "        </property>",
+    "       </widget>",
+    "      </item>",
+    "     </layout>",
+    "    </widget>",
+    "   </item>",
+    "   <item row=\"0\" column=\"1\">",
+    "    <widget class=\"QGroupBox\" name=\"groupBox_2\">",
+    "     <property name=\"title\">"
+   ]
+  },
+  {
+   "file": "src/frontend/qt_sdl/VideoSettingsDialog.ui",
+   "in": "",
+   "find": [
+    "  <tabstop>cbSoftwareThreaded</tabstop>",
+    "  <tabstop>cbxGLResolution</tabstop>",
+    "  <tabstop>cbBetterPolygons</tabstop>",
+    " </tabstops>",
+    " <resources/>",
+    " <connections>"
+   ],
+   "replace": [
+    "  <tabstop>cbSoftwareThreaded</tabstop>",
+    "  <tabstop>cbxGLResolution</tabstop>",
+    "  <tabstop>cbBetterPolygons</tabstop>",
+    "  <tabstop>cbBottomScreenEnabled</tabstop>",
+    "  <tabstop>sbBottomScreenPort</tabstop>",
+    " </tabstops>",
+    " <resources/>",
+    " <connections>"
+   ]
   }
  ]
 }

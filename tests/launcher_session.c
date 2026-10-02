@@ -43,7 +43,11 @@ int main(int argc, char **argv)
     pad_status = gtk_label_new("");
     Emu *e = &emus[2];
     build_emu_panel(e);
-    on_pattern(NULL, e);
+    /* Radio setup is separately handled by the two UI actions.  Once the AP
+     * reports ready, both converge on this source-selection transition. */
+    begin_gamepad_connection();
+    assert(pad_auto_waiting);
+    assert(pad_owner == e); /* Wii U is only the temporary waiting pattern. */
     spin_until(preview_ready);
     GPid first = pad_pid;
     // Deliver the same readiness line the real emulator writes to stderr.

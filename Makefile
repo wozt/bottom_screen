@@ -116,6 +116,7 @@ test: tests/launcher_session tests/launcher_settings tests/testpattern_input tes
 	./tests/run_switch_client.sh
 	./tests/idle_timeout
 	./tests/run_gamepad_aspect.sh
+	./tests/gamepad_ap_scripts.sh
 	./tests/input_merge
 	./tests/resize_flip
 	./tests/run_patches_fresh.sh

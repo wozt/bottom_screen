@@ -39,12 +39,33 @@ the encoder's settings in a single step.
 ## Launcher and interactive pattern
 
 Run `scripts/bottom-screen` (or the local `bs` shell alias). It builds the
-launcher, pattern server and GamePad client. Choose **Sync GamePad** for
-DS, 3DS or Wii U, then **Launch**. The launcher keeps the pattern running
-on a separate port until the emulator announces its actual server port.
-When the emulator exits, the pad returns to that console's pattern.
+launcher, pattern server and GamePad client. Choose **Sync GamePad** for a
+fresh pairing and enter the four symbols displayed by the launcher on the
+pad. For a pad paired previously, choose **Launch AP / Reconnect**. Then
+launch DS, 3DS or Wii U. The launcher keeps the pattern running on a
+separate port until the emulator announces its actual server port. When
+the emulator exits, the pad returns to that console's pattern. **Stop AP**
+ends the GamePad connection and returns the dedicated Wi-Fi interface to
+the system.
 
-The launcher's **GamePad Wii U** panel holds the pad's own settings --
+The AP requires privileged network operations. A one-time installation
+removes the repeated password prompts:
+
+```sh
+sudo ./gamepad/tools/install-polkit.sh
+```
+
+The installer copies the modified hostapd, AP configurations and three
+small control scripts into root-owned locations. Its Polkit rule authorises
+only the current active local user and only the installed helper's `pair`,
+`start` and `stop` operations. The launcher automatically uses it after a
+restart. To remove it:
+
+```sh
+sudo ./gamepad/tools/install-polkit.sh --uninstall
+```
+
+The launcher's **WiiU GamePad** panel holds the pad's own settings --
 screen, a resolution for each screen, the scaling filter, sharpness and
 the bitrate asked of the server. They are starting values passed on the
 command line (`--screen`, `--resolution`, `--top-resolution`, `--filter`,

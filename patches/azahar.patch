@@ -420,6 +420,118 @@ index 269af5262..0e23f4b50 100644
          WriteBasicSetting(Settings::values.use_cpu_jit);
          WriteBasicSetting(Settings::values.delay_start_for_lle_modules);
      }
+diff --git a/src/citra_qt/configuration/configure_graphics.cpp b/src/citra_qt/configuration/configure_graphics.cpp
+index 59472960e..713b59f6f 100644
+--- a/src/citra_qt/configuration/configure_graphics.cpp
++++ b/src/citra_qt/configuration/configure_graphics.cpp
+@@ -157,6 +157,11 @@ void ConfigureGraphics::SetConfiguration() {
+             Settings::values.use_display_refresh_rate_detection.GetValue());
+     }
+     ui->simulate_3ds_gpu_timings->setChecked(Settings::values.simulate_3ds_gpu_timings.GetValue());
++    if (Settings::IsConfiguringGlobal()) {
++        ui->toggle_bottom_screen->setChecked(
++            Settings::values.bottom_screen_enabled.GetValue());
++        ui->bottom_screen_port->setValue(Settings::values.bottom_screen_port.GetValue());
++    }
+ }
+ 
+ void ConfigureGraphics::ApplyConfiguration() {
+@@ -196,6 +201,9 @@ void ConfigureGraphics::ApplyConfiguration() {
+         Settings::values.use_shader_jit = ui->toggle_shader_jit->isChecked();
+         Settings::values.use_display_refresh_rate_detection =
+             ui->toggle_display_refresh_rate_detection->isChecked();
++        Settings::values.bottom_screen_enabled = ui->toggle_bottom_screen->isChecked();
++        Settings::values.bottom_screen_port =
++            static_cast<u16>(ui->bottom_screen_port->value());
+     }
+ }
+ 
+@@ -204,6 +212,10 @@ void ConfigureGraphics::RetranslateUI() {
+ }
+ 
+ void ConfigureGraphics::SetupPerGameUI() {
++    // The stream server is process-wide and starts before a title has a
++    // per-game graphics profile, so it belongs to global graphics settings.
++    ui->bottom_screen_stream_group->setVisible(Settings::IsConfiguringGlobal());
++
+     // Block the global settings if a game is currently running that overrides them
+     if (Settings::IsConfiguringGlobal()) {
+         ui->graphics_api_group->setEnabled(Settings::values.graphics_api.UsingGlobal());
+diff --git a/src/citra_qt/configuration/configure_graphics.ui b/src/citra_qt/configuration/configure_graphics.ui
+index 155a3766b..d51259f50 100644
+--- a/src/citra_qt/configuration/configure_graphics.ui
++++ b/src/citra_qt/configuration/configure_graphics.ui
+@@ -250,6 +250,70 @@
+       <string>Advanced</string>
+      </property>
+      <layout class="QVBoxLayout" name="verticalLayout_2">
++      <item>
++       <widget class="QWidget" name="bottom_screen_stream_group" native="true">
++        <layout class="QHBoxLayout" name="bottom_screen_stream_layout">
++         <property name="leftMargin">
++          <number>0</number>
++         </property>
++         <property name="topMargin">
++          <number>0</number>
++         </property>
++         <property name="rightMargin">
++          <number>0</number>
++         </property>
++         <property name="bottomMargin">
++          <number>0</number>
++         </property>
++         <item>
++          <widget class="QCheckBox" name="toggle_bottom_screen">
++           <property name="toolTip">
++            <string>Expose the 3DS screens and controls to the Bottom Screen launcher. Use Sync GamePad there to connect and reauthorize a physical Wii U GamePad.</string>
++           </property>
++           <property name="text">
++            <string>Stream to physical Wii U GamePad</string>
++           </property>
++          </widget>
++         </item>
++         <item>
++          <spacer name="bottom_screen_stream_spacer">
++           <property name="orientation">
++            <enum>Qt::Horizontal</enum>
++           </property>
++           <property name="sizeHint" stdset="0">
++            <size>
++             <width>20</width>
++             <height>20</height>
++            </size>
++           </property>
++          </spacer>
++         </item>
++         <item>
++          <widget class="QLabel" name="bottom_screen_port_label">
++           <property name="text">
++            <string>Port</string>
++           </property>
++          </widget>
++         </item>
++         <item>
++          <widget class="QSpinBox" name="bottom_screen_port">
++           <property name="toolTip">
++            <string>First port to try. If it is already occupied, the server uses the next available port.</string>
++           </property>
++           <property name="minimum">
++            <number>1024</number>
++           </property>
++           <property name="maximum">
++            <number>65535</number>
++           </property>
++           <property name="value">
++            <number>5090</number>
++           </property>
++          </widget>
++         </item>
++        </layout>
++       </widget>
++      </item>
+       <item>
+        <widget class="QWidget" name="widget_texture_sampling" native="true">
+         <layout class="QHBoxLayout" name="horizontalLayout_2">
 diff --git a/src/common/settings.h b/src/common/settings.h
 index 1d396ecda..363874ecd 100644
 --- a/src/common/settings.h

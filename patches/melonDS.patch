@@ -716,3 +716,138 @@ index c3fbdfe6..2d0b07e2 100755
  #ifdef MELONCAP
              MelonCap::Update();
  #endif // MELONCAP
+diff --git a/src/frontend/qt_sdl/VideoSettingsDialog.cpp b/src/frontend/qt_sdl/VideoSettingsDialog.cpp
+index c5feafe6..d1180178 100644
+--- a/src/frontend/qt_sdl/VideoSettingsDialog.cpp
++++ b/src/frontend/qt_sdl/VideoSettingsDialog.cpp
+@@ -66,6 +66,8 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
+     oldGLScale = cfg.GetInt("3D.GL.ScaleFactor");
+     oldGLBetterPolygons = cfg.GetBool("3D.GL.BetterPolygons");
+     oldHiresCoordinates = cfg.GetBool("3D.GL.HiresCoordinates");
++    oldBottomScreenEnabled = cfg.GetBool("BottomScreen.Enabled");
++    oldBottomScreenPort = cfg.GetInt("BottomScreen.Port");
+ 
+     grp3DRenderer = new QButtonGroup(this);
+     grp3DRenderer->addButton(ui->rb3DSoftware, renderer3D_Software);
+@@ -99,6 +101,8 @@ VideoSettingsDialog::VideoSettingsDialog(QWidget* parent) : QDialog(parent), ui(
+ 
+     ui->cbBetterPolygons->setChecked(oldGLBetterPolygons != 0);
+     ui->cbxComputeHiResCoords->setChecked(oldHiresCoordinates != 0);
++    ui->cbBottomScreenEnabled->setChecked(oldBottomScreenEnabled);
++    ui->sbBottomScreenPort->setValue(oldBottomScreenPort);
+ 
+     if (!oldVSync)
+         ui->sbVSyncInterval->setEnabled(false);
+@@ -138,6 +142,8 @@ void VideoSettingsDialog::on_VideoSettingsDialog_rejected()
+     cfg.SetInt("3D.GL.ScaleFactor", oldGLScale);
+     cfg.SetBool("3D.GL.BetterPolygons", oldGLBetterPolygons);
+     cfg.SetBool("3D.GL.HiresCoordinates", oldHiresCoordinates);
++    cfg.SetBool("BottomScreen.Enabled", oldBottomScreenEnabled);
++    cfg.SetInt("BottomScreen.Port", oldBottomScreenPort);
+ 
+     emit updateVideoSettings(old_gl != UsesGL());
+ 
+@@ -227,5 +233,18 @@ void VideoSettingsDialog::on_cbxComputeHiResCoords_stateChanged(int state)
+     auto& cfg = emuInstance->getGlobalConfig();
+     cfg.SetBool("3D.GL.HiresCoordinates", (state != 0));
+ 
++    // The physical GamePad controls below live with the other video settings.
+     emit updateVideoSettings(false);
+ }
++
++void VideoSettingsDialog::on_cbBottomScreenEnabled_stateChanged(int state)
++{
++    auto& cfg = emuInstance->getGlobalConfig();
++    cfg.SetBool("BottomScreen.Enabled", state != 0);
++}
++
++void VideoSettingsDialog::on_sbBottomScreenPort_valueChanged(int value)
++{
++    auto& cfg = emuInstance->getGlobalConfig();
++    cfg.SetInt("BottomScreen.Port", value);
++}
+diff --git a/src/frontend/qt_sdl/VideoSettingsDialog.h b/src/frontend/qt_sdl/VideoSettingsDialog.h
+index 73be050e..c62a6065 100644
+--- a/src/frontend/qt_sdl/VideoSettingsDialog.h
++++ b/src/frontend/qt_sdl/VideoSettingsDialog.h
+@@ -71,6 +71,8 @@ private slots:
+     void on_cbxComputeHiResCoords_stateChanged(int state);
+ 
+     void on_cbSoftwareThreaded_stateChanged(int state);
++    void on_cbBottomScreenEnabled_stateChanged(int state);
++    void on_sbBottomScreenPort_valueChanged(int value);
+ private:
+     void setVsyncControlEnable(bool hasOGL);
+     void setEnabled();
+@@ -88,7 +90,8 @@ private:
+     int oldGLScale;
+     int oldGLBetterPolygons;
+     int oldHiresCoordinates;
++    bool oldBottomScreenEnabled;
++    int oldBottomScreenPort;
+ };
+ 
+ #endif // VIDEOSETTINGSDIALOG_H
+-
+diff --git a/src/frontend/qt_sdl/VideoSettingsDialog.ui b/src/frontend/qt_sdl/VideoSettingsDialog.ui
+index 444a59f7..2b6c1ec7 100644
+--- a/src/frontend/qt_sdl/VideoSettingsDialog.ui
++++ b/src/frontend/qt_sdl/VideoSettingsDialog.ui
+@@ -66,6 +66,48 @@
+      </layout>
+     </widget>
+    </item>
++   <item row="2" column="1">
++    <widget class="QGroupBox" name="groupBoxBottomScreen">
++     <property name="title">
++      <string>Wii U GamePad</string>
++     </property>
++     <layout class="QGridLayout" name="gridLayoutBottomScreen">
++      <item row="0" column="0" colspan="2">
++       <widget class="QCheckBox" name="cbBottomScreenEnabled">
++        <property name="whatsThis">
++         <string>Expose the DS screens and controls to the Bottom Screen launcher. Use Sync GamePad there to connect and reauthorize a physical Wii U GamePad.</string>
++        </property>
++        <property name="text">
++         <string>Stream to physical Wii U GamePad</string>
++        </property>
++       </widget>
++      </item>
++      <item row="1" column="0">
++       <widget class="QLabel" name="labelBottomScreenPort">
++        <property name="text">
++         <string>Port:</string>
++        </property>
++       </widget>
++      </item>
++      <item row="1" column="1">
++       <widget class="QSpinBox" name="sbBottomScreenPort">
++        <property name="whatsThis">
++         <string>First port to try. If it is already occupied, the server uses the next available port.</string>
++        </property>
++        <property name="minimum">
++         <number>1024</number>
++        </property>
++        <property name="maximum">
++         <number>65535</number>
++        </property>
++        <property name="value">
++         <number>5090</number>
++        </property>
++       </widget>
++      </item>
++     </layout>
++    </widget>
++   </item>
+    <item row="0" column="1">
+     <widget class="QGroupBox" name="groupBox_2">
+      <property name="title">
+@@ -214,6 +256,8 @@
+   <tabstop>cbSoftwareThreaded</tabstop>
+   <tabstop>cbxGLResolution</tabstop>
+   <tabstop>cbBetterPolygons</tabstop>
++  <tabstop>cbBottomScreenEnabled</tabstop>
++  <tabstop>sbBottomScreenPort</tabstop>
+  </tabstops>
+  <resources/>
+  <connections>

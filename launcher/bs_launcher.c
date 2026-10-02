@@ -2,19 +2,20 @@
  * A launcher for the three emulators.
  *
  * Each of them can stream its bottom screen, and each of them wants the
- * same three things set before it starts: the stream on, a port, and an
- * internal resolution. Doing that by hand means three different
- * configuration formats, two of which have a trap in them -- so it is
- * done here instead.
+ * same things set before it starts: the stream, a port, an internal
+ * resolution and, optionally, the console firmware. Doing that by hand
+ * means three different configuration formats, two of which have a trap
+ * in them -- so it is done here instead.
  *
- * The launcher deliberately stops there. Loading a game, choosing a
- * renderer, mapping a pad: the emulator already does all of that, and
- * reimplementing it would only produce a worse version that drifts.
+ * Loading a game, choosing a renderer and mapping a pad remain the
+ * emulator's job. The launcher only adds the shared GamePad controls,
+ * system-menu shortcuts and live streaming diagnostics.
  */
 #include <gtk/gtk.h>
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -39,8 +40,10 @@ typedef struct {
     const char *scale_note;
 
     char        binary[1024];
-    GtkWidget  *enable, *port, *scale, *launch, *quit, *restart;
+    GtkWidget  *enable, *port, *scale, *launch, *launch_firmware, *quit, *restart;
     GtkWidget  *status, *path_label;
+    GtkWidget  *firmware_field, *stats_label;
+    char        firmware[1024];
     GPid        pid;
     int         announced_port;
     /*
@@ -57,6 +60,15 @@ typedef struct {
      * the default it was built with.
      */
     int         saved_port, saved_scale, saved_enable;
+    gboolean    last_launch_firmware;
+
+    int         stats_source_w[2], stats_source_h[2];
+    int         stats_output_w[2], stats_output_h[2];
+    int         stats_nominal_fps, stats_clients[2], stats_max_clients;
+    uint32_t    stats_frames[2];
+    double      stats_mbps[2], stats_measured_fps[2];
+    char        stats_encoder[64];
+    char        stats_event[160];
 } Emu;
 
 static Emu emus[] = {
@@ -164,13 +176,16 @@ static void load_paths(void)
                 g_strlcpy(emus[e].binary, value, sizeof(emus[e].binary));
                 continue;
             }
-            char port_key[64], scale_key[64], on_key[64];
+            char port_key[64], scale_key[64], on_key[64], firmware_key[64];
             g_snprintf(port_key, sizeof(port_key), "%s.port", emus[e].key);
             g_snprintf(scale_key, sizeof(scale_key), "%s.resolution", emus[e].key);
             g_snprintf(on_key, sizeof(on_key), "%s.stream", emus[e].key);
+            g_snprintf(firmware_key, sizeof(firmware_key), "%s.firmware", emus[e].key);
             if (g_strcmp0(key, port_key) == 0)  emus[e].saved_port = atoi(value);
             if (g_strcmp0(key, scale_key) == 0) emus[e].saved_scale = atoi(value);
             if (g_strcmp0(key, on_key) == 0)    emus[e].saved_enable = atoi(value);
+            if (g_strcmp0(key, firmware_key) == 0)
+                g_strlcpy(emus[e].firmware, value, sizeof(emus[e].firmware));
         }
         for (int p = 0; p < 6; p++)
             if (g_strcmp0(key, pad_keys[p]) == 0)
@@ -185,6 +200,7 @@ static void load_paths(void)
 static GtkWidget *pad_screen, *pad_res_bottom, *pad_res_top;
 static GtkWidget *pad_filter, *pad_sharpness, *pad_bitrate;
 static int combo_or(GtkWidget *w, int fallback);
+static const char *selected_firmware(Emu *e);
 
 static void save_paths(void)
 {
@@ -208,6 +224,11 @@ static void save_paths(void)
         if (e->enable && GTK_IS_TOGGLE_BUTTON(e->enable))
             g_string_append_printf(out, "%s.stream=%d\n", e->key,
                 gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(e->enable)) ? 1 : 0);
+        const char *firmware = selected_firmware(e);
+        if (firmware && *firmware) {
+            g_strlcpy(e->firmware, firmware, sizeof(e->firmware));
+            g_string_append_printf(out, "%s.firmware=%s\n", e->key, e->firmware);
+        }
     }
     if (pad_screen) {
         const int now[6] = {
@@ -261,6 +282,291 @@ static char *home_config(const char *rest)
 {
     const char *cfg = g_get_user_config_dir();
     return g_build_filename(cfg, rest, NULL);
+}
+
+/* Small readers for the emulators' own configuration files. They only
+ * inspect the keys needed to locate installed firmware and leave every
+ * other setting to the emulator. */
+static char *ini_value(const char *path, const char *section, const char *key)
+{
+    char *text = read_file(path, NULL);
+    if (!text)
+        return NULL;
+
+    char **lines = g_strsplit(text, "\n", -1);
+    gboolean in_section = section == NULL;
+    char *value = NULL;
+    for (int i = 0; lines[i] && !value; i++) {
+        char *line = g_strstrip(lines[i]);
+        if (*line == '[') {
+            in_section = section && g_strcmp0(line, section) == 0;
+            continue;
+        }
+        if (!in_section)
+            continue;
+        char *eq = strchr(line, '=');
+        if (!eq)
+            continue;
+        *eq = '\0';
+        if (g_strcmp0(g_strstrip(line), key) != 0)
+            continue;
+        char *raw = g_strstrip(eq + 1);
+        if (raw[0] == '"') {
+            gsize n = strlen(raw);
+            if (n > 1 && raw[n - 1] == '"') {
+                raw[n - 1] = '\0';
+                raw++;
+            }
+        }
+        value = g_strcompress(raw);
+    }
+    g_strfreev(lines);
+    g_free(text);
+    return value;
+}
+
+static char *xml_value(const char *path, const char *tag)
+{
+    char *text = read_file(path, NULL);
+    if (!text)
+        return NULL;
+    char *open = g_strdup_printf("<%s", tag);
+    char *close = g_strdup_printf("</%s>", tag);
+    char *start = strstr(text, open);
+    char *value = NULL;
+    if (start) {
+        start = strchr(start, '>');
+        if (start) {
+            start++;
+            char *end = strstr(start, close);
+            if (end)
+                value = g_strndup(start, (gsize)(end - start));
+        }
+    }
+    g_free(open);
+    g_free(close);
+    g_free(text);
+    return value;
+}
+
+static const char *selected_firmware(Emu *e)
+{
+    if (!e->firmware_field)
+        return e->firmware;
+    if (GTK_IS_ENTRY(e->firmware_field))
+        return gtk_entry_get_text(GTK_ENTRY(e->firmware_field));
+    if (GTK_IS_COMBO_BOX(e->firmware_field)) {
+        const char *id = gtk_combo_box_get_active_id(GTK_COMBO_BOX(e->firmware_field));
+        return id ? id : "";
+    }
+    return e->firmware;
+}
+
+static void firmware_button_state(Emu *e)
+{
+    if (!e->launch_firmware)
+        return;
+    const char *value = selected_firmware(e);
+    gtk_widget_set_sensitive(e->launch_firmware,
+        !e->pid && value && *value &&
+        (e->scale_kind == SCALE_CEMU || g_file_test(value, G_FILE_TEST_IS_REGULAR)));
+}
+
+static void on_firmware_changed(GtkWidget *widget, gpointer user)
+{
+    (void)widget;
+    firmware_button_state(user);
+}
+
+static void firmware_combo_add(Emu *e, const char *value, const char *label)
+{
+    GtkTreeIter iter;
+    gboolean was_empty = !gtk_tree_model_get_iter_first(
+        gtk_combo_box_get_model(GTK_COMBO_BOX(e->firmware_field)), &iter);
+    gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(e->firmware_field), value, label);
+    if (was_empty)
+        gtk_combo_box_set_active_id(GTK_COMBO_BOX(e->firmware_field), value);
+    if (*e->firmware && g_strcmp0(e->firmware, value) == 0)
+        gtk_combo_box_set_active_id(GTK_COMBO_BOX(e->firmware_field), value);
+}
+
+/* A 3DS TMD names the executable content and its version. Reading those
+ * two big-endian fields avoids offering manuals or data .app files as a
+ * HOME Menu. The layout and signature sizes are part of Nintendo's TMD
+ * format and are the same values used by Azahar's TitleMetadata reader. */
+static gboolean azahar_tmd_info(const char *path, guint32 *content_id,
+                                guint16 *version)
+{
+    gsize size = 0;
+    guint8 *data = (guint8 *)read_file(path, &size);
+    if (!data || size < 4) {
+        g_free(data);
+        return FALSE;
+    }
+    guint32 type = ((guint32)data[0] << 24) | ((guint32)data[1] << 16) |
+                   ((guint32)data[2] << 8) | data[3];
+    gsize signature_size = 0;
+    switch (type) {
+    case 0x00010000: case 0x00010003: signature_size = 0x200; break;
+    case 0x00010001: case 0x00010004: signature_size = 0x100; break;
+    case 0x00010002: case 0x00010005: signature_size = 0x3c; break;
+    default: break;
+    }
+    gsize body = (signature_size + 4 + 0x3f) & ~(gsize)0x3f;
+    gsize chunk = body + 0x9c4;
+    if (!signature_size || size < chunk + 4 || size < body + 0x9e) {
+        g_free(data);
+        return FALSE;
+    }
+    *version = ((guint16)data[body + 0x9c] << 8) | data[body + 0x9d];
+    *content_id = ((guint32)data[chunk] << 24) |
+                  ((guint32)data[chunk + 1] << 16) |
+                  ((guint32)data[chunk + 2] << 8) | data[chunk + 3];
+    g_free(data);
+    return TRUE;
+}
+
+static void discover_azahar_firmware(Emu *e)
+{
+    char *config = home_config("azahar-emu/qt-config.ini");
+    char *nand = ini_value(config, "[Data%20Storage]", "nand_directory");
+    if (!nand || !*nand) {
+        g_free(nand);
+        nand = g_build_filename(g_get_user_data_dir(), "azahar-emu", "nand", NULL);
+    }
+
+    static const struct { const char *low, *region; } menus[] = {
+        {"00008202", "Japon"}, {"00008f02", "Amérique"},
+        {"00009802", "Europe / Australie"}, {"0000a102", "Chine"},
+        {"0000a902", "Corée"}, {"0000b102", "Taïwan"},
+    };
+    GDir *systems = g_dir_open(nand, 0, NULL);
+    const char *system_id;
+    while (systems && (system_id = g_dir_read_name(systems))) {
+        if (strlen(system_id) != 32)
+            continue;
+        for (guint m = 0; m < G_N_ELEMENTS(menus); m++) {
+            char *content = g_build_filename(nand, system_id, "title", "00040030",
+                                             menus[m].low, "content", NULL);
+            GDir *dir = g_dir_open(content, 0, NULL);
+            const char *name;
+            gboolean found_tmd = FALSE;
+            while (dir && (name = g_dir_read_name(dir))) {
+                if (!g_str_has_suffix(name, ".tmd"))
+                    continue;
+                char *tmd = g_build_filename(content, name, NULL);
+                guint32 content_id;
+                guint16 version;
+                if (!azahar_tmd_info(tmd, &content_id, &version)) {
+                    g_free(tmd);
+                    continue;
+                }
+                char app_name[16];
+                g_snprintf(app_name, sizeof(app_name), "%08x.app", content_id);
+                char *file = g_build_filename(content, app_name, NULL);
+                if (!g_file_test(file, G_FILE_TEST_IS_REGULAR)) {
+                    g_free(file);
+                    g_free(tmd);
+                    continue;
+                }
+                char *label = g_strdup_printf("%s — 00040030%s — v%u",
+                                              menus[m].region, menus[m].low, version);
+                firmware_combo_add(e, file, label);
+                found_tmd = TRUE;
+                g_free(label);
+                g_free(file);
+                g_free(tmd);
+            }
+            if (dir) g_dir_close(dir);
+
+            /* Old/manual NAND layouts without usable metadata still get
+             * a practical fallback; most real installs take the TMD path. */
+            dir = found_tmd ? NULL : g_dir_open(content, 0, NULL);
+            while (dir && (name = g_dir_read_name(dir))) {
+                if (!g_str_has_suffix(name, ".app"))
+                    continue;
+                char *file = g_build_filename(content, name, NULL);
+                char *label = g_strdup_printf("%s — 00040030%s — %s",
+                                              menus[m].region, menus[m].low, name);
+                firmware_combo_add(e, file, label);
+                g_free(label);
+                g_free(file);
+            }
+            if (dir) g_dir_close(dir);
+            g_free(content);
+        }
+    }
+    if (systems) g_dir_close(systems);
+    g_free(nand);
+    g_free(config);
+}
+
+static void discover_cemu_firmware(Emu *e)
+{
+    char *config = home_config("Cemu/settings.xml");
+    char *mlc = xml_value(config, "mlc_path");
+    if (!mlc || !*mlc) {
+        g_free(mlc);
+        mlc = g_build_filename(g_get_user_data_dir(), "Cemu", "mlc01", NULL);
+    }
+    static const struct { const char *low, *region; } menus[] = {
+        {"10040000", "Japon"}, {"10040100", "Amérique"},
+        {"10040200", "Europe"},
+    };
+    for (guint m = 0; m < G_N_ELEMENTS(menus); m++) {
+        char *meta = g_build_filename(mlc, "sys", "title", "00050010",
+                                      menus[m].low, "meta", "meta.xml", NULL);
+        if (!g_file_test(meta, G_FILE_TEST_IS_REGULAR)) {
+            g_free(meta);
+            continue;
+        }
+        char id[17];
+        g_snprintf(id, sizeof(id), "00050010%s", menus[m].low);
+        char *version = xml_value(meta, "title_version");
+        char *label = version && *version
+            ? g_strdup_printf("%s — %s — v%s", menus[m].region, id, version)
+            : g_strdup_printf("%s — %s", menus[m].region, id);
+        firmware_combo_add(e, id, label);
+        g_free(label);
+        g_free(version);
+        g_free(meta);
+    }
+    g_free(mlc);
+    g_free(config);
+}
+
+static void populate_firmware_field(Emu *e)
+{
+    if (e->scale_kind == SCALE_MELONDS) {
+        e->firmware_field = gtk_entry_new();
+        gtk_entry_set_placeholder_text(GTK_ENTRY(e->firmware_field), "firmware.bin");
+        if (!*e->firmware) {
+            char *config = home_config("melonDS/melonDS.toml");
+            char *detected = ini_value(config, "[DS]", "FirmwarePath");
+            if (detected) {
+                g_strlcpy(e->firmware, detected, sizeof(e->firmware));
+                g_free(detected);
+            }
+            g_free(config);
+        }
+        gtk_entry_set_text(GTK_ENTRY(e->firmware_field), e->firmware);
+        g_signal_connect(e->firmware_field, "changed",
+                         G_CALLBACK(on_firmware_changed), e);
+        return;
+    }
+
+    e->firmware_field = gtk_combo_box_text_new();
+    if (e->scale_kind == SCALE_AZAHAR)
+        discover_azahar_firmware(e);
+    else
+        discover_cemu_firmware(e);
+    if (gtk_combo_box_get_active(GTK_COMBO_BOX(e->firmware_field)) < 0) {
+        gtk_combo_box_text_append(GTK_COMBO_BOX_TEXT(e->firmware_field), "",
+                                  "Aucun menu détecté");
+        gtk_combo_box_set_active(GTK_COMBO_BOX(e->firmware_field), 0);
+    }
+    g_signal_connect(e->firmware_field, "changed",
+                     G_CALLBACK(on_firmware_changed), e);
 }
 
 /* ------------------------------------------------------- azahar config */
@@ -386,6 +692,52 @@ static gboolean melonds_set_scale(int factor, char **why)
     return ok;
 }
 
+static gboolean melonds_set_firmware(const char *firmware, char **why)
+{
+    char *path = home_config("melonDS/melonDS.toml");
+    char *text = read_file(path, NULL);
+    if (!text) {
+        *why = g_strdup_printf("cannot read %s", path);
+        g_free(path);
+        return FALSE;
+    }
+
+    char *escaped = g_strescape(firmware, NULL);
+    char **lines = g_strsplit(text, "\n", -1);
+    GString *out = g_string_new(NULL);
+    gboolean in_ds = FALSE, wrote = FALSE;
+    for (int i = 0; lines[i]; i++) {
+        const char *line = lines[i];
+        if (line[0] == '[') {
+            if (in_ds && !wrote) {
+                g_string_append_printf(out, "FirmwarePath = \"%s\"\n", escaped);
+                wrote = TRUE;
+            }
+            in_ds = g_strcmp0(line, "[DS]") == 0;
+        }
+        if (in_ds && g_str_has_prefix(line, "FirmwarePath =")) {
+            g_string_append_printf(out, "FirmwarePath = \"%s\"", escaped);
+            wrote = TRUE;
+        } else {
+            g_string_append(out, line);
+        }
+        if (lines[i + 1])
+            g_string_append_c(out, '\n');
+    }
+    if (in_ds && !wrote)
+        g_string_append_printf(out, "\nFirmwarePath = \"%s\"\n", escaped);
+
+    gboolean ok = write_file_with_backup(path, out->str);
+    if (!ok)
+        *why = g_strdup_printf("cannot write %s", path);
+    g_string_free(out, TRUE);
+    g_strfreev(lines);
+    g_free(escaped);
+    g_free(text);
+    g_free(path);
+    return ok;
+}
+
 /* --------------------------------------------------------- cemu config */
 
 /*
@@ -462,13 +814,137 @@ static void set_status(Emu *e, const char *markup)
     gtk_label_set_markup(GTK_LABEL(e->status), markup);
 }
 
+static void refresh_stats(Emu *e)
+{
+    if (!e->stats_label)
+        return;
+    if (!e->pid) {
+        gtk_label_set_markup(GTK_LABEL(e->stats_label),
+                             "<span foreground=\"#888888\">Arrêté</span>");
+        return;
+    }
+    if (!e->stats_encoder[0]) {
+        gtk_label_set_markup(GTK_LABEL(e->stats_label),
+                             "<b>En cours</b>  — en attente du flux vidéo…");
+        return;
+    }
+
+    GString *text = g_string_new(NULL);
+    g_string_append_printf(text,
+        "<b>%s</b>  ·  %s  ·  port %d  ·  jusqu’à %d clients",
+        e->name, e->stats_encoder, e->announced_port, e->stats_max_clients);
+    static const char *names[2] = { "Bas / GamePad", "Haut / TV" };
+    for (int screen = 0; screen < 2; screen++) {
+        if (!e->stats_source_w[screen])
+            continue;
+        g_string_append_printf(text,
+            "\n%s : %d×%d → %d×%d  ·  %.1f fps  ·  %.2f Mbit/s  ·  "
+            "%u images  ·  %d spectateur%s",
+            names[screen], e->stats_source_w[screen], e->stats_source_h[screen],
+            e->stats_output_w[screen], e->stats_output_h[screen],
+            e->stats_measured_fps[screen] > 0.0
+                ? e->stats_measured_fps[screen] : e->stats_nominal_fps,
+            e->stats_mbps[screen], e->stats_frames[screen],
+            e->stats_clients[screen], e->stats_clients[screen] > 1 ? "s" : "");
+    }
+    if (e->stats_event[0]) {
+        char *escaped = g_markup_escape_text(e->stats_event, -1);
+        g_string_append_printf(text, "\n<small>%s</small>", escaped);
+        g_free(escaped);
+    }
+    gtk_label_set_markup(GTK_LABEL(e->stats_label), text->str);
+    g_string_free(text, TRUE);
+}
+
+static void reset_stats(Emu *e)
+{
+    memset(e->stats_source_w, 0, sizeof(e->stats_source_w));
+    memset(e->stats_source_h, 0, sizeof(e->stats_source_h));
+    memset(e->stats_output_w, 0, sizeof(e->stats_output_w));
+    memset(e->stats_output_h, 0, sizeof(e->stats_output_h));
+    memset(e->stats_clients, 0, sizeof(e->stats_clients));
+    memset(e->stats_frames, 0, sizeof(e->stats_frames));
+    memset(e->stats_mbps, 0, sizeof(e->stats_mbps));
+    memset(e->stats_measured_fps, 0, sizeof(e->stats_measured_fps));
+    e->stats_nominal_fps = e->stats_max_clients = 0;
+    e->stats_encoder[0] = e->stats_event[0] = '\0';
+    refresh_stats(e);
+}
+
+static void parse_stats(Emu *e, const char *line)
+{
+    int sw, sh, ow, oh, fps, clients, max_clients;
+    unsigned frames, port;
+    double measured_fps, mbps;
+    char encoder[64], screen_name[16];
+
+    if (sscanf(line,
+        "bottom_screen: %dx%d @ %d fps, %63[^,], listening on port %u (up to %d clients)",
+        &sw, &sh, &fps, encoder, &port, &max_clients) == 6) {
+        e->stats_source_w[0] = e->stats_output_w[0] = sw;
+        e->stats_source_h[0] = e->stats_output_h[0] = sh;
+        e->stats_nominal_fps = fps;
+        e->stats_max_clients = max_clients;
+        e->announced_port = (int)port;
+        g_strlcpy(e->stats_encoder, encoder, sizeof(e->stats_encoder));
+        g_strlcpy(e->stats_event, "Encodeur prêt", sizeof(e->stats_event));
+        refresh_stats(e);
+        return;
+    }
+    if (sscanf(line,
+        "bottom_screen: stats screen=%15s frames=%u fps=%lf mbps=%lf clients=%d "
+        "source=%dx%d output=%dx%d encoder=%63s",
+        screen_name, &frames, &measured_fps, &mbps, &clients,
+        &sw, &sh, &ow, &oh, encoder) == 10) {
+        int screen = g_strcmp0(screen_name, "top") == 0 ? 1 : 0;
+        e->stats_frames[screen] = frames;
+        e->stats_measured_fps[screen] = measured_fps;
+        e->stats_mbps[screen] = mbps;
+        e->stats_clients[screen] = clients;
+        e->stats_source_w[screen] = sw;
+        e->stats_source_h[screen] = sh;
+        e->stats_output_w[screen] = ow;
+        e->stats_output_h[screen] = oh;
+        g_strlcpy(e->stats_encoder, encoder, sizeof(e->stats_encoder));
+        refresh_stats(e);
+        return;
+    }
+    if (sscanf(line, "bottom_screen: sending %dx%d from a %dx%d source",
+               &ow, &oh, &sw, &sh) == 4) {
+        e->stats_output_w[0] = ow;
+        e->stats_output_h[0] = oh;
+        e->stats_source_w[0] = sw;
+        e->stats_source_h[0] = sh;
+        refresh_stats(e);
+        return;
+    }
+    if (strstr(line, "bottom_screen: client ") ||
+        strstr(line, "bottom_screen: native client ") ||
+        strstr(line, "bottom_screen: web client ") ||
+        strstr(line, "bottom_screen: bitrate now ") ||
+        strstr(line, "bottom_screen: encoding the ")) {
+        char *copy = g_strdup(line + strlen("bottom_screen: "));
+        g_strchomp(copy);
+        g_strlcpy(e->stats_event, copy, sizeof(e->stats_event));
+        g_free(copy);
+        refresh_stats(e);
+    }
+}
+
 /* A single physical pad: never overlap two libdrc processes. The pattern
  * has its own port and remains available while the emulator starts. */
 static Emu *pad_owner;
+static Emu *latest_emu;
 static GPid pad_pid, pattern_pid;
 static int pad_port, wanted_port, pattern_port;
-static gboolean pad_stopping, closing;
-static GtkWidget *pad_status;
+static gboolean pad_stopping, pad_auto_waiting, closing;
+static GtkWidget *pad_status, *ap_status, *pair_symbols;
+static GtkWidget *pair_button, *reconnect_button, *stop_ap_button;
+typedef enum { AP_JOB_NONE, AP_JOB_PAIR, AP_JOB_NORMAL, AP_JOB_STOP } ApJob;
+static GPid ap_job_pid;
+static ApJob ap_job, pending_ap_job;
+static char pending_pair_pin[9];
+static gboolean pair_on_normal_ap;
 /*
  * The GamePad's own settings, which belong here rather than on each
  * emulator's panel: there is one physical pad, and these follow it
@@ -484,7 +960,77 @@ static void pad_message(const char *text)
     if (!closing && pad_status) gtk_label_set_text(GTK_LABEL(pad_status), text);
 }
 
+/* hostapd removes its control socket when the AP stops. This is the same
+ * socket bs_gamepad uses to find the wireless interface and reset the
+ * GamePad association, so it is also the useful state to expose here. */
+static gboolean refresh_ap_status(gpointer unused)
+{
+    (void)unused;
+    if (!ap_status)
+        return G_SOURCE_CONTINUE;
+
+    if (ap_job == AP_JOB_PAIR && !pair_on_normal_ap) {
+        gtk_label_set_markup(GTK_LABEL(ap_status),
+            "<span foreground=\"#e5a442\">●</span> <b>AP d’appairage</b> — "
+            "entrez les symboles sur le GamePad");
+        return G_SOURCE_CONTINUE;
+    }
+    if (ap_job == AP_JOB_NORMAL) {
+        gtk_label_set_markup(GTK_LABEL(ap_status),
+            "<span foreground=\"#e5a442\">●</span> <b>Démarrage de l’AP…</b>");
+        return G_SOURCE_CONTINUE;
+    }
+    if (ap_job == AP_JOB_STOP) {
+        gtk_label_set_markup(GTK_LABEL(ap_status),
+            "<span foreground=\"#e5a442\">●</span> <b>Arrêt de l’AP…</b>");
+        return G_SOURCE_CONTINUE;
+    }
+    if (ap_job == AP_JOB_PAIR && pair_on_normal_ap) {
+        gtk_label_set_markup(GTK_LABEL(ap_status),
+            "<span foreground=\"#45c46b\">●</span> <b>AP normal actif</b> — "
+            "attente de la reconnexion du GamePad");
+        return G_SOURCE_CONTINUE;
+    }
+
+    char *iface = NULL;
+    const char *forced = g_getenv("BS_PAD_IFACE");
+    if (forced && *forced) {
+        char *socket = g_build_filename("/var/run/hostapd", forced, NULL);
+        if (g_file_test(socket, G_FILE_TEST_EXISTS))
+            iface = g_strdup(forced);
+        g_free(socket);
+    } else {
+        GDir *dir = g_dir_open("/var/run/hostapd", 0, NULL);
+        const char *name;
+        while (dir && (name = g_dir_read_name(dir))) {
+            if (name[0] != '.') {
+                iface = g_strdup(name);
+                break;
+            }
+        }
+        if (dir)
+            g_dir_close(dir);
+    }
+
+    if (iface) {
+        char *escaped = g_markup_escape_text(iface, -1);
+        char *markup = g_strdup_printf(
+            "<span foreground=\"#45c46b\">●</span> <b>AP actif</b> — interface %s",
+            escaped);
+        gtk_label_set_markup(GTK_LABEL(ap_status), markup);
+        g_free(markup);
+        g_free(escaped);
+    } else {
+        gtk_label_set_markup(GTK_LABEL(ap_status),
+            "<span foreground=\"#e05d5d\">●</span> <b>AP arrêté</b> — "
+            "utilisez Sync GamePad ou Launch AP / Reconnect");
+    }
+    g_free(iface);
+    return G_SOURCE_CONTINUE;
+}
+
 static void start_pad(void);
+static void start_ap_job(ApJob kind, const char *pin);
 
 static void pad_gone(GPid pid, gint status, gpointer unused)
 {
@@ -492,13 +1038,22 @@ static void pad_gone(GPid pid, gint status, gpointer unused)
     g_spawn_close_pid(pid);
     pad_pid = 0;
     if (closing) return;
+    if (pending_ap_job != AP_JOB_NONE) {
+        ApJob next = pending_ap_job;
+        char pin[sizeof(pending_pair_pin)];
+        g_strlcpy(pin, pending_pair_pin, sizeof(pin));
+        pending_ap_job = AP_JOB_NONE;
+        pending_pair_pin[0] = '\0';
+        start_ap_job(next, next == AP_JOB_PAIR ? pin : NULL);
+        return;
+    }
     if (pad_stopping) {
         pad_stopping = FALSE;
         start_pad();
     } else {
         wanted_port = 0;
         pad_message(status ? "GamePad arrêté : vérifier l’AP et les logs du terminal."
-                           : "GamePad déconnecté. Relancer avec Sync GamePad.");
+                           : "GamePad déconnecté. Relancer avec Launch AP / Reconnect.");
     }
 }
 
@@ -621,6 +1176,7 @@ static void pad_release(GtkButton *button, gpointer unused)
 {
     (void)button; (void)unused;
     pad_owner = NULL;
+    pad_auto_waiting = FALSE;
     wanted_port = 0;
     if (pad_pid) {
         pad_stopping = FALSE;
@@ -637,7 +1193,7 @@ static void pattern_gone(GPid pid, gint status, gpointer unused)
     g_spawn_close_pid(pid);
     if (pid == pattern_pid) {
         pattern_pid = 0;
-        if (!closing) pad_message("La mire s’est arrêtée. Relancer avec Sync GamePad.");
+        if (!closing) pad_message("La mire s’est arrêtée. Relancer avec Launch AP / Reconnect.");
     }
 }
 
@@ -678,12 +1234,262 @@ static void on_pattern(GtkButton *button, gpointer user)
                                  NULL, NULL, &pattern_pid, NULL, NULL, &fd, &error)) {
         g_child_watch_add(pattern_pid, pattern_gone, NULL);
         watch_pipe(fd, pattern_output, GINT_TO_POINTER(pattern_pid));
-        pad_message("Démarrage de la mire…");
+        pad_message(pad_auto_waiting
+            ? "Démarrage de la mire — connexion automatique au prochain émulateur…"
+            : "Démarrage de la mire GamePad…");
     } else {
         pad_message(error->message);
         g_clear_error(&error);
     }
     g_free(binary);
+}
+
+static void begin_gamepad_connection(void)
+{
+    Emu *source = NULL;
+    if (pad_owner && pad_owner->pid)
+        source = pad_owner;
+    else if (latest_emu && latest_emu->pid)
+        source = latest_emu;
+    else
+        for (int i = 0; i < EMU_COUNT && !source; i++)
+            if (emus[i].pid)
+                source = &emus[i];
+
+    pad_auto_waiting = source == NULL;
+    /* The Wii U pattern is only a waiting room. The first emulator
+     * launched afterwards takes ownership before its server starts. */
+    on_pattern(NULL, source ? source : &emus[2]);
+}
+
+static void ap_buttons_sensitive(gboolean sensitive)
+{
+    if (pair_button) gtk_widget_set_sensitive(pair_button, sensitive);
+    if (reconnect_button) gtk_widget_set_sensitive(reconnect_button, sensitive);
+    if (stop_ap_button) gtk_widget_set_sensitive(stop_ap_button, sensitive);
+}
+
+static gboolean ap_output(GIOChannel *channel, GIOCondition cond, gpointer unused)
+{
+    (void)unused;
+    char *line = NULL;
+    while (g_io_channel_read_line(channel, &line, NULL, NULL, NULL) == G_IO_STATUS_NORMAL) {
+        fputs(line, stderr);
+        g_strchomp(line);
+        if (strstr(line, "PIN arme"))
+            pad_message("AP prêt : entrez maintenant les quatre symboles sur le GamePad.");
+        else if (strstr(line, "M8 detecte"))
+            pad_message("GamePad appairé : passage à l’AP normal…");
+        else if (strstr(line, "AP normal actif")) {
+            pair_on_normal_ap = TRUE;
+            refresh_ap_status(NULL);
+            if (ap_job == AP_JOB_PAIR)
+                pad_message("Appairage réussi : attente de la reconnexion du GamePad…");
+        } else if (strstr(line, "GamePad connectee"))
+            pad_message("GamePad connecté : démarrage du flux…");
+        else if (strstr(line, "AP arrêté"))
+            pad_message("AP arrêté. L’interface Wi-Fi a été rendue au système.");
+        else if (strstr(line, "erreur:"))
+            pad_message(line);
+        g_free(line);
+        line = NULL;
+    }
+    g_free(line);
+    return !(cond & (G_IO_HUP | G_IO_ERR));
+}
+
+static void ap_job_gone(GPid pid, gint status, gpointer unused)
+{
+    (void)unused;
+    g_spawn_close_pid(pid);
+    ap_job_pid = 0;
+    ApJob finished = ap_job;
+    ap_job = AP_JOB_NONE;
+    pair_on_normal_ap = FALSE;
+    ap_buttons_sensitive(TRUE);
+    refresh_ap_status(NULL);
+    if (closing)
+        return;
+
+    GError *error = NULL;
+    if (!g_spawn_check_wait_status(status, &error)) {
+        char *message = g_strdup_printf("%s impossible : %s",
+            finished == AP_JOB_PAIR ? "Appairage" :
+            finished == AP_JOB_STOP ? "Arrêt de l’AP" : "Démarrage de l’AP",
+            error ? error->message : "échec inconnu");
+        pad_message(message);
+        g_free(message);
+        g_clear_error(&error);
+        return;
+    }
+    if (finished == AP_JOB_STOP) {
+        pad_message("AP arrêté. Le GamePad est déconnecté.");
+        return;
+    }
+    pad_message(finished == AP_JOB_PAIR
+        ? "Appairage terminé. Connexion au flux…"
+        : "AP normal actif. Reconnexion au flux…");
+    begin_gamepad_connection();
+}
+
+/* Run the radio setup with a graphical PolicyKit authentication prompt.
+ * Passing settings through /usr/bin/env is intentional: pkexec sanitises the
+ * environment, but advanced installations may override the adapter or the
+ * drc-hostap checkout with the same DRC_* variables as the command-line tools. */
+static void start_ap_job(ApJob kind, const char *pin)
+{
+    if (ap_job_pid || pending_ap_job != AP_JOB_NONE) {
+        pad_message("Une opération GamePad est déjà en cours.");
+        return;
+    }
+
+    wanted_port = 0;
+    if (pad_pid) {
+        pending_ap_job = kind;
+        g_strlcpy(pending_pair_pin, pin ? pin : "", sizeof(pending_pair_pin));
+        pad_stopping = FALSE;
+        kill(pad_pid, SIGTERM);
+        ap_buttons_sensitive(FALSE);
+        pad_message("Arrêt du flux GamePad avant de reconfigurer l’AP…");
+        return;
+    }
+
+    const char *tool = kind == AP_JOB_PAIR ? "ap-pair.sh" :
+                       kind == AP_JOB_STOP ? "ap-stop.sh" : "ap-normal.sh";
+    const char *installed_helper =
+        "/usr/local/libexec/bottom-screen-gamepad/gamepad-ap-control";
+    const gboolean installed =
+        g_file_test(installed_helper, G_FILE_TEST_IS_EXECUTABLE);
+    char *script = NULL;
+    if (!installed) {
+        script = g_build_filename(g_project, "gamepad", "tools", tool, NULL);
+        if (!g_file_test(script, G_FILE_TEST_IS_REGULAR)) {
+            char *message = g_strdup_printf("Outil GamePad introuvable : %s", script);
+            pad_message(message);
+            g_free(message);
+            g_free(script);
+            ap_buttons_sensitive(TRUE);
+            return;
+        }
+    }
+
+    GPtrArray *args = g_ptr_array_new_with_free_func(g_free);
+    if (geteuid() != 0) {
+        char *pkexec = g_find_program_in_path("pkexec");
+        if (!pkexec) {
+            pad_message("pkexec est requis pour configurer l’interface Wi-Fi.");
+            g_ptr_array_free(args, TRUE);
+            g_free(script);
+            ap_buttons_sensitive(TRUE);
+            return;
+        }
+        g_ptr_array_add(args, pkexec);
+    }
+    if (installed) {
+        const char *action = kind == AP_JOB_PAIR ? "pair" :
+                             kind == AP_JOB_STOP ? "stop" : "start";
+        g_ptr_array_add(args, g_strdup(installed_helper));
+        g_ptr_array_add(args, g_strdup(action));
+        if (pin) g_ptr_array_add(args, g_strdup(pin));
+    } else {
+        /* Compatibility path before the one-time Polkit installation. It
+         * deliberately still asks for authentication on every operation. */
+        g_ptr_array_add(args, g_strdup("/usr/bin/env"));
+        static const char *const names[] = {
+            "DRC_IF", "DRC_AP_MAC", "DRC_HOSTAP", "DRC_MTU",
+            "DRC_DNSMASQ_CONF", "DRC_UUID", "DRC_PAIR_CONF", "DRC_NORMAL_CONF"
+        };
+        gboolean has_iface = FALSE, has_hostap = FALSE;
+        for (guint i = 0; i < G_N_ELEMENTS(names); i++) {
+            const char *value = g_getenv(names[i]);
+            if (value && *value) {
+                g_ptr_array_add(args, g_strdup_printf("%s=%s", names[i], value));
+                if (g_strcmp0(names[i], "DRC_IF") == 0) has_iface = TRUE;
+                if (g_strcmp0(names[i], "DRC_HOSTAP") == 0) has_hostap = TRUE;
+            }
+        }
+        if (!has_iface) {
+            const char *iface = g_getenv("BS_PAD_IFACE");
+            if (iface && *iface)
+                g_ptr_array_add(args, g_strdup_printf("DRC_IF=%s", iface));
+        }
+        if (!has_hostap) {
+            char *checkout = g_build_filename(g_get_home_dir(), "rtw88_TSF",
+                                              "drc-hostap", NULL);
+            if (g_file_test(checkout, G_FILE_TEST_IS_DIR))
+                g_ptr_array_add(args, g_strdup_printf("DRC_HOSTAP=%s", checkout));
+            g_free(checkout);
+        }
+        const char *custom_run = g_getenv("DRC_RUN");
+        g_ptr_array_add(args, g_strdup_printf("DRC_RUN=%s",
+            custom_run && *custom_run ? custom_run : "/run/bottom-screen-gamepad"));
+        g_ptr_array_add(args, g_strdup("/bin/bash"));
+        g_ptr_array_add(args, script);
+        if (pin) g_ptr_array_add(args, g_strdup(pin));
+    }
+    g_ptr_array_add(args, NULL);
+
+    GError *error = NULL;
+    int out_fd = -1, err_fd = -1;
+    if (g_spawn_async_with_pipes(g_project, (char **)args->pdata, NULL,
+                                 G_SPAWN_DO_NOT_REAP_CHILD, NULL, NULL,
+                                 &ap_job_pid, NULL, &out_fd, &err_fd, &error)) {
+        ap_job = kind;
+        pair_on_normal_ap = FALSE;
+        ap_buttons_sensitive(FALSE);
+        g_child_watch_add(ap_job_pid, ap_job_gone, NULL);
+        watch_pipe(out_fd, ap_output, NULL);
+        watch_pipe(err_fd, ap_output, NULL);
+        if (installed)
+            pad_message(kind == AP_JOB_PAIR
+                ? "AP d’appairage en cours : entrez les symboles sur le GamePad."
+                : kind == AP_JOB_STOP ? "Arrêt de l’AP…" : "Démarrage de l’AP normal…");
+        else
+            pad_message(kind == AP_JOB_PAIR
+                ? "Autorisez l’accès Wi-Fi, puis entrez les symboles sur le GamePad."
+                : kind == AP_JOB_STOP
+                    ? "Autorisez l’accès Wi-Fi pour arrêter l’AP…"
+                    : "Autorisez l’accès Wi-Fi pour lancer l’AP normal…");
+        refresh_ap_status(NULL);
+    } else {
+        pad_message(error->message);
+        g_clear_error(&error);
+        ap_buttons_sensitive(TRUE);
+    }
+    g_ptr_array_free(args, TRUE);
+}
+
+static void on_gamepad_pair(GtkButton *button, gpointer unused)
+{
+    (void)button; (void)unused;
+    static const char *const symbols[] = { "♠", "♥", "♦", "♣" };
+    int value[4];
+    char pin[9];
+    GString *shown = g_string_new("<span size=\"xx-large\">");
+    for (int i = 0; i < 4; i++) {
+        value[i] = g_random_int_range(0, 4);
+        g_string_append_printf(shown, "%s%s", i ? "   " : "", symbols[value[i]]);
+    }
+    g_string_append(shown, "</span>  <small>à saisir sur le GamePad</small>");
+    gtk_label_set_markup(GTK_LABEL(pair_symbols), shown->str);
+    g_string_free(shown, TRUE);
+    g_snprintf(pin, sizeof(pin), "%d%d%d%d5678",
+               value[0], value[1], value[2], value[3]);
+    start_ap_job(AP_JOB_PAIR, pin);
+}
+
+static void on_gamepad_reconnect(GtkButton *button, gpointer unused)
+{
+    (void)button; (void)unused;
+    start_ap_job(AP_JOB_NORMAL, NULL);
+}
+
+static void on_gamepad_stop_ap(GtkButton *button, gpointer unused)
+{
+    (void)button; (void)unused;
+    pad_owner = NULL;
+    pad_auto_waiting = FALSE;
+    start_ap_job(AP_JOB_STOP, NULL);
 }
 
 static void stop_preview(void)
@@ -709,6 +1515,7 @@ static gboolean on_output(GIOChannel *src, GIOCondition cond, gpointer user)
     GIOStatus result;
     while ((result = g_io_channel_read_line(src, &line, NULL, NULL, NULL)) == G_IO_STATUS_NORMAL) {
         fputs(line, stderr);
+        parse_stats(e, line);
         const char *found = strstr(line, "listening on port ");
         if (found) {
             e->announced_port = atoi(found + strlen("listening on port "));
@@ -716,7 +1523,8 @@ static gboolean on_output(GIOChannel *src, GIOCondition cond, gpointer user)
             char *msg = g_markup_printf_escaped("<b>streaming on port %d</b>", e->announced_port);
             set_status(e, msg);
             g_free(msg);
-        } else if (strstr(line, "bottom_screen:")) {
+        } else if (strstr(line, "bottom_screen:") &&
+                   !strstr(line, "bottom_screen: stats ")) {
             char *msg = g_markup_printf_escaped("<small>%s</small>", g_strchomp(line));
             set_status(e, msg);
             g_free(msg);
@@ -727,7 +1535,7 @@ static gboolean on_output(GIOChannel *src, GIOCondition cond, gpointer user)
     return result == G_IO_STATUS_AGAIN && !(cond & (G_IO_HUP | G_IO_ERR));
 }
 
-static void on_launch(GtkButton *button, gpointer user);
+static void launch_emu(Emu *e, gboolean firmware);
 static void emu_buttons(Emu *e);
 
 static void on_child_gone(GPid pid, gint status, gpointer user)
@@ -739,12 +1547,12 @@ static void on_child_gone(GPid pid, gint status, gpointer user)
     e->announced_port = 0;
     if (e->kill_timer) { g_source_remove(e->kill_timer); e->kill_timer = 0; }
     if (pad_owner == e) select_pad_port(pattern_port);
-    gtk_button_set_label(GTK_BUTTON(e->launch), "Launch");
     emu_buttons(e);
-    set_status(e, "<small>not running</small>");
+    set_status(e, "<b>Prêt</b>");
+    refresh_stats(e);
     if (e->restart_wanted && !closing) {
         e->restart_wanted = FALSE;
-        on_launch(NULL, e);
+        launch_emu(e, e->last_launch_firmware);
     }
 }
 
@@ -779,8 +1587,13 @@ static void refresh_path(Emu *e)
                                       ok ? "" : "not found: ", e->binary);
     gtk_label_set_markup(GTK_LABEL(e->path_label), m);
     g_free(m);
-    set_status(e, ok ? "<small>not running</small>"
-                     : "<small>set the path to the program</small>");
+    gtk_widget_set_tooltip_text(e->path_label, e->binary);
+    if (ok)
+        gtk_widget_hide(e->path_label);
+    else
+        gtk_widget_show(e->path_label);
+    set_status(e, ok ? "<b>Prêt</b>"
+                     : "<b>Exécutable introuvable</b>");
 }
 
 static void on_browse(GtkButton *button, gpointer user)
@@ -802,6 +1615,29 @@ static void on_browse(GtkButton *button, gpointer user)
             g_free(chosen);
             save_paths();
             refresh_path(e);
+        }
+    }
+    gtk_widget_destroy(dialog);
+}
+
+static void on_browse_firmware(GtkButton *button, gpointer user)
+{
+    Emu *e = user;
+    GtkWidget *dialog = gtk_file_chooser_dialog_new(
+        "Choisir le firmware DS",
+        GTK_WINDOW(gtk_widget_get_toplevel(GTK_WIDGET(button))),
+        GTK_FILE_CHOOSER_ACTION_OPEN,
+        "Annuler", GTK_RESPONSE_CANCEL, "Choisir", GTK_RESPONSE_ACCEPT, NULL);
+    const char *current = selected_firmware(e);
+    if (current && *current)
+        gtk_file_chooser_set_filename(GTK_FILE_CHOOSER(dialog), current);
+    if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
+        char *chosen = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
+        if (chosen) {
+            gtk_entry_set_text(GTK_ENTRY(e->firmware_field), chosen);
+            g_strlcpy(e->firmware, chosen, sizeof(e->firmware));
+            g_free(chosen);
+            save_paths();
         }
     }
     gtk_widget_destroy(dialog);
@@ -845,7 +1681,8 @@ static void on_quit(GtkButton *button, gpointer user)
 static void on_restart(GtkButton *button, gpointer user)
 {
     Emu *e = user;
-    if (!e->pid) { on_launch(button, e); return; }
+    (void)button;
+    if (!e->pid) { launch_emu(e, e->last_launch_firmware); return; }
     /*
      * Stopped now, started when it is actually gone: a new one started
      * here would find the port still held by the old one, and the
@@ -860,15 +1697,13 @@ static void emu_buttons(Emu *e)
 {
     const gboolean running = e->pid != 0;
     gtk_widget_set_sensitive(e->launch, !running);
+    firmware_button_state(e);
     gtk_widget_set_sensitive(e->quit, running);
     gtk_widget_set_sensitive(e->restart, TRUE);
 }
 
-static void on_launch(GtkButton *button, gpointer user)
+static void launch_emu(Emu *e, gboolean firmware)
 {
-    Emu *e = user;
-    (void)button;
-
     if (e->pid)
         return;     /* Quit and Restart are their own buttons now */
     if (!g_file_test(e->binary, G_FILE_TEST_IS_EXECUTABLE)) {
@@ -878,12 +1713,39 @@ static void on_launch(GtkButton *button, gpointer user)
 
     apply_scale(e);
 
+    const char *firmware_value = selected_firmware(e);
+    char *why = NULL;
+    if (firmware) {
+        if (!firmware_value || !*firmware_value) {
+            set_status(e, "<small>aucun firmware/menu détecté</small>");
+            return;
+        }
+        if (e->scale_kind != SCALE_CEMU &&
+            !g_file_test(firmware_value, G_FILE_TEST_IS_REGULAR)) {
+            set_status(e, "<small>firmware/menu introuvable</small>");
+            return;
+        }
+        if (e->scale_kind == SCALE_MELONDS &&
+            !melonds_set_firmware(firmware_value, &why)) {
+            char *msg = g_markup_printf_escaped("<small>%s</small>", why);
+            set_status(e, msg);
+            g_free(msg);
+            g_free(why);
+            return;
+        }
+        g_strlcpy(e->firmware, firmware_value, sizeof(e->firmware));
+        save_paths();
+    }
+
     /*
      * The stream is configured through the environment rather than the
      * emulator's own settings, so a launch never rewrites a preference
      * somebody set by hand -- and Cemu would throw such an edit away on
      * exit in any case. All three read the same two names.
      */
+    const gboolean claim_waiting_pad = pad_auto_waiting;
+    if (claim_waiting_pad)
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(e->enable), TRUE);
     gboolean on = gtk_toggle_button_get_active(GTK_TOGGLE_BUTTON(e->enable));
     int port = gtk_spin_button_get_value_as_int(GTK_SPIN_BUTTON(e->port));
 
@@ -893,15 +1755,24 @@ static void on_launch(GtkButton *button, gpointer user)
     g_snprintf(portbuf, sizeof(portbuf), "%d", port);
     env = g_environ_setenv(env, "BOTTOM_SCREEN_PORT", portbuf, TRUE);
 
-    char *argv[] = { e->binary, NULL };
-    gint err_fd = -1;
+    char *argv[4] = { e->binary, NULL, NULL, NULL };
+    if (firmware && e->scale_kind == SCALE_MELONDS) {
+        argv[1] = "--boot";
+        argv[2] = "always";
+    } else if (firmware && e->scale_kind == SCALE_AZAHAR) {
+        argv[1] = (char *)firmware_value;
+    } else if (firmware && e->scale_kind == SCALE_CEMU) {
+        argv[1] = "--title-id";
+        argv[2] = (char *)firmware_value;
+    }
+    gint out_fd = -1, err_fd = -1;
     GError *error = NULL;
 
     char *cwd = g_path_get_dirname(e->binary);
     gboolean ok = g_spawn_async_with_pipes(
         cwd, argv, env,
         G_SPAWN_DO_NOT_REAP_CHILD, NULL, NULL,
-        &e->pid, NULL, NULL, &err_fd, &error);
+        &e->pid, NULL, &out_fd, &err_fd, &error);
     g_free(cwd);
     g_strfreev(env);
 
@@ -914,13 +1785,33 @@ static void on_launch(GtkButton *button, gpointer user)
         return;
     }
 
-    gtk_button_set_label(GTK_BUTTON(e->launch), "Launch");
+    latest_emu = e;
+    if (claim_waiting_pad) {
+        pad_owner = e;
+        pad_auto_waiting = FALSE;
+    }
+    e->last_launch_firmware = firmware;
+    reset_stats(e);
     emu_buttons(e);
-    set_status(e, "<small>starting\xe2\x80\xa6</small>");
+    set_status(e, firmware ? "<b>démarrage du firmware…</b>"
+                           : "<b>démarrage…</b>");
 
+    watch_pipe(out_fd, on_output, e);
     watch_pipe(err_fd, on_output, e);
 
     g_child_watch_add(e->pid, on_child_gone, e);
+}
+
+static void on_launch(GtkButton *button, gpointer user)
+{
+    (void)button;
+    launch_emu(user, FALSE);
+}
+
+static void on_launch_firmware(GtkButton *button, gpointer user)
+{
+    (void)button;
+    launch_emu(user, TRUE);
 }
 
 /* ------------------------------------------------------------------ ui */
@@ -929,31 +1820,31 @@ static GtkWidget *build_emu_panel(Emu *e)
 {
     GtkWidget *frame = gtk_frame_new(NULL);
     GtkWidget *title = gtk_label_new(NULL);
-    char *tm = g_markup_printf_escaped("<b>%s</b>  <small>%s</small>",
+    char *tm = g_markup_printf_escaped("<b>%s</b>  <span foreground=\"#888888\">%s</span>",
                                        e->name, e->console);
     gtk_label_set_markup(GTK_LABEL(title), tm);
     g_free(tm);
     gtk_frame_set_label_widget(GTK_FRAME(frame), title);
 
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(box), 10);
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+    gtk_container_set_border_width(GTK_CONTAINER(box), 4);
     gtk_container_add(GTK_CONTAINER(frame), box);
 
-    e->enable = gtk_check_button_new_with_label("Stream the bottom screen");
+    GtkWidget *settings = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    e->enable = gtk_check_button_new_with_label("Stream réseau");
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(e->enable), TRUE);
-    gtk_box_pack_start(GTK_BOX(box), e->enable, FALSE, FALSE, 0);
+    gtk_widget_set_tooltip_text(e->enable,
+        "Active le serveur pour tous les clients réseau. La connexion au "
+        "GamePad physique est gérée dans l’onglet WiiU GamePad.");
+    gtk_box_pack_start(GTK_BOX(settings), e->enable, FALSE, FALSE, 0);
 
-    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_box_pack_start(GTK_BOX(row), gtk_label_new("Port"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(settings), gtk_label_new("Port"), FALSE, FALSE, 0);
     e->port = gtk_spin_button_new_with_range(1024, 65535, 1);
     gtk_spin_button_set_value(GTK_SPIN_BUTTON(e->port), e->default_port);
-    gtk_box_pack_start(GTK_BOX(row), e->port, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(row),
-        gtk_label_new("(moves up if taken)"), FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), row, FALSE, FALSE, 0);
+    gtk_widget_set_size_request(e->port, 82, -1);
+    gtk_box_pack_start(GTK_BOX(settings), e->port, FALSE, FALSE, 0);
 
-    GtkWidget *srow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_box_pack_start(GTK_BOX(srow), gtk_label_new("Resolution"), FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(settings), gtk_label_new("Résolution"), FALSE, FALSE, 0);
     e->scale = gtk_combo_box_text_new();
     for (int n = 1; n <= 6; n++) {
         char item[64];
@@ -962,29 +1853,34 @@ static GtkWidget *build_emu_panel(Emu *e)
         gtk_combo_box_text_append_text(GTK_COMBO_BOX_TEXT(e->scale), item);
     }
     gtk_combo_box_set_active(GTK_COMBO_BOX(e->scale), 0);
-    gtk_box_pack_start(GTK_BOX(srow), e->scale, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(box), srow, FALSE, FALSE, 0);
+    gtk_widget_set_tooltip_text(e->scale, e->scale_note);
+    gtk_box_pack_start(GTK_BOX(settings), e->scale, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(box), settings, FALSE, FALSE, 0);
 
-    GtkWidget *note = gtk_label_new(NULL);
-    char *nm = g_markup_printf_escaped("<small>%s</small>", e->scale_note);
-    gtk_label_set_markup(GTK_LABEL(note), nm);
-    g_free(nm);
-    gtk_label_set_line_wrap(GTK_LABEL(note), TRUE);
-    gtk_label_set_xalign(GTK_LABEL(note), 0.0f);
-    gtk_box_pack_start(GTK_BOX(box), note, FALSE, FALSE, 0);
+    GtkWidget *firmware_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
+    gtk_box_pack_start(GTK_BOX(firmware_row),
+        gtk_label_new(e->scale_kind == SCALE_MELONDS ? "Firmware DS" : "Menu système"),
+        FALSE, FALSE, 0);
+    populate_firmware_field(e);
+    gtk_widget_set_hexpand(e->firmware_field, TRUE);
+    gtk_box_pack_start(GTK_BOX(firmware_row), e->firmware_field, TRUE, TRUE, 0);
+    if (e->scale_kind == SCALE_MELONDS) {
+        GtkWidget *firmware_browse = gtk_button_new_with_label("Parcourir…");
+        g_signal_connect(firmware_browse, "clicked",
+                         G_CALLBACK(on_browse_firmware), e);
+        gtk_box_pack_start(GTK_BOX(firmware_row), firmware_browse, FALSE, FALSE, 0);
+    }
+    gtk_box_pack_start(GTK_BOX(box), firmware_row, FALSE, FALSE, 0);
 
-    GtkWidget *brow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *brow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 5);
     e->launch = gtk_button_new_with_label("Launch");
     g_signal_connect(e->launch, "clicked", G_CALLBACK(on_launch), e);
     gtk_box_pack_start(GTK_BOX(brow), e->launch, FALSE, FALSE, 0);
 
-    /* What it does, not what it shows: it brings the pad up and
-     * gives it something to decode. The picture until an emulator
-     * starts happens to be the test pattern, which is a detail of
-     * the moment rather than the point of the button. */
-    GtkWidget *preview = gtk_button_new_with_label("Sync GamePad");
-    g_signal_connect(preview, "clicked", G_CALLBACK(on_pattern), e);
-    gtk_box_pack_start(GTK_BOX(brow), preview, FALSE, FALSE, 0);
+    e->launch_firmware = gtk_button_new_with_label("Launch firmware");
+    g_signal_connect(e->launch_firmware, "clicked",
+                     G_CALLBACK(on_launch_firmware), e);
+    gtk_box_pack_start(GTK_BOX(brow), e->launch_firmware, FALSE, FALSE, 0);
 
     e->quit = gtk_button_new_with_label("Quit");
     g_signal_connect(e->quit, "clicked", G_CALLBACK(on_quit), e);
@@ -994,18 +1890,23 @@ static GtkWidget *build_emu_panel(Emu *e)
     g_signal_connect(e->restart, "clicked", G_CALLBACK(on_restart), e);
     gtk_box_pack_start(GTK_BOX(brow), e->restart, FALSE, FALSE, 0);
 
-    GtkWidget *browse = gtk_button_new_with_label("Path\u2026");
+    GtkWidget *browse = gtk_button_new_with_label("Exécutable…");
     g_signal_connect(browse, "clicked", G_CALLBACK(on_browse), e);
-    gtk_box_pack_start(GTK_BOX(brow), browse, FALSE, FALSE, 0);
+    gtk_box_pack_end(GTK_BOX(brow), browse, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(box), brow, FALSE, FALSE, 0);
 
     e->path_label = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(e->path_label), 0.0f);
     gtk_label_set_ellipsize(GTK_LABEL(e->path_label), PANGO_ELLIPSIZE_MIDDLE);
+    gtk_widget_set_no_show_all(e->path_label, TRUE);
+    gtk_widget_set_tooltip_text(e->path_label, e->binary);
     gtk_box_pack_start(GTK_BOX(box), e->path_label, FALSE, FALSE, 0);
 
     e->status = gtk_label_new(NULL);
     gtk_label_set_xalign(GTK_LABEL(e->status), 0.0f);
+    gtk_label_set_ellipsize(GTK_LABEL(e->status), PANGO_ELLIPSIZE_END);
+    gtk_widget_set_tooltip_text(e->status,
+        "Les mesures détaillées se trouvent dans l’onglet Statistiques");
     gtk_box_pack_start(GTK_BOX(box), e->status, FALSE, FALSE, 0);
     if (e->saved_enable >= 0)
         gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(e->enable),
@@ -1043,29 +1944,78 @@ static void activate(GtkApplication *app, gpointer user)
     (void)user;
     GtkWidget *win = gtk_application_window_new(app);
     gtk_window_set_title(GTK_WINDOW(win), "Bottom Screen");
-    gtk_window_set_default_size(GTK_WINDOW(win), 520, 720);
+    gtk_window_set_default_size(GTK_WINDOW(win), 720, 565);
 
-    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_container_set_border_width(GTK_CONTAINER(outer), 12);
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_VERTICAL, 7);
+    gtk_container_set_border_width(GTK_CONTAINER(outer), 9);
     gtk_container_add(GTK_CONTAINER(win), outer);
 
     char *lan = guess_lan_address();
     g_host_label = gtk_label_new(NULL);
-    char *hm = g_markup_printf_escaped(
-        "Clients connect to <b>%s</b>", lan);
+    char *hm = g_markup_printf_escaped("Clients : <b>%s</b>", lan);
     gtk_label_set_markup(GTK_LABEL(g_host_label), hm);
     g_free(hm);
     g_free(lan);
     gtk_box_pack_start(GTK_BOX(outer), g_host_label, FALSE, FALSE, 0);
 
-    for (int i = 0; i < EMU_COUNT; i++)
-        gtk_box_pack_start(GTK_BOX(outer), build_emu_panel(&emus[i]),
-                           FALSE, FALSE, 0);
+    GtkWidget *notebook = gtk_notebook_new();
+    gtk_box_pack_start(GTK_BOX(outer), notebook, TRUE, TRUE, 0);
 
-    GtkWidget *pad_frame = gtk_frame_new("GamePad Wii U");
+    GtkWidget *emu_scroll = gtk_scrolled_window_new(NULL, NULL);
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(emu_scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    GtkWidget *emu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    gtk_container_set_border_width(GTK_CONTAINER(emu_box), 5);
+    gtk_container_add(GTK_CONTAINER(emu_scroll), emu_box);
+    for (int i = 0; i < EMU_COUNT; i++)
+        gtk_box_pack_start(GTK_BOX(emu_box), build_emu_panel(&emus[i]),
+                           FALSE, FALSE, 0);
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), emu_scroll,
+                             gtk_label_new("Émulateurs"));
+
     GtkWidget *pad_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
-    gtk_container_set_border_width(GTK_CONTAINER(pad_box), 8);
-    gtk_container_add(GTK_CONTAINER(pad_frame), pad_box);
+    gtk_container_set_border_width(GTK_CONTAINER(pad_box), 10);
+
+    GtkWidget *sync_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *sync_title = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(sync_title), "<b>Connexion du GamePad</b>");
+    gtk_box_pack_start(GTK_BOX(sync_row), sync_title, FALSE, FALSE, 0);
+    pair_button = gtk_button_new_with_label("Sync GamePad");
+    gtk_widget_set_tooltip_text(pair_button,
+        "Appairer un nouveau GamePad avec les quatre symboles Wii U");
+    g_signal_connect(pair_button, "clicked", G_CALLBACK(on_gamepad_pair), NULL);
+    gtk_box_pack_start(GTK_BOX(sync_row), pair_button, FALSE, FALSE, 0);
+    reconnect_button = gtk_button_new_with_label("Launch AP / Reconnect");
+    gtk_widget_set_tooltip_text(reconnect_button,
+        "Lancer l’AP normal et reconnecter un GamePad déjà appairé");
+    g_signal_connect(reconnect_button, "clicked",
+                     G_CALLBACK(on_gamepad_reconnect), NULL);
+    gtk_box_pack_start(GTK_BOX(sync_row), reconnect_button, FALSE, FALSE, 0);
+    stop_ap_button = gtk_button_new_with_label("Stop AP");
+    gtk_widget_set_tooltip_text(stop_ap_button,
+        "Arrêter le point d’accès et rendre l’interface Wi-Fi au système");
+    g_signal_connect(stop_ap_button, "clicked",
+                     G_CALLBACK(on_gamepad_stop_ap), NULL);
+    gtk_box_pack_start(GTK_BOX(sync_row), stop_ap_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pad_box), sync_row, FALSE, FALSE, 0);
+
+    pair_symbols = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(pair_symbols),
+        "<small>Sync GamePad affichera ici les quatre symboles à saisir.</small>");
+    gtk_label_set_xalign(GTK_LABEL(pair_symbols), 0.0f);
+    gtk_box_pack_start(GTK_BOX(pad_box), pair_symbols, FALSE, FALSE, 0);
+
+    GtkWidget *ap_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_pack_start(GTK_BOX(ap_row), gtk_label_new("Point d’accès"), FALSE, FALSE, 0);
+    ap_status = gtk_label_new(NULL);
+    gtk_label_set_xalign(GTK_LABEL(ap_status), 0.0f);
+    gtk_box_pack_start(GTK_BOX(ap_row), ap_status, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pad_box), ap_row, FALSE, FALSE, 0);
+    refresh_ap_status(NULL);
+    g_timeout_add_seconds(1, refresh_ap_status, NULL);
+
+    GtkWidget *separator = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+    gtk_box_pack_start(GTK_BOX(pad_box), separator, FALSE, FALSE, 2);
 
     GtkWidget *prow = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_box_pack_start(GTK_BOX(prow), gtk_label_new("Écran"), FALSE, FALSE, 0);
@@ -1149,15 +2099,45 @@ static void activate(GtkApplication *app, gpointer user)
     gtk_label_set_line_wrap(GTK_LABEL(pad_note), TRUE);
     gtk_label_set_xalign(GTK_LABEL(pad_note), 0.0f);
     gtk_box_pack_start(GTK_BOX(pad_box), pad_note, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(outer), pad_frame, FALSE, FALSE, 0);
 
-    GtkWidget *help = gtk_label_new("Sync GamePad, avant un émulateur : sticks = couleurs · boutons = notes\n"
-                                    "Tactile = son continu (X : hauteur, Y : timbre) · ↑/↓ = octave");
+    GtkWidget *help = gtk_label_new(
+        "Sync GamePad = nouvel appairage · Launch AP / Reconnect = GamePad déjà connu.\n"
+        "Stop AP coupe la liaison Wi-Fi GamePad. Sans émulateur, la mire attend puis bascule automatiquement."
+        "  Mire : sticks = couleurs · boutons = notes · tactile = son continu");
     gtk_label_set_line_wrap(GTK_LABEL(help), TRUE);
-    gtk_box_pack_start(GTK_BOX(outer), help, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(pad_box), help, FALSE, FALSE, 0);
     pad_status = gtk_label_new("GamePad prêt à connecter");
     gtk_label_set_line_wrap(GTK_LABEL(pad_status), TRUE);
-    gtk_box_pack_start(GTK_BOX(outer), pad_status, FALSE, FALSE, 0);
+    gtk_label_set_xalign(GTK_LABEL(pad_status), 0.0f);
+    gtk_box_pack_start(GTK_BOX(pad_box), pad_status, FALSE, FALSE, 0);
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), pad_box,
+                             gtk_label_new("WiiU GamePad"));
+
+    GtkWidget *stats_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 7);
+    gtk_container_set_border_width(GTK_CONTAINER(stats_box), 10);
+    GtkWidget *stats_intro = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(stats_intro),
+        "<b>Encodage et envoi en direct</b>\n"
+        "<small>Les mesures suivent automatiquement les émulateurs lancés ici. "
+        "Chaque écran possède son propre encodeur lorsqu’il est regardé.</small>");
+    gtk_label_set_xalign(GTK_LABEL(stats_intro), 0.0f);
+    gtk_label_set_line_wrap(GTK_LABEL(stats_intro), TRUE);
+    gtk_box_pack_start(GTK_BOX(stats_box), stats_intro, FALSE, FALSE, 0);
+    for (int i = 0; i < EMU_COUNT; i++) {
+        GtkWidget *frame = gtk_frame_new(emus[i].console);
+        emus[i].stats_label = gtk_label_new(NULL);
+        gtk_label_set_xalign(GTK_LABEL(emus[i].stats_label), 0.0f);
+        gtk_label_set_line_wrap(GTK_LABEL(emus[i].stats_label), TRUE);
+        gtk_widget_set_margin_start(emus[i].stats_label, 8);
+        gtk_widget_set_margin_end(emus[i].stats_label, 8);
+        gtk_widget_set_margin_top(emus[i].stats_label, 8);
+        gtk_widget_set_margin_bottom(emus[i].stats_label, 8);
+        gtk_container_add(GTK_CONTAINER(frame), emus[i].stats_label);
+        gtk_box_pack_start(GTK_BOX(stats_box), frame, FALSE, FALSE, 0);
+        refresh_stats(&emus[i]);
+    }
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), stats_box,
+                             gtk_label_new("Statistiques"));
     gtk_widget_show_all(win);
 }
 
@@ -1199,6 +2179,18 @@ static int apply_from_command_line(const char *which, const char *factor_text)
 
 int main(int argc, char **argv)
 {
+    /* Debian's GTK accessibility module prints a dbind warning when no
+     * AT-SPI session bus exists (common over SSH and in minimal desktops).
+     * Keep accessibility enabled whenever that service is actually present;
+     * otherwise tell GTK not to initialise a bridge that cannot connect. */
+    if (!g_getenv("NO_AT_BRIDGE") && !g_getenv("AT_SPI_BUS_ADDRESS")) {
+        char *atspi = g_build_filename(g_get_user_runtime_dir(),
+                                       "at-spi", "bus_0", NULL);
+        if (!g_file_test(atspi, G_FILE_TEST_EXISTS))
+            g_setenv("NO_AT_BRIDGE", "1", FALSE);
+        g_free(atspi);
+    }
+
     /*
      * The emulators are found relative to the project, so the launcher
      * works from a checkout without anything being installed.

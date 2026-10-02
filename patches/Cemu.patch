@@ -2457,7 +2457,7 @@ index b2346c17..95d37ecf 100644
  	void RefreshGameList();
  
 diff --git a/src/gui/wxgui/GeneralSettings2.cpp b/src/gui/wxgui/GeneralSettings2.cpp
-index f1435fba..9292188c 100644
+index f1435fba..71feabef 100644
 --- a/src/gui/wxgui/GeneralSettings2.cpp
 +++ b/src/gui/wxgui/GeneralSettings2.cpp
 @@ -256,6 +256,18 @@ wxPanel* GeneralSettings2::AddGeneralPage(wxNotebook* notebook)
@@ -2465,8 +2465,8 @@ index f1435fba..9292188c 100644
  			CountRowElement();
  
 +			// bottom_screen_server
-+			m_bottom_screen_enabled = new wxCheckBox(box, wxID_ANY, _("Stream GamePad screen"));
-+			m_bottom_screen_enabled->SetToolTip(_("Serves the GamePad screen to a phone or a Switch homebrew over the network, and takes their touch and buttons back. Costs nothing until a client connects."));
++			m_bottom_screen_enabled = new wxCheckBox(box, wxID_ANY, _("Stream to physical Wii U GamePad"));
++			m_bottom_screen_enabled->SetToolTip(_("Exposes the GamePad and TV screens to the Bottom Screen launcher. Use Sync GamePad there to connect and reauthorize the physical Wii U GamePad. Other compatible network clients can still connect."));
 +			third_row->Add(m_bottom_screen_enabled, 0, botflag, 5);
 +			CountRowElement();
 +

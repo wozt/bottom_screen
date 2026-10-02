@@ -122,11 +122,39 @@ phone:
 
 <img src="docs/screenshots/launcher.png" width="420" align="right" alt="The GTK launcher">
 
-Three things have to be right before each launch — the stream, the port,
-the internal resolution — and each emulator keeps them somewhere
-different, two of them with a trap in it. So the launcher does that, and
-nothing else: loading a game or mapping a pad is still the emulator's
-job.
+The compact launcher keeps the three emulators in one tab and puts the
+physical GamePad controls in their own. Its AP indicator shows whether
+hostapd is ready. **Sync GamePad** performs a fresh Wii U pairing: it shows
+the four symbols to enter on the pad, runs Nintendo's WPS exchange, then
+switches to the normal AP. **Launch AP / Reconnect** skips pairing for an
+already known pad, while **Stop AP** shuts the GamePad network down and
+returns its Wi-Fi interface to the system. Both connection modes wait on the test pattern and follow the first
+emulator launched, without asking for the console first.
+
+AP control normally needs root privileges. Install the restricted Polkit
+helper once (this is the only command that asks for the administrator
+password):
+
+```sh
+sudo ./gamepad/tools/install-polkit.sh
+```
+
+After restarting the launcher, its three AP buttons work without a password.
+The rule is limited to the user who ran the installer, an active local session,
+and the root-owned helper's three fixed operations; it does not grant arbitrary
+root commands.
+
+Alongside a normal launch,
+**Launch firmware** starts the DS firmware, the 3DS HOME Menu or the Wii U
+Menu directly. melonDS accepts a selected firmware file; Azahar and Cemu
+discover installed system menus from their own NAND/MLC configuration and
+offer every detected region/version in a list.
+
+The **Statistics** tab follows whichever emulator was started here and
+shows both screens independently: source and output resolution, measured
+FPS, encoded frames, bitrate, encoder, connected viewers and the most
+recent streaming event. Loading games and mapping controllers remain the
+emulator's job.
 
 It shows the port **actually bound**, which is not always the one asked
 for: a server whose port is taken moves to the next, which is what lets

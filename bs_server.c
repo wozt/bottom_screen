@@ -830,15 +830,6 @@ static void *client_recv_thread(void *arg)
 
 /* ------------------------------------------------------------- roster */
 
-static int server_live_clients(BsServer *srv)
-{
-    int n = 0;
-    for (int i = 0; i < srv->max_clients; i++)
-        if (srv->clients[i].in_use && !srv->clients[i].gone)
-            n++;
-    return n;
-}
-
 /*
  * Frees the slots of clients that have finished. Their threads are
  * joined here rather than detached, so a shutdown never races a thread
@@ -1207,7 +1198,9 @@ static void *pump_thread(void *arg)
     BsServer *srv = st->srv;
 
     SendCtx  sc = { .st = st, .frame_id = 0, .timestamp_us = 0 };
-    uint32_t started = bs_now_us();
+    uint32_t report_time = bs_now_us();
+    uint32_t report_frame = 0;
+    uint64_t report_bytes = 0;
 
     while (!srv->stop) {
         /*
@@ -1329,13 +1322,24 @@ static void *pump_thread(void *arg)
         if (st->which == BS_SCREEN_BOTTOM)
             srv->frames++;
 
-        if (!srv->cfg.quiet && st->info.fps > 0 && st->which == BS_SCREEN_BOTTOM &&
+        if (!srv->cfg.quiet && st->info.fps > 0 &&
             sc.frame_id % (uint32_t)(st->info.fps * 5) == 0) {
-            uint32_t elapsed = bs_now_us() - started;
-            double mbps = elapsed ? (double)st->bytes * 8.0 / elapsed : 0.0;
-            printf("bottom_screen: %u frames, %.2f Mbit/s, %d client(s)\n",
-                   sc.frame_id, mbps, server_live_clients(srv));
+            uint32_t now = bs_now_us();
+            uint32_t elapsed = now - report_time;
+            double fps = elapsed
+                ? (double)(sc.frame_id - report_frame) * 1000000.0 / elapsed : 0.0;
+            double mbps = elapsed
+                ? (double)(st->bytes - report_bytes) * 8.0 / elapsed : 0.0;
+            printf("bottom_screen: stats screen=%s frames=%u fps=%.2f "
+                   "mbps=%.2f clients=%d source=%dx%d output=%dx%d encoder=%s\n",
+                   st->which == BS_SCREEN_TOP ? "top" : "bottom",
+                   sc.frame_id, fps, mbps, stream_live_clients(st),
+                   st->info.width, st->info.height, st->out_w, st->out_h,
+                   srv->encoder_name);
             fflush(stdout);
+            report_time = now;
+            report_frame = sc.frame_id;
+            report_bytes = st->bytes;
         }
     }
 
