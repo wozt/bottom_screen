@@ -1,4 +1,4 @@
-<img src="assets/icon-512.png" width="96" align="left" alt="">
+<img src="assets/icon-512.png" width="96" align="left" alt="Bottom Screen">
 
 # Bottom Screen
 
@@ -34,167 +34,130 @@ own; this adds a bridge to one you already have.
   plays it: muting the PC does not silence the phone, and a PC with no
   output device configured still streams.
 - **Any renderer** — software, OpenGL, OpenGL compute, Vulkan.
-- **The card's own encoder by default**, falling back to the CPU when
-  there is none — the list is tried and the first that actually opens
-  wins, because a GPU can have no encoder and a driver can report one
-  and then refuse every frame. Which one was taken is announced at
-  startup, and `--encoder libx264` is the way back. Measured on a Radeon
-  RX 6600: 185% of a core down to 128% at 1080p, 232% down to 134% at
-  1440p. At a DS's own size it buys nothing, which is the honest half of
-  the number.
+- **Hardware encoding by default**, falling back to the CPU when there
+  is none. The available encoders are tried and the first one that
+  actually opens wins. The selected encoder is announced at startup,
+  and `--encoder libx264` forces software encoding.
 - **Internal resolution followed live**, up to 1440 tall. Turn the
-  emulator up and the stream grows with it, without dropping the
-  clients watching.
+  emulator up and the stream grows with it without dropping connected
+  clients.
 - **Four clients at once**, off one encoder per screen. A second viewer
-  costs bandwidth, not a core, and every client's status line says how
-  many are watching what.
-- **The machine's own questions, on your phone.** A 3DS or a Wii U stops
-  and asks for a name, a message, a Mii — and an emulator answers that
-  with a dialog on whatever desktop it is running on, which from another
-  room is a game that waits for ever. The question goes to whoever is
-  watching instead: the phone's own keyboard, the console's own
-  keyboard, or a box in the browser.
+  costs bandwidth, not another encoder.
+- **Emulator dialogs on the remote client.** A 3DS or Wii U can stop and
+  ask for a name, message or other text. Instead of requiring access to
+  the host desktop, supported prompts can be answered from the phone,
+  browser or console client.
 
 ---
 
-## The three clients
+## Clients
 
-The same options in all three: which screen to watch, size as a multiple
-of that screen's own, bitrate, volume, on-screen buttons that can be
-moved and saved per console, and — on a Wii U — which of its two audio
-outputs to hear.
+The same core options are available across clients: which screen to
+watch, resolution scale, bitrate, volume and movable on-screen controls
+saved per console.
 
-The on-screen pad is solved rather than arranged. Each band's demand is
-counted from the console being served — how tall its controls are, how
-wide the widest is — and the buttons are made the largest size at which
-both sides still hold everything, stacked upward from the floor of the
-band where a thumb actually is. A wider picture leaves narrower bands
-and smaller buttons rather than a pad overlapping itself, and nothing
-may cross into the picture, saved layout or not.
+### Web
 
-**Nintendo DS on the web client.** Nothing to install: open the port the
-emulator is listening on.
+Nothing to install: open the port the emulator is listening on.
 
 ![A DS in the browser](docs/screenshots/web-ds.png)
 
-**Nintendo 3DS on Android.** Hardware decoding through MediaCodec,
-straight into a Surface.
+### Android
+
+Hardware H.264 decoding through MediaCodec, rendered directly into a
+Surface.
 
 <img src="docs/screenshots/android-3ds-landscape.png" width="620" alt="A 3DS on Android">
 
-**Wii U on the Switch.** Built with devkitA64 and libnx; the console's
-own video block decodes the stream, its touchscreen is the stylus, and
-the Joy-Cons are the buttons. Verified on real hardware. No screenshot:
-taking one on a console means a capture card, and the picture would tell
-you nothing the two above have not.
+### Nintendo Switch
 
-<details>
-<summary>The rest of the interface</summary>
+Built with devkitA64 and libnx. The Switch hardware decoder handles the
+stream, the touchscreen acts as the stylus and the Joy-Cons provide
+controller input.
 
-<br>
+Verified on real hardware.
 
-Menus follow [capture2cloud](https://github.com/wozt)'s design, so the
-three are learned once. The on-screen pad on the Switch is ported from
-its homebrew rather than written again — a round d-pad zone that gives
-diagonals, each control its own shape, and a finger bound to whatever it
-lands on until it lifts.
+### Linux
 
-<img src="docs/screenshots/web-menu.png" width="520" alt="The stream menu open over the picture">
-<img src="docs/screenshots/android-settings.png" width="240" alt="The Android settings panel">
-
-A pad plugged into the host keeps working while somebody plays from a
-client: the presses are merged rather than swapped. A client's buttons
-reach the game whether or not the host has a controller configured.
-
-There is a Linux client too, handy for checking a pipeline without a
-phone:
+A native Linux client is included for testing or desktop use:
 
 ```sh
 ./bottom_screen_client --host 192.168.1.20 --port 5090
 ```
 
-</details>
+### Wii U GamePad
 
-<details>
-<summary>The launcher</summary>
+A real Wii U GamePad can also be used as a remote display and controller.
+The launcher handles pairing, access-point setup and reconnection.
 
-<br>
+---
+
+## Interface
+
+Menus follow the same general design as
+[capture2cloud](https://github.com/wozt/capture2cloud).
+
+<img src="docs/screenshots/web-menu.png" width="520" alt="The stream menu open over the picture">
+<img src="docs/screenshots/android-settings.png" width="240" alt="The Android settings panel">
+
+A controller connected directly to the host keeps working while somebody
+plays from a remote client: inputs are merged rather than swapped.
+
+The virtual pad adapts to the console and available screen space. Controls
+can be moved and saved per console, while the layout prevents them from
+overlapping the streamed picture.
+
+---
+
+## Launcher
 
 <img src="docs/screenshots/launcher.png" width="420" align="right" alt="The GTK launcher">
 
-The compact launcher keeps the three emulators in one tab and puts the
-physical GamePad controls in their own. Its AP indicator shows whether
-hostapd is ready. **Sync GamePad** performs a fresh Wii U pairing: it shows
-the four symbols to enter on the pad, runs Nintendo's WPS exchange, then
-switches to the normal AP. **Launch AP / Reconnect** skips pairing for an
-already known pad, while **Stop AP** shuts the GamePad network down and
-returns its Wi-Fi interface to the system. Both connection modes wait on the test pattern and follow the first
-emulator launched, without asking for the console first.
+The GTK launcher keeps the three emulators in one place and also manages
+the physical Wii U GamePad connection.
+
+It can:
+
+- launch melonDS, Azahar and Cemu
+- launch available system firmware / menus
+- pair or reconnect a Wii U GamePad
+- start and stop the GamePad access point
+- display stream and encoder statistics
+- show the port actually bound by each server
+
+**Sync GamePad** performs a fresh Wii U GamePad pairing.
+**Launch AP / Reconnect** reconnects an already paired GamePad.
+**Stop AP** shuts the network down and returns its Wi-Fi interface to the
+system.
 
 AP control normally needs root privileges. Install the restricted Polkit
-helper once (this is the only command that asks for the administrator
-password):
+helper once:
 
 ```sh
 sudo ./gamepad/tools/install-polkit.sh
 ```
 
-After restarting the launcher, its three AP buttons work without a password.
-The rule is limited to the user who ran the installer, an active local session,
-and the root-owned helper's three fixed operations; it does not grant arbitrary
-root commands.
+After restarting the launcher, the GamePad networking controls work
+without repeatedly asking for an administrator password.
 
-Alongside a normal launch,
-**Launch firmware** starts the DS firmware, the 3DS HOME Menu or the Wii U
-Menu directly. melonDS accepts a selected firmware file; Azahar and Cemu
-discover installed system menus from their own NAND/MLC configuration and
-offer every detected region/version in a list.
-
-The **Statistics** tab follows whichever emulator was started here and
-shows both screens independently: source and output resolution, measured
-FPS, encoded frames, bitrate, encoder, connected viewers and the most
-recent streaming event. Loading games and mapping controllers remain the
-emulator's job.
-
-It shows the port **actually bound**, which is not always the one asked
-for: a server whose port is taken moves to the next, which is what lets
-the three run together. Files it edits are backed up beside themselves.
-
-```sh
-make launcher/bs_launcher && ./launcher/bs_launcher
-```
-
-Or `scripts/bottom-screen`, which is one way in to all of it and builds
-what it is about to run before running it — waiting a few seconds beats
-starting the binary from before the last change, which this project has
-done to itself more than once:
-
-```sh
-scripts/bottom-screen              # the launcher
-scripts/bottom-screen pad --stats  # an emulator's screen on a real GamePad
-scripts/bottom-screen server       # the standalone server, on a test pattern
-scripts/bottom-screen test         # the whole suite
-```
-
-`--set-resolution <emulator> <n>` does the same with no window.
+The helper only exposes the required fixed networking operations.
 
 <br clear="right">
-
-</details>
 
 ---
 
 ## Getting it running
 
+On Debian / Ubuntu:
+
 ```sh
 sudo apt install libavcodec-dev libavutil-dev libswscale-dev \
                  libswresample-dev libsdl2-dev libgtk-3-dev
+
 make
 ```
 
-Then put the bridge in an emulator — **clone the fork**, which is the
-same change with a repository around it, already applied and known to
-build:
+Then use one of the emulator forks containing the Bottom Screen bridge:
 
 | Console | Fork, on the `bottom-screen` branch |
 |---|---|
@@ -202,103 +165,99 @@ build:
 | Nintendo 3DS | [wozt/azahar](https://github.com/wozt/azahar/tree/bottom-screen) |
 | Wii U | [wozt/Cemu](https://github.com/wozt/Cemu/tree/bottom-screen) |
 
-The bridge is never on the default branch, so the branch has to be asked
-for:
+For example:
 
 ```sh
 git clone -b bottom-screen --recursive https://github.com/wozt/melonDS
 ```
 
-Put it beside this directory — `emulators/melonDS`, `emulators/azahar`,
-`emulators/Cemu` — and the emulator's build finds it and turns the
-bridge on by itself. Without it, the fork builds exactly like upstream.
-Then start an emulator: it announces where it is listening.
+Place the repositories next to this project:
 
-<details>
-<summary>Or carry the changes into a checkout of your own</summary>
-
-<br>
-
-```sh
-git -C melonDS apply patches/melonDS.patch        # a plain diff
-python3 tools/bs_patch.py melonDS ../melonDS      # or anchored
+```text
+emulators/
+├── melonDS/
+├── azahar/
+└── Cemu/
 ```
 
-A diff says "at line 175, between these three lines", which stops being
-true the moment anybody edits above it — and `git apply` then refuses
-everything, saying only that it does not apply.
+The emulator build detects the Bottom Screen bridge when available.
 
-The second describes the same edits by what they are: find this text,
-inside this function, put that in its place. An unrelated change above a
-hook costs nothing, upstream reindenting is coped with and said out
-loud, and a hook whose function has been renamed is refused with the
-name it was looking for. Each edit is judged on its own, so one failing
-does not stop the rest.
-
-Both are generated from the forks, never edited, and two tests keep them
-honest: one applies each recipe to an untouched upstream and compares
-every file against the fork, the other breaks a hook on purpose to check
-that the right thing is refused. See
-[patches/README.md](patches/README.md).
-
-Neither is an upgrade path. When a recipe refuses, the fork is the
-answer — a branch survives an upstream that keeps moving, which is why
-all three exist.
-
-</details>
+Loading games, firmware configuration and controller mapping remain the
+emulator's responsibility.
 
 ---
 
-## What is not finished
+## Launcher commands
 
-Verified against real games rather than a test pattern — one commercial
-title per console. The screenshots use the built-in pattern; the testing
-did not.
+```sh
+scripts/bottom-screen              # GTK launcher
+scripts/bottom-screen pad --stats  # emulator screen on a real GamePad
+scripts/bottom-screen server       # standalone server with test pattern
+scripts/bottom-screen test         # run the test suite
+```
 
-Still open:
+Build and run the launcher directly with:
 
-- **Cemu draws no GamePad view without its window**, so a client
-  watching the bottom screen of a game running on the television alone
-  sees nothing. The port is there; the picture is not.
-- **A requested bitrate is exceeded by about half again**, because the
-  encoder is told a frame rate measured once at startup. Understood,
-  measured, and left alone.
-- **The 3DS system titles**, which are not installed: the only route
-  Azahar supports needs a second console.
+```sh
+make launcher/bs_launcher
+./launcher/bs_launcher
+```
 
-[PROGRESS.md](PROGRESS.md) has the detail, including the mistakes worth
-remembering.
+---
 
-<details>
-<summary>The protocol</summary>
+## Protocol
 
-<br>
+The shared protocol is defined in [bs_protocol.h](bs_protocol.h).
 
-One header, [bs_protocol.h](bs_protocol.h), included by both ends. TCP,
-port 5090 by default, H.264 for the picture and Opus for the sound. The
-browser gets the same bytes inside WebSocket frames, on the same port —
-a native client opens with `BSC1` and a browser with `GET `, and they
-cannot be confused.
+By default:
 
-Two things that cost dearly when forgotten. Touch coordinates are in
-**the space the server announced**, not the console's native size:
-dividing by the latter puts every tap wrong by exactly the resolution
-scale, and it looks like a calibration problem when it is arithmetic.
-And no client may ask for a keyframe — there is one encoder behind all
-of them watching a screen, so a client that is struggling would bill its
-repairs to everyone else. The server issues one itself for the two cases
-where waiting is half a second of green: somebody joining a stream that
-is already running, and somebody moving between the screens.
+- TCP port `5090`
+- H.264 video
+- Opus audio
+- native clients and browsers share the same server
+- browser traffic uses WebSocket framing
 
-</details>
+A native client starts with `BSC1`; a browser starts with `GET `, allowing
+the server to distinguish them on the same port.
 
-<details>
-<summary>Licences</summary>
+Touch coordinates use the resolution announced by the server rather than
+the console's native resolution.
 
-<br>
+Clients do not request keyframes themselves because one encoder can be
+shared by several viewers. The server handles keyframes when required,
+including when a client joins an active stream or switches screens.
 
-melonDS is GPL-3.0, Azahar GPL-2.0, Cemu MPL-2.0. The patches and forks
-are published under those terms. Everything in this repository that is
-not one of those is my own.
+---
 
-</details>
+## Current limitations
+
+The project has been tested against real games on all three supported
+console families.
+
+Known limitations:
+
+- **Cemu does not currently provide the GamePad image when that view is
+  not being rendered by its window.**
+- **Requested bitrate can exceed the configured target** because the
+  encoder frame-rate estimate is established at startup.
+- Some **3DS system-title testing** depends on system software being
+  installed in Azahar.
+
+See [PROGRESS.md](PROGRESS.md) for development notes and detailed testing.
+
+---
+
+## License
+
+Bottom Screen is licensed under the **GNU General Public License v3.0**.
+
+See [LICENSE](LICENSE) for the full license text.
+
+The supported emulator projects retain their own licenses:
+
+- melonDS — GPL-3.0
+- Azahar — GPL-2.0
+- Cemu — MPL-2.0
+
+Code and patches derived from those projects remain subject to their
+respective upstream licenses.
